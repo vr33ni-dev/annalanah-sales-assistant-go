@@ -1,1 +1,26 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Dependency directories
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
 .env
+.env.local
