@@ -1,0 +1,158 @@
+### Clients: list all clients
+GET http://localhost:8080/api/clients
+Accept: application/json
+
+###
+
+### Create new client (organic)
+POST http://localhost:8080/api/clients
+Content-Type: application/json
+
+{
+  "name": "Anna Test",
+  "email": "anna@test.com",
+  "phone": "123456789",
+  "source": "organic"
+}
+
+###
+
+### Create new client (paid, linked to Stage 1)
+POST http://localhost:8080/api/clients
+Content-Type: application/json
+
+{
+  "name": "Max Paid",
+  "email": "max@paid.com",
+  "phone": "987654321",
+  "source": "paid",
+  "source_stage_id": 1
+}
+
+---
+
+### Sales process: list all
+GET http://localhost:8080/api/sales
+Accept: application/json
+
+###
+
+### Start new sales process (for Client 1)
+POST http://localhost:8080/api/sales
+Content-Type: application/json
+
+{
+  "client_id": 1,
+  "stage": "zweitgespraech",
+  "zweitgespraech_date": "2025-09-28"
+}
+
+###
+
+### Start new sales process + create client in one go
+POST http://localhost:8080/api/sales/start
+Content-Type: application/json
+
+{
+  "name": "Laura Example",
+  "email": "laura@example.com",
+  "phone": "123456789",
+  "source": "paid",
+  "source_stage_id": 1,
+  "zweitgespraech_date": "2025-10-02"
+}
+
+###
+
+### Update sales process (set contract result and revenue)
+PATCH http://localhost:8080/api/sales/1
+Content-Type: application/json
+
+{
+  "zweitgespraech_result": true,
+  "abschluss": true,
+  "revenue": 5000
+}
+
+---
+
+### Contracts: list all
+GET http://localhost:8080/api/contracts
+Accept: application/json
+
+###
+
+### Create new contract
+POST http://localhost:8080/api/contracts
+Content-Type: application/json
+
+{
+  "client_id": 2,
+  "sales_process_id": 2,
+  "start_date": "2025-10-01",
+  "duration_months": 6,
+  "revenue_total": 6000,
+  "payment_frequency": "bi-monthly"
+}
+
+---
+
+### Stages: list all stages
+GET http://localhost:8080/api/stages
+Accept: application/json
+
+###
+
+### Create new stage
+POST http://localhost:8080/api/stages
+Content-Type: application/json
+
+{
+  "name": "Webinar October",
+  "date": "2025-10-15",
+  "ad_budget": 1000,
+  "registrations": 40,
+  "participants": 25
+}
+
+---
+
+### Update stage stats (aggregate registrations/participants)
+PATCH http://localhost:8080/api/stages/1/stats
+Content-Type: application/json
+
+{
+  "participants": 32
+}
+
+---
+
+### Add participant (optional, detailed lead tracking)
+POST http://localhost:8080/api/stages/1/participants
+Content-Type: application/json
+
+{
+  "lead_name": "Laura Example",
+  "lead_email": "laura@example.com",
+  "attended": true
+}
+
+---
+
+### Update participant (e.g., mark attended)
+PATCH http://localhost:8080/api/stages/1/participants/1
+Content-Type: application/json
+
+{
+  "attended": true
+}
+
+---
+
+### Assign client to stage (when a Zweitgespräch is planned)
+POST http://localhost:8080/api/stages/1/assign-client
+Content-Type: application/json
+
+{
+  "client_id": 2
+}
