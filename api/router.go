@@ -4,11 +4,22 @@ import (
 	"database/sql"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 func NewRouter(db *sql.DB) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
+
+	// CORS middleware — allow Vite dev origin
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"http://localhost:5002"}, // change if your frontend runs on another origin
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	// Prefix everything with /api
 	r.Route("/api", func(r chi.Router) {
@@ -32,13 +43,21 @@ func NewRouter(db *sql.DB) *chi.Mux {
 		r.Post("/stages", h.CreateStage)
 		r.Patch("/stages/{id}/stats", h.UpdateStageStats)
 
-		// Optional:
-		// Stage participants (individuals in a stage)
+		// Stage participants
 		r.Post("/stages/{id}/participants", h.AddStageParticipant)
 		r.Patch("/stages/{id}/participants/{participant_id}", h.UpdateStageParticipant)
 
-		// Assign client to stage after a sales process has been initialized and a client entry has been created
+		// Assign client to stage
 		r.Post("/stages/{id}/assign-client", h.AssignClientToStage)
+
+		// Cashflow
+		r.Get("/cashflow/forecast", h.CashflowForecast)
+
+		// App settings
+		r.Get("/settings", h.ListSettings)
+		r.Get("/settings/{key}", h.GetSetting)
+		r.Put("/settings/{key}", h.UpsertSetting)
+
 	})
 
 	return r

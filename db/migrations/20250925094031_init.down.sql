@@ -5,3 +5,4 @@ DROP TABLE IF EXISTS contracts;
 DROP TABLE IF EXISTS sales_process;
 DROP TABLE IF EXISTS stages;
 DROP TABLE IF EXISTS clients;
+DROP TABLE IF EXISTS app_settings;

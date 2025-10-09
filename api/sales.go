@@ -20,23 +20,68 @@ type SalesProcess struct {
 	StageID              *int     `json:"stage_id"`
 }
 
+// What the API returns (GET /api/sales, PATCH /api/sales/{id})
+type SalesProcessResponse struct {
+	ID                   int      `json:"id"`
+	ClientID             int      `json:"client_id"`
+	ClientName           string   `json:"client_name"`
+	ClientEmail          *string  `json:"client_email,omitempty"`
+	ClientPhone          *string  `json:"client_phone,omitempty"`
+	ClientSource         *string  `json:"client_source,omitempty"`
+	Stage                string   `json:"stage"`
+	ZweitgespraechDate   *string  `json:"zweitgespraech_date"`
+	ZweitgespraechResult *bool    `json:"zweitgespraech_result"`
+	Abschluss            *bool    `json:"abschluss"`
+	Revenue              *float64 `json:"revenue"`
+	StageID              *int     `json:"stage_id"`
+}
+
+// What the API accepts (PATCH /api/sales/{id})
+type SalesProcessUpdateRequest struct {
+	ZweitgespraechResult   *bool    `json:"zweitgespraech_result"`
+	Abschluss              *bool    `json:"abschluss"`
+	Revenue                *float64 `json:"revenue"`
+	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
+	ContractStartDate      *string  `json:"contract_start_date,omitempty"` // YYYY-MM-DD
+	ContractFrequency      *string  `json:"contract_frequency,omitempty"`  // monthly | bi-monthly | quarterly
+}
+
 // GET /api/sales
 func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
-		SELECT id, client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id
-		FROM sales_process`)
+	SELECT
+		sp.id,
+		sp.client_id,
+		cl.name  AS client_name,
+		cl.email AS client_email,
+		cl.phone AS client_phone,
+		cl.source AS client_source,
+		sp.stage,
+		sp.zweitgespraech_date,
+		sp.zweitgespraech_result,
+		sp.abschluss,
+		CASE WHEN COALESCE(sp.abschluss, false) THEN sp.revenue ELSE NULL END AS revenue,
+		sp.stage_id
+	FROM sales_process sp
+	JOIN clients cl ON cl.id = sp.client_id
+	ORDER BY sp.created_at DESC, sp.id DESC
+`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var processes []SalesProcess
+	var processes []SalesProcessResponse
 	for rows.Next() {
-		var sp SalesProcess
+		var sp SalesProcessResponse
 		if err := rows.Scan(
 			&sp.ID,
 			&sp.ClientID,
+			&sp.ClientName,
+			&sp.ClientEmail,
+			&sp.ClientPhone,
+			&sp.ClientSource,
 			&sp.Stage,
 			&sp.ZweitgespraechDate,
 			&sp.ZweitgespraechResult,
@@ -96,8 +141,8 @@ func (h *Handler) CreateSalesProcess(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/sales/{id}
+// PATCH /api/sales/{id}
 func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
-	// Get id from URL and convert to int
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -105,39 +150,148 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sp SalesProcess
+	// Use the update request type that can carry contract details
+	var sp SalesProcessUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&sp); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Update DB
+	// ---------- VALIDATION ----------
+	// If abschluss=true, all contract fields must be present/valid.
+	if sp.Abschluss != nil && *sp.Abschluss == true {
+		if sp.Revenue == nil ||
+			sp.ContractDurationMonths == nil || *sp.ContractDurationMonths <= 0 ||
+			sp.ContractStartDate == nil ||
+			sp.ContractFrequency == nil ||
+			(*sp.ContractFrequency != "monthly" && *sp.ContractFrequency != "bi-monthly" && *sp.ContractFrequency != "quarterly") {
+			http.Error(w, "cannot set abschluss=true without contract details (revenue, duration>0, start date, frequency)", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Small ergonomics: if abschluss=true but result wasn’t provided, assume the call happened
+	if sp.Abschluss != nil && *sp.Abschluss == true && sp.ZweitgespraechResult == nil {
+		t := true
+		sp.ZweitgespraechResult = &t
+	}
+
+	// ---------- UPDATE SALES_PROCESS (fields + normalized stage) ----------
 	_, err = h.DB.Exec(`
 		UPDATE sales_process
-		SET zweitgespraech_result = $1,
-		    abschluss = $2,
-		    revenue = $3
-		WHERE id = $4`,
-		sp.ZweitgespraechResult,
-		sp.Abschluss,
-		sp.Revenue,
-		id,
-	)
+		SET
+			zweitgespraech_result = COALESCE($1, zweitgespraech_result),
+			abschluss             = COALESCE($2, abschluss),
+			revenue               = CASE
+				WHEN $2 IS TRUE  THEN $3
+				WHEN $2 IS FALSE THEN NULL
+				ELSE revenue
+			END,
+			stage = CASE
+				WHEN COALESCE($2, abschluss) IS TRUE  THEN 'abschluss'         -- closed won
+				WHEN COALESCE($2, abschluss) IS FALSE THEN 'lost'              -- explicit no
+				WHEN COALESCE($1, zweitgespraech_result) IS FALSE THEN 'lost'  -- no-show
+				WHEN COALESCE($1, zweitgespraech_result) IS TRUE  THEN 'zweitgespraech' -- call done, awaiting decision
+				ELSE 'zweitgespraech'                                          -- planned / not happened yet
+			END
+		WHERE id = $4
+	`, sp.ZweitgespraechResult, sp.Abschluss, sp.Revenue, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Return updated record
-	row := h.DB.QueryRow(`
-		SELECT id, client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id
-		FROM sales_process
-		WHERE id = $1`, id)
+	// ---------- SYNC CLIENT STATUS ----------
+	_, err = h.DB.Exec(`
+	  WITH s AS (
+	    SELECT client_id, stage, zweitgespraech_result, abschluss
+	    FROM sales_process WHERE id = $1
+	  )
+	  UPDATE clients c
+	  SET status = CASE
+	    WHEN (SELECT stage FROM s) = 'abschluss'
+	         AND COALESCE((SELECT abschluss FROM s), FALSE) = TRUE
+	      THEN 'active'
+	    WHEN (SELECT stage FROM s) = 'lost'
+	      THEN 'lost'
+	    WHEN (SELECT stage FROM s) = 'zweitgespraech'
+	         AND (SELECT zweitgespraech_result FROM s) IS NULL
+	      THEN 'follow_up_scheduled'
+	    WHEN (SELECT stage FROM s) = 'zweitgespraech'
+	         AND (SELECT zweitgespraech_result FROM s) IS TRUE
+	      THEN 'awaiting_response'
+	    ELSE c.status
+	  END
+	  WHERE c.id = (SELECT client_id FROM s)
+	`, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	var updated SalesProcess
+	// ---------- (OPTIONAL) AUTO-CREATE CONTRACT ON CLOSE-WON ----------
+	if sp.Abschluss != nil && *sp.Abschluss == true &&
+		sp.Revenue != nil &&
+		sp.ContractDurationMonths != nil && *sp.ContractDurationMonths > 0 &&
+		sp.ContractStartDate != nil && sp.ContractFrequency != nil {
+
+		// get client_id for this sales process
+		var clientID int
+		if err := h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, id).Scan(&clientID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// avoid duplicate active contract
+		var exists bool
+		if err := h.DB.QueryRow(`
+			SELECT EXISTS (SELECT 1 FROM contracts WHERE client_id = $1 AND end_date IS NULL)
+		`, clientID).Scan(&exists); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !exists {
+			_, err = h.DB.Exec(`
+				INSERT INTO contracts
+					(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
+				VALUES ($1, $2, $3::date, NULL, $4, $5, $6)
+			`, clientID, id, *sp.ContractStartDate, *sp.ContractDurationMonths, *sp.Revenue, *sp.ContractFrequency)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// ---------- RETURN UPDATED ROW ----------
+	row := h.DB.QueryRow(`
+	  SELECT
+	    sp.id,
+	    sp.client_id,
+	    c.name  AS client_name,
+	    c.email AS client_email,
+	    c.phone AS client_phone,
+	    c.source AS client_source,
+	    sp.stage,
+	    sp.zweitgespraech_date,
+	    sp.zweitgespraech_result,
+	    sp.abschluss,
+	    CASE WHEN COALESCE(sp.abschluss, false) THEN sp.revenue ELSE NULL END AS revenue,
+	    sp.stage_id
+	  FROM sales_process sp
+	  JOIN clients c ON c.id = sp.client_id
+	  WHERE sp.id = $1
+	`, id)
+
+	var updated SalesProcessResponse
 	if err := row.Scan(
 		&updated.ID,
 		&updated.ClientID,
+		&updated.ClientName,
+		&updated.ClientEmail,
+		&updated.ClientPhone,
+		&updated.ClientSource,
 		&updated.Stage,
 		&updated.ZweitgespraechDate,
 		&updated.ZweitgespraechResult,
@@ -154,7 +308,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updated)
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 // POST /api/sales/start
@@ -163,7 +317,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		Name               string  `json:"name"`
 		Email              string  `json:"email"`
 		Phone              string  `json:"phone"`
-		Source             string  `json:"source"`
+		Source             string  `json:"source"` // "organic" | "paid"
 		SourceStageID      *int    `json:"source_stage_id,omitempty"`
 		ZweitgespraechDate *string `json:"zweitgespraech_date"`
 	}
@@ -182,8 +336,9 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// 1. Insert client
 	var clientID int
 	err = tx.QueryRow(
-		`INSERT INTO clients (name, email, phone, source, source_stage_id)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
+	 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
+	 RETURNING id`,
 		req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
 	).Scan(&clientID)
 	if err != nil {
@@ -194,10 +349,11 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// 2. Insert sales process
 	var salesProcessID int
 	err = tx.QueryRow(
-		`INSERT INTO sales_process (client_id, stage, zweitgespraech_date)
-		 VALUES ($1, 'zweitgespraech', $2) RETURNING id`,
-		clientID, req.ZweitgespraechDate,
+		`INSERT INTO sales_process (client_id, stage, zweitgespraech_date, stage_id)
+	 VALUES ($1, 'zweitgespraech', $2, $3) RETURNING id`,
+		clientID, req.ZweitgespraechDate, req.SourceStageID,
 	).Scan(&salesProcessID)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
