@@ -19,7 +19,8 @@ type Client struct {
 }
 
 type Handler struct {
-	DB *sql.DB
+	DB   *sql.DB
+	Auth *Auth
 }
 
 // GET /api/clients

@@ -6,24 +6,25 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/joho/godotenv"
+
 	"github.com/vr33ni-dev/sales-assistant/api"
 	"github.com/vr33ni-dev/sales-assistant/db"
-
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	// load .env
+	// load .env (no-op if missing)
 	_ = godotenv.Load()
 
 	// connect to db
 	database := db.Connect()
 	defer database.Close()
 
+	// Build the router (we'll add auth mounting INSIDE api.NewRouter)
 	r := api.NewRouter(database)
 
 	// start server
-	port := os.Getenv("DB_PORT")
+	port := os.Getenv("PORT") // << use PORT, not DB_PORT
 	if port == "" {
 		port = "8080"
 	}
