@@ -13,6 +13,9 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
 
+	// Log requests (important for production diagnosis)
+	r.Use(middleware.Logger)
+
 	// Recover so panics don’t become 502s
 	r.Use(middleware.Recoverer)
 
