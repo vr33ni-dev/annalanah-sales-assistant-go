@@ -5,8 +5,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/vr33ni-dev/sales-assistant/api"
-	"github.com/vr33ni-dev/sales-assistant/db"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/db"
 )
 
 func main() {

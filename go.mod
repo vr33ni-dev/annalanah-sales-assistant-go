@@ -1,4 +1,4 @@
-module github.com/vr33ni-dev/sales-assistant
+module github.com/vr33ni-dev/annalanah-sales-assistant-go
 
 go 1.24.2
 

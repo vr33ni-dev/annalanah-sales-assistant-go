@@ -30,6 +30,9 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	r.Get("/health", h.health)
 	h.MountAuthRoutes(r) // /auth/google, /auth/google/callback, /api/me
 
+	h.MountAuthRoutes(r) // /auth/google, /auth/google/callback, /api/me
+	h.MountDevRoutes(r)
+
 	// protected
 	r.Route("/api", func(pr chi.Router) {
 		pr.Use(h.RequireAuth)
