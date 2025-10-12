@@ -200,21 +200,27 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	domain := os.Getenv("COOKIE_DOMAIN")
+	// Determine cookie attributes the same way as when creating the cookie
+	domain := os.Getenv("COOKIE_DOMAIN") // empty in dev
 	sameSite := http.SameSiteLaxMode
 	if domain != "" {
 		sameSite = http.SameSiteNoneMode
 	}
+	secure := sameSite == http.SameSiteNoneMode || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://")
+
+	// Clear the cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     h.Auth.CookieName,
 		Value:    "",
 		Path:     "/",
 		Domain:   domain,
 		HttpOnly: true,
-		Secure:   sameSite == http.SameSiteNoneMode,
+		Secure:   secure,
 		SameSite: sameSite,
 		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
 	})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
