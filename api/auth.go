@@ -200,26 +200,39 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// Determine cookie attributes the same way as when creating the cookie
-	domain := os.Getenv("COOKIE_DOMAIN") // empty in dev
+	domain := os.Getenv("COOKIE_DOMAIN") // empty on localhost
 	sameSite := http.SameSiteLaxMode
 	if domain != "" {
 		sameSite = http.SameSiteNoneMode
 	}
-	secure := sameSite == http.SameSiteNoneMode || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://")
 
-	// Clear the cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     h.Auth.CookieName,
-		Value:    "",
-		Path:     "/",
-		Domain:   domain,
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: sameSite,
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-	})
+	// clear cookie for both with-domain and without-domain and for secure=false/true
+	secureVariants := []bool{false, true}
+	for _, sec := range secureVariants {
+		// with domain
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.Auth.CookieName,
+			Value:    "",
+			Path:     "/",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   sec,
+			SameSite: sameSite,
+			Expires:  time.Unix(0, 0),
+			MaxAge:   -1,
+		})
+		// without domain
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.Auth.CookieName,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   sec,
+			SameSite: sameSite,
+			Expires:  time.Unix(0, 0),
+			MaxAge:   -1,
+		})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
