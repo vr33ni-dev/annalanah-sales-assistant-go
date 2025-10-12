@@ -100,15 +100,17 @@ func (h *Handler) MountAuthRoutes(r chi.Router) {
 
 func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	state := randState()
+	secure := strings.HasPrefix(os.Getenv("OAUTH_REDIRECT_URL"), "https://")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   false, // localhost ok; on Render behind HTTPS this will be true automatically
+		Secure:   secure, // <- important on Render
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
+
 	http.Redirect(w, r, h.Auth.OAuth.AuthCodeURL(state, oauth2.AccessTypeOnline), http.StatusFound)
 }
 
