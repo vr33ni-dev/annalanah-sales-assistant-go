@@ -202,7 +202,6 @@ func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
-			// CORS middleware already set headers; just end the preflight.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

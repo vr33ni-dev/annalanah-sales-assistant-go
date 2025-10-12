@@ -2,8 +2,10 @@ package api
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 
+	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 )
@@ -11,6 +13,17 @@ import (
 func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
+
+	// Recover from panics -> avoids 502 from the platform and gives a 500 + log
+	r.Use(middleware.Recoverer)
+
+	// (optional) tiny logger to see the flow
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("%s %s", r.Method, r.URL.Path)
+			next.ServeHTTP(w, r)
+		})
+	})
 
 	// 1) CORS first (outermost)
 	r.Use(cors.Handler(cors.Options{
