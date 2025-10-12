@@ -168,9 +168,8 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Cookie settings per env
 	domain := os.Getenv("COOKIE_DOMAIN") // e.g. ".yourapp.com" in prod, empty in dev
-	sameSite := http.SameSiteLaxMode     // dev/local (same-origin via Vite proxy)
-	if domain != "" {
-		// prod with different origins => allow cross-site
+	sameSite := http.SameSiteLaxMode
+	if domain != "" || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://") || os.Getenv("APP_ENV") == "prod" {
 		sameSite = http.SameSiteNoneMode
 	}
 
@@ -179,6 +178,10 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Name:  name,
 		Exp:   time.Now().Add(12 * time.Hour),
 	}, domain, sameSite)
+	// ensure Secure when SameSite=None
+	if ck.SameSite == http.SameSiteNoneMode {
+		ck.Secure = true
+	}
 	http.SetCookie(w, ck)
 
 	// prefer post_login_redirect cookie set in handleAuthStart, fallback to env
