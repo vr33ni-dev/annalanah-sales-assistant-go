@@ -103,27 +103,34 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	log.Printf("handleAuthStart: query redirect=%q remote=%s\n", r.URL.Query().Get("redirect"), r.RemoteAddr)
 
 	state := randState()
-	secure := strings.HasPrefix(os.Getenv("OAUTH_REDIRECT_URL"), "https://")
+
+	// decide Secure / SameSite for prod cross-site flows
+	secure := strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://") || os.Getenv("APP_ENV") == "prod"
+	sameSite := http.SameSiteLaxMode
+	if secure {
+		sameSite = http.SameSiteNoneMode
+	}
+
+	// oauth_state cookie (not HttpOnly so browser sends it back on navigation)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
 		HttpOnly: false,
-		Secure:   secure, // <- important on Render
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		SameSite: sameSite,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
 
 	// store optional post-login redirect (frontend sends ?redirect=...)
 	if redirect := r.URL.Query().Get("redirect"); redirect != "" {
-		// make this HttpOnly so JS cannot read it; backend will read it on callback
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
 			Value:    redirect,
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
+			SameSite: sameSite,
 			Expires:  time.Now().Add(10 * time.Minute),
 		})
 	}
