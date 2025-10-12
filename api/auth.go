@@ -214,6 +214,9 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 }
 
 func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
+	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
+		return nil, false
+	}
 	c, err := r.Cookie(h.Auth.CookieName)
 	if err != nil {
 		return nil, false
@@ -222,7 +225,6 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	if len(parts) != 2 {
 		return nil, false
 	}
-	// verify mac
 	mac := hmac.New(sha256.New, h.Auth.CookieKey)
 	mac.Write([]byte(parts[0]))
 	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
