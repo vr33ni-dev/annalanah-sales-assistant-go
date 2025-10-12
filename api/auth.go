@@ -111,6 +111,20 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
 
+	// store optional post-login redirect (frontend sends ?redirect=...)
+	if redirect := r.URL.Query().Get("redirect"); redirect != "" {
+		// make this HttpOnly so JS cannot read it; backend will read it on callback
+		http.SetCookie(w, &http.Cookie{
+			Name:     "post_login_redirect",
+			Value:    redirect,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  time.Now().Add(10 * time.Minute),
+		})
+	}
+
 	http.Redirect(w, r, h.Auth.OAuth.AuthCodeURL(state, oauth2.AccessTypeOnline), http.StatusFound)
 }
 
@@ -162,10 +176,26 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, domain, sameSite)
 	http.SetCookie(w, ck)
 
+	// prefer post_login_redirect cookie set in handleAuthStart, fallback to env
 	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
 	if redirectTo == "" {
 		redirectTo = "/"
 	}
+	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
+		redirectTo = rc.Value
+		// clear the cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "post_login_redirect",
+			Value:    "",
+			Path:     "/",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   sameSite == http.SameSiteNoneMode || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://"),
+			SameSite: sameSite,
+			Expires:  time.Unix(0, 0),
+		})
+	}
+
 	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
 
