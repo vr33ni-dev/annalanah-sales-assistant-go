@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -99,6 +100,8 @@ func (h *Handler) MountAuthRoutes(r chi.Router) {
 // --- Handlers ---
 
 func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
+	log.Printf("handleAuthStart: query redirect=%q remote=%s\n", r.URL.Query().Get("redirect"), r.RemoteAddr)
+
 	state := randState()
 	secure := strings.HasPrefix(os.Getenv("OAUTH_REDIRECT_URL"), "https://")
 	http.SetCookie(w, &http.Cookie{
@@ -129,6 +132,8 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	log.Printf("handleAuthCallback: rawQuery=%q remote=%s\n", r.URL.RawQuery, r.RemoteAddr)
+
 	// CSRF check
 	state := r.URL.Query().Get("state")
 	stateC, _ := r.Cookie("oauth_state")
@@ -200,6 +205,10 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	for _, c := range r.Cookies() {
+		log.Printf("handleLogout: cookie name=%s domain=%q path=%q secure=%v httpOnly=%v sameSite=%v len=%d\n",
+			c.Name, c.Domain, c.Path, c.Secure, c.HttpOnly, c.SameSite, len(c.Value))
+	}
 	domain := os.Getenv("COOKIE_DOMAIN") // empty on localhost
 	sameSite := http.SameSiteLaxMode
 	if domain != "" {
