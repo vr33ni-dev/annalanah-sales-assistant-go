@@ -201,6 +201,11 @@ func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
 // Middleware usable for protected routes.
 func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			// CORS middleware already set headers; just end the preflight.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if _, ok := h.parseSession(r); !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

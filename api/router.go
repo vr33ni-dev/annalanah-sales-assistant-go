@@ -12,23 +12,26 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
 
-	// Initialize auth using cfg values inside InitAuth (read envs there or accept cfg)
-	if err := h.InitAuth(); err != nil {
-		panic(err)
-	}
-
+	// 1) CORS first (outermost)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.CORSOrigins, // e.g. ["http://localhost:5002","https://vr33ni-dev.github.io"]
+		AllowedOrigins: []string{
+			"http://localhost:5002",
+			"https://vr33ni-dev.github.io",
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		ExposedHeaders:   []string{"Link"},
+		ExposedHeaders:   []string{},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
 
-	// public
-	r.Get("/health", h.health)
+	// 2) Global OPTIONS responder (lets preflights short-circuit cleanly)
+	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 
+	// 3) Public routes
+	r.Get("/health", h.health)
 	h.MountAuthRoutes(r) // /auth/google, /auth/google/callback, /api/me
 	h.MountDevRoutes(r)
 
