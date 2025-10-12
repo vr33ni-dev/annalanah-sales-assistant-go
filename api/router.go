@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/middleware"
@@ -14,41 +13,29 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
 
-	// Recover from panics -> avoids 502 from the platform and gives a 500 + log
+	// Recover so panics don’t become 502s
 	r.Use(middleware.Recoverer)
 
-	// (optional) tiny logger to see the flow
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("%s %s", r.Method, r.URL.Path)
-			next.ServeHTTP(w, r)
-		})
-	})
-
-	// 1) CORS first (outermost)
+	// CORS FIRST
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{
-			"http://localhost:5002",
-			"https://vr33ni-dev.github.io",
-		},
+		AllowedOrigins:   []string{"http://localhost:5002", "https://vr33ni-dev.github.io"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		ExposedHeaders:   []string{},
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.Options("/*", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-	// 2) Global OPTIONS responder (lets preflights short-circuit cleanly)
-	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+	// ✅ Init auth BEFORE mounting any route that uses it
+	if err := h.InitAuth(); err != nil {
+		panic(err) // or return nil / log.Fatal
+	}
 
-	// 3) Public routes
+	// Public
 	r.Get("/health", h.health)
-	h.MountAuthRoutes(r) // /auth/google, /auth/google/callback, /api/me
-	h.MountDevRoutes(r)
+	h.MountAuthRoutes(r)
 
-	// protected
+	// Protected
 	r.Route("/api", func(pr chi.Router) {
 		pr.Use(h.RequireAuth)
 
