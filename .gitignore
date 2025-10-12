@@ -7,6 +7,7 @@
 *.test
 *.out
 /bin/
+/server
 
 # IDE/editor
 .vscode/
@@ -24,3 +25,5 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.dev
+.env.prod

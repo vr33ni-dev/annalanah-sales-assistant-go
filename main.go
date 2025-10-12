@@ -4,30 +4,24 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-
-	"github.com/joho/godotenv"
 
 	"github.com/vr33ni-dev/sales-assistant/api"
 	"github.com/vr33ni-dev/sales-assistant/db"
 )
 
 func main() {
-	// load .env (no-op if missing)
-	_ = godotenv.Load()
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// connect to db
-	database := db.Connect()
+	// connect DB (pass the DSN so db.Connect doesn’t need to read env)
+	database := db.ConnectDSN(cfg.DatabaseURL)
 	defer database.Close()
 
-	// Build the router (we'll add auth mounting INSIDE api.NewRouter)
-	r := api.NewRouter(database)
+	// router
+	r := api.NewRouterWithConfig(database, cfg)
 
-	// start server
-	port := os.Getenv("PORT") // << use PORT, not DB_PORT
-	if port == "" {
-		port = "8080"
-	}
-	fmt.Printf("🚀 Server running on http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	fmt.Printf("🚀 %s server listening on :%s\n", cfg.AppEnv, cfg.Port)
+	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
 }

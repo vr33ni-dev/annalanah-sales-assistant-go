@@ -8,18 +8,17 @@ import (
 	"github.com/go-chi/cors"
 )
 
-func NewRouter(db *sql.DB) *chi.Mux {
+func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
 
-	// === Auth init (panic on misconfig during boot is fine) ===
+	// Initialize auth using cfg values inside InitAuth (read envs there or accept cfg)
 	if err := h.InitAuth(); err != nil {
 		panic(err)
 	}
 
-	// === CORS (dev: allow Vite on 5002). Keep credentials true for cookies. ===
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5002"}, // adjust/add prod origin(s) later
+		AllowedOrigins:   cfg.CORSOrigins, // e.g. ["http://localhost:5002","https://vr33ni-dev.github.io"]
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
@@ -27,14 +26,11 @@ func NewRouter(db *sql.DB) *chi.Mux {
 		MaxAge:           300,
 	}))
 
-	// === Public endpoints ===
-	// health
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	// public
+	r.Get("/health", h.health)
+	h.MountAuthRoutes(r) // /auth/google, /auth/google/callback, /api/me
 
-	// auth endpoints (+ /api/me)
-	h.MountAuthRoutes(r)
-
-	// === Protected API ===
+	// protected
 	r.Route("/api", func(pr chi.Router) {
 		pr.Use(h.RequireAuth)
 
@@ -76,3 +72,5 @@ func NewRouter(db *sql.DB) *chi.Mux {
 
 	return r
 }
+
+func (h *Handler) health(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }
