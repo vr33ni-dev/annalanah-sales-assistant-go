@@ -301,6 +301,8 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	mac := hmac.New(sha256.New, h.Auth.CookieKey)
 	mac.Write([]byte(parts[0]))
 	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
+		// Log mismatch to help debug multi-instance / key issues
+		log.Printf("parseSession: cookie signature mismatch for cookie=%s len(parts[0])=%d", h.Auth.CookieName, len(parts[0]))
 		return nil, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
