@@ -21,7 +21,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 
 	// CORS FIRST
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5002", "https://annalanah-sales-assistant-server-dev.onrender.com", "https://vr33ni-dev.github.io"},
+		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		AllowCredentials: true,
