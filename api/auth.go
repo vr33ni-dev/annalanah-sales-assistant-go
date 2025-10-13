@@ -210,6 +210,11 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			Expires:  time.Unix(0, 0),
 		})
 	}
+	if strings.Contains(redirectTo, "?") {
+		redirectTo = redirectTo + "&auth=1"
+	} else {
+		redirectTo = redirectTo + "?auth=1"
+	}
 
 	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
