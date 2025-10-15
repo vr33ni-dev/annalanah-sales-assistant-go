@@ -189,6 +189,10 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if ck.SameSite == http.SameSiteNoneMode {
 		ck.Secure = true
 	}
+
+	log.Printf("callback Set-Cookie domain=%q sameSite=%v secure=%v exp=%v",
+		ck.Domain, ck.SameSite, ck.Secure, ck.Expires)
+
 	http.SetCookie(w, ck)
 
 	// prefer post_login_redirect cookie set in handleAuthStart, fallback to env
@@ -209,11 +213,6 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			SameSite: sameSite,
 			Expires:  time.Unix(0, 0),
 		})
-	}
-	if strings.Contains(redirectTo, "?") {
-		redirectTo = redirectTo + "&auth=1"
-	} else {
-		redirectTo = redirectTo + "?auth=1"
 	}
 
 	http.Redirect(w, r, redirectTo, http.StatusFound)
