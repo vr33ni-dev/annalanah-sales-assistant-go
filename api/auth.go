@@ -219,7 +219,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	domain := os.Getenv("COOKIE_DOMAIN")
+	domain := os.Getenv("COOKIE_DOMAIN") // usually empty on Render
 
 	// emit multiple Set-Cookie variants to cover:
 	// - with domain / without domain
