@@ -13,19 +13,16 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	h := &Handler{DB: db}
 	r := chi.NewRouter()
 
-	// Log requests (important for production diagnosis)
+	// Middlewares (order matters)
 	r.Use(middleware.Logger)
-
-	// Recover so panics don’t become 502s
 	r.Use(middleware.Recoverer)
 
 	origins := cfg.CORSOrigins
 	if len(origins) == 0 {
-		// sensible defaults for local dev
 		origins = []string{"http://localhost:5002"}
 	}
 
-	// CORS FIRST
+	// CORS must be before routes
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowCredentials: true,
@@ -33,20 +30,28 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		MaxAge:           300,
 	}))
-	r.Options("/*", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-	// ✅ Init auth BEFORE mounting any route that uses it
+	// Global OPTIONS (keep it)
+	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	if err := h.InitAuth(); err != nil {
-		panic(err) // or return nil / log.Fatal
+		panic(err)
 	}
 
 	// Public
-	r.Get("/health", h.health)
+	// r.Get("/health", h.health)
 	h.MountAuthRoutes(r)
 
-	// Protected
+	// Protected API
 	r.Route("/api", func(pr chi.Router) {
 		pr.Use(h.RequireAuth)
+
+		// 🔴 Add this so preflights to /api/... always return 204
+		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
 
 		// Clients
 		pr.Get("/clients", h.ListClients)
@@ -63,7 +68,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Post("/contracts", h.CreateContract)
 		pr.Patch("/contracts/{id}", h.UpdateContract)
 
-		// Stages (Bühnen)
+		// Stages
 		pr.Get("/stages", h.ListStages)
 		pr.Post("/stages", h.CreateStage)
 		pr.Patch("/stages/{id}/stats", h.UpdateStageStats)
@@ -72,13 +77,13 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Post("/stages/{id}/participants", h.AddStageParticipant)
 		pr.Patch("/stages/{id}/participants/{participant_id}", h.UpdateStageParticipant)
 
-		// Assign client to stage
+		// Assign client
 		pr.Post("/stages/{id}/assign-client", h.AssignClientToStage)
 
 		// Cashflow
 		pr.Get("/cashflow/forecast", h.CashflowForecast)
 
-		// App settings
+		// Settings
 		pr.Get("/settings", h.ListSettings)
 		pr.Get("/settings/{key}", h.GetSetting)
 		pr.Put("/settings/{key}", h.UpsertSetting)
@@ -86,5 +91,3 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 
 	return r
 }
-
-func (h *Handler) health(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }
