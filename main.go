@@ -17,6 +17,8 @@ func main() {
 
 	// connect DB (pass the DSN so db.Connect doesn’t need to read env)
 	database := db.ConnectDSN(cfg.DatabaseURL)
+	log.Printf("DB: %q", cfg.DatabaseURL)
+
 	defer database.Close()
 
 	// router
