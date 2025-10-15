@@ -21,10 +21,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 
 	// CORS FIRST
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5002", "https://annalanah-sales-assistant-server-dev.onrender.com", "https://vr33ni-dev.github.io"},
+		AllowedOrigins:   []string{"http://localhost:5002", "https://annalanah-sales-assistant-server-dev.onrender.com", "https://annalanah-sales-assistant-react-dev.onrender.com"},
+		AllowCredentials: true,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		AllowCredentials: true,
 		MaxAge:           300,
 	}))
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
