@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -312,81 +313,111 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/sales/start
+// types you already have somewhere are fine; these keep the payload stable.
+type StartSalesProcessRequest struct {
+	Name               string  `json:"name"`
+	Email              string  `json:"email"`
+	Phone              string  `json:"phone"`
+	Source             string  `json:"source"` // "organic" | "paid"
+	SourceStageID      *int    `json:"source_stage_id,omitempty"`
+	ZweitgespraechDate *string `json:"zweitgespraech_date"`
+}
+
+type StartSalesProcessClient struct {
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+	Source        string `json:"source"`
+	SourceStageID *int   `json:"source_stage_id,omitempty"`
+}
+
+type StartSalesProcessDTO struct {
+	ID                   int     `json:"id"`
+	ClientID             int     `json:"client_id"`
+	Stage                string  `json:"stage"`
+	ZweitgespraechDate   *string `json:"zweitgespraech_date"`
+	ZweitgespraechResult *bool   `json:"zweitgespraech_result"`
+	Abschluss            *bool   `json:"abschluss"`
+	Revenue              *int    `json:"revenue"`
+	StageID              *int    `json:"stage_id"`
+}
+
+type StartSalesProcessResponse struct {
+	SalesProcessID int                     `json:"sales_process_id"`
+	Client         StartSalesProcessClient `json:"client"`
+	SalesProcess   StartSalesProcessDTO    `json:"sales_process"`
+}
+
 func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name               string  `json:"name"`
-		Email              string  `json:"email"`
-		Phone              string  `json:"phone"`
-		Source             string  `json:"source"` // "organic" | "paid"
-		SourceStageID      *int    `json:"source_stage_id,omitempty"`
-		ZweitgespraechDate *string `json:"zweitgespraech_date"`
-	}
+	var req StartSalesProcessRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	tx, err := h.DB.Begin()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "begin tx: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
 
-	// 1. Insert client
+	// 1) insert client
 	var clientID int
-	err = tx.QueryRow(
+	if err := tx.QueryRow(
 		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-	 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
-	 RETURNING id`,
+		 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
+		 RETURNING id`,
 		req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
-	).Scan(&clientID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	).Scan(&clientID); err != nil {
+		http.Error(w, "insert client: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 2. Insert sales process
+	// 2) insert sales process
 	var salesProcessID int
-	err = tx.QueryRow(
+	if err := tx.QueryRow(
 		`INSERT INTO sales_process (client_id, stage, zweitgespraech_date, stage_id)
-	 VALUES ($1, 'zweitgespraech', $2, $3) RETURNING id`,
+		 VALUES ($1, 'zweitgespraech', $2, $3)
+		 RETURNING id`,
 		clientID, req.ZweitgespraechDate, req.SourceStageID,
-	).Scan(&salesProcessID)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	).Scan(&salesProcessID); err != nil {
+		http.Error(w, "insert sales_process: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "commit: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 3. Response
-	resp := map[string]interface{}{
-		"sales_process_id": salesProcessID,
-		"client": map[string]interface{}{
-			"id":              clientID,
-			"name":            req.Name,
-			"email":           req.Email,
-			"phone":           req.Phone,
-			"source":          req.Source,
-			"source_stage_id": req.SourceStageID,
+	resp := StartSalesProcessResponse{
+		SalesProcessID: salesProcessID,
+		Client: StartSalesProcessClient{
+			ID:            clientID,
+			Name:          req.Name,
+			Email:         req.Email,
+			Phone:         req.Phone,
+			Source:        req.Source,
+			SourceStageID: req.SourceStageID,
 		},
-		"sales_process": map[string]interface{}{
-			"id":                    salesProcessID,
-			"client_id":             clientID,
-			"stage":                 "zweitgespraech",
-			"zweitgespraech_date":   req.ZweitgespraechDate,
-			"zweitgespraech_result": nil,
-			"abschluss":             nil,
-			"revenue":               nil,
-			"stage_id":              nil,
+		SalesProcess: StartSalesProcessDTO{
+			ID:                   salesProcessID,
+			ClientID:             clientID,
+			Stage:                "zweitgespraech",
+			ZweitgespraechDate:   req.ZweitgespraechDate,
+			ZweitgespraechResult: nil,
+			Abschluss:            nil,
+			Revenue:              nil,
+			StageID:              req.SourceStageID,
 		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(http.StatusCreated) // 201 + body
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		// last-ditch error path: headers are already sent; just log
+		log.Printf("encode StartSalesProcessResponse failed: %v", err)
+	}
 }
