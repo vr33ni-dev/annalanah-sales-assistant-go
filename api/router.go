@@ -19,9 +19,15 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	// Recover so panics don’t become 502s
 	r.Use(middleware.Recoverer)
 
+	origins := cfg.CORSOrigins
+	if len(origins) == 0 {
+		// sensible defaults for local dev
+		origins = []string{"http://localhost:5002"}
+	}
+
 	// CORS FIRST
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5002", "https://annalanah-sales-assistant-server-dev.onrender.com", "https://annalanah-sales-assistant-react-dev.onrender.com"},
+		AllowedOrigins:   origins,
 		AllowCredentials: true,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},

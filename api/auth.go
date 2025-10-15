@@ -219,45 +219,72 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	for _, c := range r.Cookies() {
-		log.Printf("handleLogout: cookie name=%s domain=%q path=%q secure=%v httpOnly=%v sameSite=%v len=%d\n",
-			c.Name, c.Domain, c.Path, c.Secure, c.HttpOnly, c.SameSite, len(c.Value))
-	}
-	domain := os.Getenv("COOKIE_DOMAIN") // empty on localhost
-	sameSite := http.SameSiteLaxMode
-	if domain != "" {
-		sameSite = http.SameSiteNoneMode
-	}
+	domain := os.Getenv("COOKIE_DOMAIN")
 
-	// clear cookie for both with-domain and without-domain and for secure=false/true
-	secureVariants := []bool{false, true}
-	for _, sec := range secureVariants {
-		// with domain
-		http.SetCookie(w, &http.Cookie{
+	// emit multiple Set-Cookie variants to cover:
+	// - with domain / without domain
+	// - SameSite=None (Secure) / SameSite=Lax
+	// - Secure true/false (browsers ignore for deletion identity, but we cover it)
+	expired := time.Unix(0, 0)
+
+	writeClears := func(withDomain bool, sameSite http.SameSite, secure bool) {
+		base := &http.Cookie{
 			Name:     h.Auth.CookieName,
 			Value:    "",
 			Path:     "/",
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: sameSite,
+			Expires:  expired,
+			MaxAge:   -1,
+		}
+		if withDomain && domain != "" {
+			base.Domain = domain
+		}
+		http.SetCookie(w, base)
+	}
+
+	// clear app_session in all common permutations
+	for _, withDomain := range []bool{false, true} {
+		for _, sameSite := range []http.SameSite{http.SameSiteLaxMode, http.SameSiteNoneMode} {
+			for _, secure := range []bool{false, true} {
+				// ensure Secure when SameSite=None to satisfy browsers
+				s := secure
+				if sameSite == http.SameSiteNoneMode {
+					s = true
+				}
+				writeClears(withDomain, sameSite, s)
+			}
+		}
+	}
+
+	// Optional: clear helper cookies set during auth
+	for _, name := range []string{"oauth_state", "post_login_redirect"} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			Expires:  expired,
+			MaxAge:   -1,
+			HttpOnly: name != "oauth_state", // oauth_state was not HttpOnly originally
+			Secure:   true,
+			SameSite: http.SameSiteNoneMode,
 			Domain:   domain,
-			HttpOnly: true,
-			Secure:   sec,
-			SameSite: sameSite,
-			Expires:  time.Unix(0, 0),
-			MaxAge:   -1,
 		})
-		// without domain
 		http.SetCookie(w, &http.Cookie{
-			Name:     h.Auth.CookieName,
+			Name:     name,
 			Value:    "",
 			Path:     "/",
-			HttpOnly: true,
-			Secure:   sec,
-			SameSite: sameSite,
-			Expires:  time.Unix(0, 0),
+			Expires:  expired,
 			MaxAge:   -1,
+			HttpOnly: name != "oauth_state",
 		})
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	// Return 200 JSON so some stacks don't drop Set-Cookie on 204
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
 func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
