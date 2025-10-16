@@ -46,6 +46,16 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	r.Get("/health", h.health)
 	h.MountAuthRoutes(r)
 
+	r.Get("/debug/cookies", func(w http.ResponseWriter, r *http.Request) {
+		type c struct{ Name, Value string }
+		var list []c
+		for _, ck := range r.Cookies() {
+			list = append(list, c{ck.Name, ck.Value})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(list)
+	})
+
 	// Protected API
 	r.Route("/api", func(pr chi.Router) {
 		if strings.ToLower(cfg.AppEnv) != "local" {
@@ -55,16 +65,6 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		// 🔴 Add this so preflights to /api/... always return 204
 		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
-		})
-
-		pr.Get("/debug/cookies", func(w http.ResponseWriter, r *http.Request) {
-			type c struct{ Name, Value string }
-			var list []c
-			for _, ck := range r.Cookies() {
-				list = append(list, c{ck.Name, ck.Value})
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(list)
 		})
 
 		// Clients
