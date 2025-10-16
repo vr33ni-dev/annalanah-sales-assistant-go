@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -192,6 +193,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("callback Set-Cookie domain=%q sameSite=%v secure=%v exp=%v",
 		ck.Domain, ck.SameSite, ck.Secure, ck.Expires)
+
 	ck.Partitioned = true
 	http.SetCookie(w, ck) // true in dev/prod on Render
 
@@ -215,7 +217,15 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	http.Redirect(w, r, redirectTo, http.StatusFound)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Optional, but sometimes helps caches/proxies
+	w.Header().Set("Cache-Control", "no-store")
+	page := fmt.Sprintf(`<!doctype html>
+<meta http-equiv="refresh" content="0;url=%[1]s">
+<script>window.location.assign(%q)</script>
+`, redirectTo, redirectTo)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(page))
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
