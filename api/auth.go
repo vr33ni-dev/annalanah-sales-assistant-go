@@ -50,7 +50,7 @@ func (h *Handler) InitAuth() error {
 		OAuth: &oauth2.Config{
 			ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-			RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),
+			RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"), // <- must be FRONTEND origin + /auth/google/callback
 			Scopes:       []string{"openid", "email", "profile"},
 			Endpoint:     google.Endpoint,
 		},
@@ -67,18 +67,19 @@ func (a *Auth) sign(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
-func (a *Auth) makeCookie(sess Session, domain string, sameSite http.SameSite) *http.Cookie {
+func (a *Auth) makeCookie(sess Session) *http.Cookie {
 	payload, _ := json.Marshal(sess)
 	enc := base64.RawURLEncoding.EncodeToString(payload)
 	token := enc + "." + a.sign([]byte(enc))
+
+	// First-party cookie on the frontend origin (host-only, no Domain)
 	return &http.Cookie{
 		Name:     a.CookieName,
 		Value:    token,
 		Path:     "/",
-		Domain:   domain,
 		HttpOnly: true,
-		Secure:   sameSite == http.SameSiteNoneMode || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://"),
-		SameSite: sameSite,
+		Secure:   true,                 // Render = HTTPS
+		SameSite: http.SameSiteLaxMode, // first-party
 		Expires:  sess.Exp,
 	}
 }
@@ -105,33 +106,25 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	state := randState()
 
-	// decide Secure / SameSite for prod cross-site flows
-	secure := strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://") || os.Getenv("APP_ENV") == "prod"
-	sameSite := http.SameSiteLaxMode
-	if secure {
-		sameSite = http.SameSiteNoneMode
-	}
-
-	// oauth_state cookie (not HttpOnly so browser sends it back on navigation)
+	// The callback and app live on the FRONTEND origin → cookie will be first-party
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
-		HttpOnly: false,
-		Secure:   secure,
-		SameSite: sameSite,
+		HttpOnly: false, // read by browser; sent back on nav
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
 
-	// store optional post-login redirect (frontend sends ?redirect=...)
 	if redirect := r.URL.Query().Get("redirect"); redirect != "" {
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
 			Value:    redirect,
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   secure,
-			SameSite: sameSite,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
 			Expires:  time.Now().Add(10 * time.Minute),
 		})
 	}
@@ -174,51 +167,36 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cookie settings per env
-	domain := os.Getenv("COOKIE_DOMAIN") // e.g. ".yourapp.com" in prod, empty in dev
-	sameSite := http.SameSiteLaxMode
-	if domain != "" || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://") || os.Getenv("APP_ENV") == "prod" {
-		sameSite = http.SameSiteNoneMode
-	}
-
+	// Issue first-party session cookie (host-only, Lax)
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
 		Exp:   time.Now().Add(12 * time.Hour),
-	}, domain, sameSite)
-	// ensure Secure when SameSite=None
-	if ck.SameSite == http.SameSiteNoneMode {
-		ck.Secure = true
-	}
+	})
+	http.SetCookie(w, ck)
 
-	log.Printf("callback Set-Cookie domain=%q sameSite=%v secure=%v exp=%v",
-		ck.Domain, ck.SameSite, ck.Secure, ck.Expires)
-
-	ck.Partitioned = true
-	http.SetCookie(w, ck) // true in dev/prod on Render
-
-	// prefer post_login_redirect cookie set in handleAuthStart, fallback to env
+	// Resolve redirect target
 	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
 	if redirectTo == "" {
 		redirectTo = "/"
 	}
 	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
 		redirectTo = rc.Value
-		// clear the cookie
+		// clear helper cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
 			Value:    "",
 			Path:     "/",
-			Domain:   domain,
 			HttpOnly: true,
-			Secure:   sameSite == http.SameSiteNoneMode || strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://"),
-			SameSite: sameSite,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
 			Expires:  time.Unix(0, 0),
+			MaxAge:   -1,
 		})
 	}
 
+	// Use HTML+JS redirect (avoids some caches swallowing Set-Cookie on 302)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Optional, but sometimes helps caches/proxies
 	w.Header().Set("Cache-Control", "no-store")
 	page := fmt.Sprintf(`<!doctype html>
 <meta http-equiv="refresh" content="0;url=%[1]s">
@@ -229,69 +207,33 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
-	domain := os.Getenv("COOKIE_DOMAIN") // usually empty on Render
-
-	// emit multiple Set-Cookie variants to cover:
-	// - with domain / without domain
-	// - SameSite=None (Secure) / SameSite=Lax
-	// - Secure true/false (browsers ignore for deletion identity, but we cover it)
 	expired := time.Unix(0, 0)
+	// Clear the host-only cookie (no Domain)
+	http.SetCookie(w, &http.Cookie{
+		Name:     h.Auth.CookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expired,
+		MaxAge:   -1,
+	})
 
-	writeClears := func(withDomain bool, sameSite http.SameSite, secure bool) {
-		base := &http.Cookie{
-			Name:     h.Auth.CookieName,
-			Value:    "",
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: sameSite,
-			Expires:  expired,
-			MaxAge:   -1,
-		}
-		if withDomain && domain != "" {
-			base.Domain = domain
-		}
-		http.SetCookie(w, base)
-	}
-
-	// clear app_session in all common permutations
-	for _, withDomain := range []bool{false} {
-		for _, sameSite := range []http.SameSite{http.SameSiteLaxMode, http.SameSiteNoneMode} {
-			for _, secure := range []bool{false} {
-				// ensure Secure when SameSite=None to satisfy browsers
-				s := secure
-				if sameSite == http.SameSiteNoneMode {
-					s = true
-				}
-				writeClears(withDomain, sameSite, s)
-			}
-		}
-	}
-
-	// Optional: clear helper cookies set during auth
+	// Also clear helper cookies
 	for _, name := range []string{"oauth_state", "post_login_redirect"} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
-			Expires:  expired,
-			MaxAge:   -1,
-			HttpOnly: name != "oauth_state", // oauth_state was not HttpOnly originally
-			Secure:   true,
-			SameSite: http.SameSiteNoneMode,
-			Domain:   domain,
-		})
-		http.SetCookie(w, &http.Cookie{
-			Name:     name,
-			Value:    "",
-			Path:     "/",
-			Expires:  expired,
-			MaxAge:   -1,
 			HttpOnly: name != "oauth_state",
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  expired,
+			MaxAge:   -1,
 		})
 	}
 
-	// Return 200 JSON so some stacks don't drop Set-Cookie on 204
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
@@ -307,7 +249,6 @@ func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(sess)
 }
 
-// Middleware usable for protected routes.
 func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -326,41 +267,26 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
 		return nil, false
 	}
-
-	var candidates []*http.Cookie
-	for _, ck := range r.Cookies() {
-		if ck.Name == h.Auth.CookieName {
-			candidates = append(candidates, ck)
-		}
-	}
-	if len(candidates) == 0 {
+	c, err := r.Cookie(h.Auth.CookieName)
+	if err != nil {
 		return nil, false
 	}
-
-	// try each candidate until one validates
-	for _, c := range candidates {
-		parts := strings.Split(c.Value, ".")
-		if len(parts) != 2 {
-			continue
-		}
-		mac := hmac.New(sha256.New, h.Auth.CookieKey)
-		mac.Write([]byte(parts[0]))
-		if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
-			continue // signature mismatch → try next cookie
-		}
-		raw, err := base64.RawURLEncoding.DecodeString(parts[0])
-		if err != nil {
-			continue
-		}
-		var s Session
-		if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
-			continue
-		}
-		// this one is valid
-		return &s, true
+	parts := strings.Split(c.Value, ".")
+	if len(parts) != 2 {
+		return nil, false
 	}
-
-	// optional: log once to help diagnose
-	log.Printf("parseSession: %d app_session cookies but none valid", len(candidates))
-	return nil, false
+	mac := hmac.New(sha256.New, h.Auth.CookieKey)
+	mac.Write([]byte(parts[0]))
+	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
+		return nil, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, false
+	}
+	var s Session
+	if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
+		return nil, false
+	}
+	return &s, true
 }
