@@ -326,28 +326,41 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
 		return nil, false
 	}
-	c, err := r.Cookie(h.Auth.CookieName)
-	if err != nil {
+
+	var candidates []*http.Cookie
+	for _, ck := range r.Cookies() {
+		if ck.Name == h.Auth.CookieName {
+			candidates = append(candidates, ck)
+		}
+	}
+	if len(candidates) == 0 {
 		return nil, false
 	}
-	parts := strings.Split(c.Value, ".")
-	if len(parts) != 2 {
-		return nil, false
+
+	// try each candidate until one validates
+	for _, c := range candidates {
+		parts := strings.Split(c.Value, ".")
+		if len(parts) != 2 {
+			continue
+		}
+		mac := hmac.New(sha256.New, h.Auth.CookieKey)
+		mac.Write([]byte(parts[0]))
+		if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
+			continue // signature mismatch → try next cookie
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil {
+			continue
+		}
+		var s Session
+		if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
+			continue
+		}
+		// this one is valid
+		return &s, true
 	}
-	mac := hmac.New(sha256.New, h.Auth.CookieKey)
-	mac.Write([]byte(parts[0]))
-	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
-		// Log mismatch to help debug multi-instance / key issues
-		log.Printf("parseSession: cookie signature mismatch for cookie=%s len(parts[0])=%d", h.Auth.CookieName, len(parts[0]))
-		return nil, false
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return nil, false
-	}
-	var s Session
-	if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
-		return nil, false
-	}
-	return &s, true
+
+	// optional: log once to help diagnose
+	log.Printf("parseSession: %d app_session cookies but none valid", len(candidates))
+	return nil, false
 }
