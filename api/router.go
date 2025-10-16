@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -54,6 +55,16 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		// 🔴 Add this so preflights to /api/... always return 204
 		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
+		})
+
+		pr.Get("/debug/cookies", func(w http.ResponseWriter, r *http.Request) {
+			type c struct{ Name, Value string }
+			var list []c
+			for _, ck := range r.Cookies() {
+				list = append(list, c{ck.Name, ck.Value})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(list)
 		})
 
 		// Clients
