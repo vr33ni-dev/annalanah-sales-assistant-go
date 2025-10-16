@@ -21,19 +21,17 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	// 1) Decide env
 	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
 	if env == "" {
-		env = "local" // default for your laptop
+		env = "local"
 	}
 
-	// 2) Load .env files only when running locally
-	// Order: .env (common) -> .env.{env} (specific)
-	// In cloud, skip these files and rely on real env vars.
-	_ = godotenv.Load(".env")
-	_ = godotenv.Overload(".env." + env)
+	// Only read .env files when running locally.
+	if env == "local" {
+		_ = godotenv.Load(".env")           // optional, shared defaults
+		_ = godotenv.Overload(".env.local") // laptop-only secrets
+	}
 
-	// 3) Read vars (OS env always wins)
 	cfg := &Config{
 		AppEnv:             env,
 		Port:               fallback(os.Getenv("PORT"), "8080"),
@@ -46,7 +44,6 @@ func LoadConfig() (*Config, error) {
 		PostLoginRedirect:  os.Getenv("POST_LOGIN_REDIRECT"),
 		CORSOrigins:        splitCSV(os.Getenv("CORS_ORIGINS")),
 	}
-
 	return cfg, nil
 }
 

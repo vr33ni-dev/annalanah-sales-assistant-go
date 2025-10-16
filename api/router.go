@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
@@ -10,7 +11,7 @@ import (
 )
 
 func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
-	h := &Handler{DB: db}
+	h := &Handler{DB: db, Cfg: cfg}
 	r := chi.NewRouter()
 
 	// Middlewares (order matters)
@@ -41,12 +42,14 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	}
 
 	// Public
-	// r.Get("/health", h.health)
+	r.Get("/health", h.health)
 	h.MountAuthRoutes(r)
 
 	// Protected API
 	r.Route("/api", func(pr chi.Router) {
-		pr.Use(h.RequireAuth)
+		if strings.ToLower(cfg.AppEnv) != "local" {
+			pr.Use(h.RequireAuth)
+		}
 
 		// 🔴 Add this so preflights to /api/... always return 204
 		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {

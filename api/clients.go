@@ -20,6 +20,7 @@ type Client struct {
 
 type Handler struct {
 	DB   *sql.DB
+	Cfg  *Config
 	Auth *Auth
 }
 
