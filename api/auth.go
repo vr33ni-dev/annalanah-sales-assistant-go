@@ -314,29 +314,40 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 
 func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
+		log.Printf("parseSession: auth not initialized")
 		return nil, false
 	}
 	c, err := r.Cookie(h.Auth.CookieName)
 	if err != nil {
+		log.Printf("parseSession: cookie %q not found (%v)", h.Auth.CookieName, err)
 		return nil, false
 	}
 	parts := strings.Split(c.Value, ".")
 	if len(parts) != 2 {
+		log.Printf("parseSession: invalid token parts=%d", len(parts))
 		return nil, false
 	}
+
 	mac := hmac.New(sha256.New, h.Auth.CookieKey)
 	mac.Write([]byte(parts[0]))
-	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
-		// Log mismatch to help debug multi-instance / key issues
-		log.Printf("parseSession: cookie signature mismatch for cookie=%s len(parts[0])=%d", h.Auth.CookieName, len(parts[0]))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if sig != parts[1] {
+		log.Printf("parseSession: cookie signature mismatch")
 		return nil, false
 	}
+
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
+		log.Printf("parseSession: base64 decode failed: %v", err)
 		return nil, false
 	}
 	var s Session
-	if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
+	if err := json.Unmarshal(raw, &s); err != nil {
+		log.Printf("parseSession: json unmarshal failed: %v", err)
+		return nil, false
+	}
+	if time.Now().After(s.Exp) {
+		log.Printf("parseSession: expired now=%v exp=%v", time.Now(), s.Exp)
 		return nil, false
 	}
 	return &s, true
