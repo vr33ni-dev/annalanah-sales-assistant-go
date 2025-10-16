@@ -192,8 +192,8 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("callback Set-Cookie domain=%q sameSite=%v secure=%v exp=%v",
 		ck.Domain, ck.SameSite, ck.Secure, ck.Expires)
-
-	http.SetCookie(w, ck)
+	ck.Partitioned = true
+	http.SetCookie(w, ck) // true in dev/prod on Render
 
 	// prefer post_login_redirect cookie set in handleAuthStart, fallback to env
 	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
@@ -245,9 +245,9 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// clear app_session in all common permutations
-	for _, withDomain := range []bool{false, true} {
+	for _, withDomain := range []bool{false} {
 		for _, sameSite := range []http.SameSite{http.SameSiteLaxMode, http.SameSiteNoneMode} {
-			for _, secure := range []bool{false, true} {
+			for _, secure := range []bool{false} {
 				// ensure Secure when SameSite=None to satisfy browsers
 				s := secure
 				if sameSite == http.SameSiteNoneMode {
@@ -314,40 +314,29 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 
 func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
-		log.Printf("parseSession: auth not initialized")
 		return nil, false
 	}
 	c, err := r.Cookie(h.Auth.CookieName)
 	if err != nil {
-		log.Printf("parseSession: cookie %q not found (%v)", h.Auth.CookieName, err)
 		return nil, false
 	}
 	parts := strings.Split(c.Value, ".")
 	if len(parts) != 2 {
-		log.Printf("parseSession: invalid token parts=%d", len(parts))
 		return nil, false
 	}
-
 	mac := hmac.New(sha256.New, h.Auth.CookieKey)
 	mac.Write([]byte(parts[0]))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if sig != parts[1] {
-		log.Printf("parseSession: cookie signature mismatch")
+	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
+		// Log mismatch to help debug multi-instance / key issues
+		log.Printf("parseSession: cookie signature mismatch for cookie=%s len(parts[0])=%d", h.Auth.CookieName, len(parts[0]))
 		return nil, false
 	}
-
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		log.Printf("parseSession: base64 decode failed: %v", err)
 		return nil, false
 	}
 	var s Session
-	if err := json.Unmarshal(raw, &s); err != nil {
-		log.Printf("parseSession: json unmarshal failed: %v", err)
-		return nil, false
-	}
-	if time.Now().After(s.Exp) {
-		log.Printf("parseSession: expired now=%v exp=%v", time.Now(), s.Exp)
+	if json.Unmarshal(raw, &s) != nil || time.Now().After(s.Exp) {
 		return nil, false
 	}
 	return &s, true
