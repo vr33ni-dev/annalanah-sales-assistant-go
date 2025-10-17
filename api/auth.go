@@ -167,7 +167,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	secure := isSecure(r)
 	sameSite := http.SameSiteLaxMode
 
-	// --- CSRF / state check ---
+	// CSRF check
 	state := r.URL.Query().Get("state")
 	stateC, _ := r.Cookie("oauth_state")
 	if state == "" || stateC == nil || state != stateC.Value {
@@ -175,7 +175,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Exchange code for tokens ---
+	// Exchange code
 	code := r.URL.Query().Get("code")
 	tok, err := h.Auth.OAuth.Exchange(r.Context(), code)
 	if err != nil {
@@ -183,7 +183,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Verify ID token & audience ---
+	// Verify ID token
 	rawID, _ := tok.Extra("id_token").(string)
 	payload, err := idtoken.Validate(r.Context(), rawID, h.Auth.OAuth.ClientID)
 	if err != nil {
@@ -200,7 +200,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Issue first-party session cookie (host-only, Lax) ---
+	// Issue session cookie (host-only, first-party)
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
@@ -208,87 +208,45 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, secure)
 	http.SetCookie(w, ck)
 
-	// (Optional) clear oauth_state cookie now that it served its purpose
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: false,
-		Secure:   secure,
-		SameSite: sameSite,
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-	})
+	// Resolve redirect target (prefer query param, then cookie, then env, then "/")
+	redirectParam := r.URL.Query().Get("redirect")
+	var redirectTo string
 
-	// --- Resolve redirect target ---
-	finalURL := os.Getenv("POST_LOGIN_REDIRECT")
-	if finalURL == "" {
-		finalURL = "/"
-	}
-	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
-		finalURL = rc.Value
-		// clear helper cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     "post_login_redirect",
-			Value:    "",
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: sameSite,
-			Expires:  time.Unix(0, 0),
-			MaxAge:   -1,
-		})
-	}
-
-	// --- Response headers helpful with proxies/CDNs ---
-	w.Header().Set("X-App", "go-backend")
-	w.Header().Set("X-From", "handleAuthCallback")
-	w.Header().Set("Location", finalURL) // informative; we still render HTML below
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-
-	// --- Optional debug page: add &oauth_debug=1 (or &debug=1) to auth start URL ---
-	if r.URL.Query().Get("oauth_debug") == "1" || r.URL.Query().Get("debug") == "1" {
-		var b strings.Builder
-		b.WriteString("<!doctype html><meta charset=\"utf-8\"><title>OAuth Debug</title>")
-		fmt.Fprintf(&b, "<h1>OAuth callback debug</h1><p><b>finalURL</b>: %s</p>", finalURL)
-		b.WriteString("<h2>Request cookies</h2><ul>")
-		for _, c := range r.Cookies() {
-			fmt.Fprintf(&b, "<li><code>%s</code> = <code>%s</code></li>", c.Name, c.Value)
+	switch {
+	case redirectParam != "":
+		redirectTo = redirectParam
+	default:
+		if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
+			redirectTo = rc.Value
+			// clear helper cookie
+			http.SetCookie(w, &http.Cookie{
+				Name:     "post_login_redirect",
+				Value:    "",
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   secure,
+				SameSite: sameSite,
+				Expires:  time.Unix(0, 0),
+				MaxAge:   -1,
+			})
 		}
-		b.WriteString("</ul>")
-		b.WriteString("<p>Click to continue: ")
-		fmt.Fprintf(&b, `<a href="%s">%s</a></p>`, finalURL, finalURL)
-		b.WriteString("<script>console.log('oauth_debug: not auto-redirecting');</script>")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(b.String()))
-		return
 	}
 
-	// --- Normal redirect: use HTML meta+JS to avoid Set-Cookie being swallowed on 302s ---
-	page := fmt.Sprintf(`<!doctype html>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="0;url=%[1]s">
-<p>Redirecting to <a href="%[1]s">%[1]s</a>…</p>
-<script>
-  try {
-    const url = %q;
-    if (window.opener && !window.opener.closed) {
-      window.opener.location.assign(url);
-      window.close();
-    } else if (window.parent && window.parent !== window) {
-      window.parent.location.assign(url);
-    } else {
-      window.location.assign(url);
-    }
-  } catch (e) {
-    // best effort fallback
-    location.href = %q;
-  }
-</script>
-`, finalURL, finalURL, finalURL)
+	if redirectTo == "" {
+		redirectTo = os.Getenv("POST_LOGIN_REDIRECT")
+	}
+	if redirectTo == "" {
+		redirectTo = "/"
+	}
 
+	log.Printf("auth callback redirecting to: %q (param=%q, env=%q)", redirectTo, redirectParam, os.Getenv("POST_LOGIN_REDIRECT"))
+
+	// HTML+JS redirect so Set-Cookie isn't dropped by 302
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	page := fmt.Sprintf(`<!doctype html>
+<meta http-equiv="refresh" content="0;url=%[1]s">
+<script>window.location.assign(%q)</script>`, redirectTo, redirectTo)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(page))
 }
