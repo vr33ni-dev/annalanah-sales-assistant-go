@@ -182,14 +182,13 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	email, _ := payload.Claims["email"].(string)
 	name, _ := payload.Claims["name"].(string)
 	verified, _ := payload.Claims["email_verified"].(bool)
-
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !verified || !h.Auth.Allowed[email] {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
-	// --- Issue first-party session cookie (host-only, Lax) ---
+	// --- Issue first-party session cookie ---
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
@@ -197,19 +196,48 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, secure)
 	http.SetCookie(w, ck)
 
-	// --- Resolve redirect target (ALWAYS absolute on Render) ---
-	// 1) Start with env fallback (should be your FRONTEND URL, e.g. https://your-frontend/ )
-	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
-	if redirectTo == "" {
-		// Safety: if env is missing, default to your frontend base.
-		// Replace the value below with your actual frontend URL if different.
-		redirectTo = "https://annalanah-sales-assistant-react-dev.onrender.com/"
+	// --- Build absolute redirect to FRONTEND ONLY ---
+	frontendBase := strings.TrimRight(os.Getenv("POST_LOGIN_REDIRECT"), "/")
+	if frontendBase == "" {
+		// hard fallback to your React app
+		frontendBase = "https://annalanah-sales-assistant-react-dev.onrender.com"
 	}
 
-	// 2) Prefer short-lived cookie set in /auth/google start
+	finalURL := frontendBase + "/" // default
+
 	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
-		redirectTo = rc.Value
-		// Clear helper cookie
+		val := rc.Value
+
+		// If relative path (starts with /), join to frontend base
+		if strings.HasPrefix(val, "/") {
+			finalURL = frontendBase + val
+		} else {
+			// If absolute, keep only the path+query (force host to frontend)
+			// Simple, defensive parse: look for "://", then take the first slash after host
+			if i := strings.Index(val, "://"); i != -1 {
+				// find first '/' after scheme://host
+				if j := strings.Index(val[i+3:], "/"); j != -1 {
+					pathAndQuery := val[i+3+j:] // from first '/' after host to end
+					if strings.HasPrefix(pathAndQuery, "/") {
+						finalURL = frontendBase + pathAndQuery
+					} else {
+						finalURL = frontendBase + "/" + pathAndQuery
+					}
+				} else {
+					// absolute but no path → send to frontend root
+					finalURL = frontendBase + "/"
+				}
+			} else {
+				// not absolute, not starting with '/' → treat as path fragment
+				if strings.HasPrefix(val, "?") || strings.HasPrefix(val, "#") {
+					finalURL = frontendBase + "/" + val
+				} else {
+					finalURL = frontendBase + "/" + val
+				}
+			}
+		}
+
+		// clear helper cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
 			Value:    "",
@@ -222,36 +250,18 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// 3) Normalize:
-	//    - If it's relative like "/dashboard", prefix with frontend base from env.
-	//    - If it's absolute but not http/https, ignore and fall back.
-	if strings.HasPrefix(redirectTo, "/") {
-		base := os.Getenv("POST_LOGIN_REDIRECT")
-		if base == "" {
-			base = "https://annalanah-sales-assistant-react-dev.onrender.com"
-		}
-		base = strings.TrimRight(base, "/")
-		redirectTo = base + redirectTo
-	} else if !(strings.HasPrefix(redirectTo, "https://") || strings.HasPrefix(redirectTo, "http://")) {
-		// Unexpected scheme → fall back to frontend base
-		redirectTo = os.Getenv("POST_LOGIN_REDIRECT")
-		if redirectTo == "" {
-			redirectTo = "https://annalanah-sales-assistant-react-dev.onrender.com/"
-		}
-	}
+	// Debug helpers: see the chosen target in DevTools → Network
+	w.Header().Set("X-Redirect-To", finalURL)
+	// Some agents follow Location even on 200; harmless and helps debugging
+	w.Header().Set("Location", finalURL)
 
-	// Expose final decision for debugging in DevTools → Network
-	w.Header().Set("X-Redirect-To", redirectTo)
-
-	// --- HTML+JS redirect (keeps Set-Cookie reliable vs. some proxies/302) ---
+	// --- HTML+JS redirect keeps Set-Cookie reliable vs some proxies/302s ---
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-
 	page := fmt.Sprintf(`<!doctype html>
 <meta http-equiv="refresh" content="0;url=%[1]s">
 <script>window.location.assign(%q)</script>
-`, redirectTo, redirectTo)
-
+`, finalURL, finalURL)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(page))
 }
