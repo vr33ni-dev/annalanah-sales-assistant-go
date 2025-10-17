@@ -123,12 +123,24 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	secure := isSecure(r)
 	sameSite := http.SameSiteLaxMode
 
-	// The callback and app live on the FRONTEND origin → cookie will be first-party
+	// optional debug flag
+	if r.URL.Query().Get("debug") == "1" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "oauth_debug",
+			Value:    "1",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: sameSite,
+			Expires:  time.Now().Add(5 * time.Minute),
+		})
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
-		HttpOnly: false, // read by browser; sent back on nav
+		HttpOnly: false,
 		Secure:   secure,
 		SameSite: sameSite,
 		Expires:  time.Now().Add(10 * time.Minute),
@@ -155,7 +167,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	secure := isSecure(r)
 	sameSite := http.SameSiteLaxMode
 
-	// --- CSRF: validate state ---
+	// --- CSRF / state check ---
 	state := r.URL.Query().Get("state")
 	stateC, _ := r.Cookie("oauth_state")
 	if state == "" || stateC == nil || state != stateC.Value {
@@ -171,7 +183,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Verify Google ID token ---
+	// --- Verify ID token & audience ---
 	rawID, _ := tok.Extra("id_token").(string)
 	payload, err := idtoken.Validate(r.Context(), rawID, h.Auth.OAuth.ClientID)
 	if err != nil {
@@ -188,7 +200,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Issue first-party session cookie ---
+	// --- Issue first-party session cookie (host-only, Lax) ---
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
@@ -196,47 +208,25 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, secure)
 	http.SetCookie(w, ck)
 
-	// --- Build absolute redirect to FRONTEND ONLY ---
-	frontendBase := strings.TrimRight(os.Getenv("POST_LOGIN_REDIRECT"), "/")
-	if frontendBase == "" {
-		// hard fallback to your React app
-		frontendBase = "https://annalanah-sales-assistant-react-dev.onrender.com"
+	// (Optional) clear oauth_state cookie now that it served its purpose
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: sameSite,
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+	})
+
+	// --- Resolve redirect target ---
+	finalURL := os.Getenv("POST_LOGIN_REDIRECT")
+	if finalURL == "" {
+		finalURL = "/"
 	}
-
-	finalURL := frontendBase + "/" // default
-
 	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
-		val := rc.Value
-
-		// If relative path (starts with /), join to frontend base
-		if strings.HasPrefix(val, "/") {
-			finalURL = frontendBase + val
-		} else {
-			// If absolute, keep only the path+query (force host to frontend)
-			// Simple, defensive parse: look for "://", then take the first slash after host
-			if i := strings.Index(val, "://"); i != -1 {
-				// find first '/' after scheme://host
-				if j := strings.Index(val[i+3:], "/"); j != -1 {
-					pathAndQuery := val[i+3+j:] // from first '/' after host to end
-					if strings.HasPrefix(pathAndQuery, "/") {
-						finalURL = frontendBase + pathAndQuery
-					} else {
-						finalURL = frontendBase + "/" + pathAndQuery
-					}
-				} else {
-					// absolute but no path → send to frontend root
-					finalURL = frontendBase + "/"
-				}
-			} else {
-				// not absolute, not starting with '/' → treat as path fragment
-				if strings.HasPrefix(val, "?") || strings.HasPrefix(val, "#") {
-					finalURL = frontendBase + "/" + val
-				} else {
-					finalURL = frontendBase + "/" + val
-				}
-			}
-		}
-
+		finalURL = rc.Value
 		// clear helper cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
@@ -250,18 +240,55 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Debug helpers: see the chosen target in DevTools → Network
-	w.Header().Set("X-Redirect-To", finalURL)
-	// Some agents follow Location even on 200; harmless and helps debugging
-	w.Header().Set("Location", finalURL)
-
-	// --- HTML+JS redirect keeps Set-Cookie reliable vs some proxies/302s ---
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// --- Response headers helpful with proxies/CDNs ---
+	w.Header().Set("X-App", "go-backend")
+	w.Header().Set("X-From", "handleAuthCallback")
+	w.Header().Set("Location", finalURL) // informative; we still render HTML below
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
+	// --- Optional debug page: add &oauth_debug=1 (or &debug=1) to auth start URL ---
+	if r.URL.Query().Get("oauth_debug") == "1" || r.URL.Query().Get("debug") == "1" {
+		var b strings.Builder
+		b.WriteString("<!doctype html><meta charset=\"utf-8\"><title>OAuth Debug</title>")
+		fmt.Fprintf(&b, "<h1>OAuth callback debug</h1><p><b>finalURL</b>: %s</p>", finalURL)
+		b.WriteString("<h2>Request cookies</h2><ul>")
+		for _, c := range r.Cookies() {
+			fmt.Fprintf(&b, "<li><code>%s</code> = <code>%s</code></li>", c.Name, c.Value)
+		}
+		b.WriteString("</ul>")
+		b.WriteString("<p>Click to continue: ")
+		fmt.Fprintf(&b, `<a href="%s">%s</a></p>`, finalURL, finalURL)
+		b.WriteString("<script>console.log('oauth_debug: not auto-redirecting');</script>")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(b.String()))
+		return
+	}
+
+	// --- Normal redirect: use HTML meta+JS to avoid Set-Cookie being swallowed on 302s ---
 	page := fmt.Sprintf(`<!doctype html>
+<meta charset="utf-8">
 <meta http-equiv="refresh" content="0;url=%[1]s">
-<script>window.location.assign(%q)</script>
-`, finalURL, finalURL)
+<p>Redirecting to <a href="%[1]s">%[1]s</a>…</p>
+<script>
+  try {
+    const url = %q;
+    if (window.opener && !window.opener.closed) {
+      window.opener.location.assign(url);
+      window.close();
+    } else if (window.parent && window.parent !== window) {
+      window.parent.location.assign(url);
+    } else {
+      window.location.assign(url);
+    }
+  } catch (e) {
+    // best effort fallback
+    location.href = %q;
+  }
+</script>
+`, finalURL, finalURL, finalURL)
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(page))
 }
