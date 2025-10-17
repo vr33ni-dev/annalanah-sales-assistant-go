@@ -19,6 +19,14 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	// 🔎 Marker middleware so you can verify requests hit the Go backend
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("X-App", "go-backend")
+			next.ServeHTTP(w, req)
+		})
+	})
+
 	origins := cfg.CORSOrigins
 	if len(origins) == 0 {
 		origins = []string{"http://localhost:5002"}
@@ -53,7 +61,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 			list = append(list, c{ck.Name, ck.Value})
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
+		_ = json.NewEncoder(w).Encode(list)
 	})
 
 	// Protected API
@@ -62,7 +70,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 			pr.Use(h.RequireAuth)
 		}
 
-		// 🔴 Add this so preflights to /api/... always return 204
+		// Preflights to /api/... always return 204
 		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		})
