@@ -152,10 +152,10 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	log.Printf("handleAuthCallback: rawQuery=%q remote=%s\n", r.URL.RawQuery, r.RemoteAddr)
 
-	secure := isSecure(r) // ⬅️ compute per-request
+	secure := isSecure(r)
 	sameSite := http.SameSiteLaxMode
 
-	// CSRF check
+	// --- CSRF: validate state ---
 	state := r.URL.Query().Get("state")
 	stateC, _ := r.Cookie("oauth_state")
 	if state == "" || stateC == nil || state != stateC.Value {
@@ -163,6 +163,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Exchange code for tokens ---
 	code := r.URL.Query().Get("code")
 	tok, err := h.Auth.OAuth.Exchange(r.Context(), code)
 	if err != nil {
@@ -170,7 +171,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify Google ID token signature & audience
+	// --- Verify Google ID token ---
 	rawID, _ := tok.Extra("id_token").(string)
 	payload, err := idtoken.Validate(r.Context(), rawID, h.Auth.OAuth.ClientID)
 	if err != nil {
@@ -181,13 +182,14 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	email, _ := payload.Claims["email"].(string)
 	name, _ := payload.Claims["name"].(string)
 	verified, _ := payload.Claims["email_verified"].(bool)
+
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !verified || !h.Auth.Allowed[email] {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
 
-	// Issue first-party session cookie (host-only, Lax)
+	// --- Issue first-party session cookie (host-only, Lax) ---
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
@@ -195,14 +197,19 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, secure)
 	http.SetCookie(w, ck)
 
-	// Resolve redirect target
+	// --- Resolve redirect target (ALWAYS absolute on Render) ---
+	// 1) Start with env fallback (should be your FRONTEND URL, e.g. https://your-frontend/ )
 	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
 	if redirectTo == "" {
-		redirectTo = "/"
+		// Safety: if env is missing, default to your frontend base.
+		// Replace the value below with your actual frontend URL if different.
+		redirectTo = "https://annalanah-sales-assistant-react-dev.onrender.com/"
 	}
+
+	// 2) Prefer short-lived cookie set in /auth/google start
 	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
 		redirectTo = rc.Value
-		// clear helper cookie
+		// Clear helper cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     "post_login_redirect",
 			Value:    "",
@@ -215,13 +222,36 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Use HTML+JS redirect (avoids some caches swallowing Set-Cookie on 302)
+	// 3) Normalize:
+	//    - If it's relative like "/dashboard", prefix with frontend base from env.
+	//    - If it's absolute but not http/https, ignore and fall back.
+	if strings.HasPrefix(redirectTo, "/") {
+		base := os.Getenv("POST_LOGIN_REDIRECT")
+		if base == "" {
+			base = "https://annalanah-sales-assistant-react-dev.onrender.com"
+		}
+		base = strings.TrimRight(base, "/")
+		redirectTo = base + redirectTo
+	} else if !(strings.HasPrefix(redirectTo, "https://") || strings.HasPrefix(redirectTo, "http://")) {
+		// Unexpected scheme → fall back to frontend base
+		redirectTo = os.Getenv("POST_LOGIN_REDIRECT")
+		if redirectTo == "" {
+			redirectTo = "https://annalanah-sales-assistant-react-dev.onrender.com/"
+		}
+	}
+
+	// Expose final decision for debugging in DevTools → Network
+	w.Header().Set("X-Redirect-To", redirectTo)
+
+	// --- HTML+JS redirect (keeps Set-Cookie reliable vs. some proxies/302) ---
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+
 	page := fmt.Sprintf(`<!doctype html>
 <meta http-equiv="refresh" content="0;url=%[1]s">
 <script>window.location.assign(%q)</script>
 `, redirectTo, redirectTo)
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(page))
 }
