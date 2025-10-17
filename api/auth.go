@@ -235,19 +235,27 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
 
+// in auth.go
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	expired := time.Unix(0, 0)
-	// Clear the host-only cookie (no Domain)
-	http.SetCookie(w, &http.Cookie{
-		Name:     h.Auth.CookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  expired,
-		MaxAge:   -1,
-	})
+	secure := isSecure(r)
+
+	wipe := func(sameSite http.SameSite) {
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.Auth.CookieName,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   secure || sameSite == http.SameSiteNoneMode, // required when None
+			SameSite: sameSite,
+			Expires:  expired,
+			MaxAge:   -1,
+		})
+	}
+
+	// Clear the common permutations (host-only)
+	wipe(http.SameSiteLaxMode)
+	wipe(http.SameSiteNoneMode)
 
 	// Also clear helper cookies
 	for _, name := range []string{"oauth_state", "post_login_redirect"} {
@@ -256,7 +264,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 			Value:    "",
 			Path:     "/",
 			HttpOnly: name != "oauth_state",
-			Secure:   true,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  expired,
 			MaxAge:   -1,
