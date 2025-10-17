@@ -67,18 +67,33 @@ func (a *Auth) sign(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
-func (a *Auth) makeCookie(sess Session) *http.Cookie {
+func isSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	// fallbacks for envs
+	if strings.HasPrefix(os.Getenv("OAUTH_REDIRECT_URL"), "https://") {
+		return true
+	}
+	if strings.HasPrefix(os.Getenv("POST_LOGIN_REDIRECT"), "https://") {
+		return true
+	}
+	return false
+}
+
+func (a *Auth) makeCookie(sess Session, secure bool) *http.Cookie {
 	payload, _ := json.Marshal(sess)
 	enc := base64.RawURLEncoding.EncodeToString(payload)
 	token := enc + "." + a.sign([]byte(enc))
-
-	// First-party cookie on the frontend origin (host-only, no Domain)
 	return &http.Cookie{
 		Name:     a.CookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,                 // Render = HTTPS
+		Secure:   secure,               // ⬅️ no longer hardcoded true
 		SameSite: http.SameSiteLaxMode, // first-party
 		Expires:  sess.Exp,
 	}
@@ -105,6 +120,8 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	log.Printf("handleAuthStart: query redirect=%q remote=%s\n", r.URL.Query().Get("redirect"), r.RemoteAddr)
 
 	state := randState()
+	secure := isSecure(r)
+	sameSite := http.SameSiteLaxMode
 
 	// The callback and app live on the FRONTEND origin → cookie will be first-party
 	http.SetCookie(w, &http.Cookie{
@@ -112,8 +129,8 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		Value:    state,
 		Path:     "/",
 		HttpOnly: false, // read by browser; sent back on nav
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		SameSite: sameSite,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
 
@@ -123,8 +140,8 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 			Value:    redirect,
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteLaxMode,
+			Secure:   secure,
+			SameSite: sameSite,
 			Expires:  time.Now().Add(10 * time.Minute),
 		})
 	}
@@ -134,6 +151,9 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	log.Printf("handleAuthCallback: rawQuery=%q remote=%s\n", r.URL.RawQuery, r.RemoteAddr)
+
+	secure := isSecure(r) // ⬅️ compute per-request
+	sameSite := http.SameSiteLaxMode
 
 	// CSRF check
 	state := r.URL.Query().Get("state")
@@ -172,7 +192,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Email: email,
 		Name:  name,
 		Exp:   time.Now().Add(12 * time.Hour),
-	})
+	}, secure)
 	http.SetCookie(w, ck)
 
 	// Resolve redirect target
@@ -188,8 +208,8 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteLaxMode,
+			Secure:   secure,
+			SameSite: sameSite,
 			Expires:  time.Unix(0, 0),
 			MaxAge:   -1,
 		})
