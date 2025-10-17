@@ -19,7 +19,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// 🔎 Marker middleware so you can verify requests hit the Go backend
+	// marker header to confirm requests hit Go backend
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("X-App", "go-backend")
@@ -41,7 +41,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		MaxAge:           300,
 	}))
 
-	// Global OPTIONS (keep it)
+	// Global OPTIONS
 	r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -53,6 +53,13 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	// Public
 	r.Get("/health", h.health)
 	h.MountAuthRoutes(r)
+
+	// ✅ Add this: make backend "/" respond 200 so health probes don't 405
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 
 	r.Get("/debug/cookies", func(w http.ResponseWriter, r *http.Request) {
 		type c struct{ Name, Value string }
