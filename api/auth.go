@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -162,12 +161,13 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	log.Printf("handleAuthCallback: rawQuery=%q remote=%s\n", r.URL.RawQuery, r.RemoteAddr)
+	log.Printf("handleAuthCallback: host=%q xf-host=%q proto=%q rawQuery=%q remote=%s",
+		r.Host, r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"), r.URL.RawQuery, r.RemoteAddr)
 
 	secure := isSecure(r)
 	sameSite := http.SameSiteLaxMode
 
-	// CSRF check
+	// --- CSRF state check
 	state := r.URL.Query().Get("state")
 	stateC, _ := r.Cookie("oauth_state")
 	if state == "" || stateC == nil || state != stateC.Value {
@@ -175,7 +175,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange code
+	// --- Exchange code
 	code := r.URL.Query().Get("code")
 	tok, err := h.Auth.OAuth.Exchange(r.Context(), code)
 	if err != nil {
@@ -183,7 +183,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify ID token
+	// --- Verify ID token
 	rawID, _ := tok.Extra("id_token").(string)
 	payload, err := idtoken.Validate(r.Context(), rawID, h.Auth.OAuth.ClientID)
 	if err != nil {
@@ -200,7 +200,7 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue session cookie (host-only, first-party)
+	// --- Issue session cookie (host-only on FRONTEND origin)
 	ck := h.Auth.makeCookie(Session{
 		Email: email,
 		Name:  name,
@@ -208,47 +208,31 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}, secure)
 	http.SetCookie(w, ck)
 
-	// Resolve redirect target (prefer query param, then cookie, then env, then "/")
-	redirectParam := r.URL.Query().Get("redirect")
-	var redirectTo string
-
-	switch {
-	case redirectParam != "":
-		redirectTo = redirectParam
-	default:
-		if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
-			redirectTo = rc.Value
-			// clear helper cookie
-			http.SetCookie(w, &http.Cookie{
-				Name:     "post_login_redirect",
-				Value:    "",
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   secure,
-				SameSite: sameSite,
-				Expires:  time.Unix(0, 0),
-				MaxAge:   -1,
-			})
-		}
-	}
-
-	if redirectTo == "" {
-		redirectTo = os.Getenv("POST_LOGIN_REDIRECT")
-	}
+	// --- Decide final redirect target
+	redirectTo := os.Getenv("POST_LOGIN_REDIRECT")
 	if redirectTo == "" {
 		redirectTo = "/"
 	}
+	if rc, err := r.Cookie("post_login_redirect"); err == nil && rc.Value != "" {
+		redirectTo = rc.Value
+		// clear helper cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "post_login_redirect",
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: sameSite,
+			Expires:  time.Unix(0, 0),
+			MaxAge:   -1,
+		})
+	}
 
-	log.Printf("auth callback redirecting to: %q (param=%q, env=%q)", redirectTo, redirectParam, os.Getenv("POST_LOGIN_REDIRECT"))
+	log.Printf("auth callback 302 → %q (Host=%q)", redirectTo, r.Host)
 
-	// HTML+JS redirect so Set-Cookie isn't dropped by 302
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// --- 302 redirect straight to SPA (avoid HTML parsing)
 	w.Header().Set("Cache-Control", "no-store")
-	page := fmt.Sprintf(`<!doctype html>
-<meta http-equiv="refresh" content="0;url=%[1]s">
-<script>window.location.assign(%q)</script>`, redirectTo, redirectTo)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(page))
+	http.Redirect(w, r, redirectTo, http.StatusFound)
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
