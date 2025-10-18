@@ -110,8 +110,14 @@ func randState() string {
 func (h *Handler) MountAuthRoutes(r chi.Router) {
 	r.Get("/auth/google", h.handleAuthStart)
 	r.Get("/auth/google/callback", h.handleAuthCallback)
-	r.Post("/auth/logout", h.handleLogout)
 	r.Get("/api/me", h.meHandler)
+
+	// allow both; same handler
+	r.MethodFunc(http.MethodGet, "/auth/logout", h.handleLogout)
+	r.MethodFunc(http.MethodPost, "/auth/logout", h.handleLogout)
+
+	r.Get("/api/me", h.meHandler)
+
 }
 
 // --- Handlers ---
@@ -245,7 +251,6 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	)))
 }
 
-// in auth.go
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	expired := time.Unix(0, 0)
 	secure := isSecure(r)
@@ -256,18 +261,17 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   secure || sameSite == http.SameSiteNoneMode, // required when None
+			Secure:   secure || sameSite == http.SameSiteNoneMode,
 			SameSite: sameSite,
 			Expires:  expired,
 			MaxAge:   -1,
 		})
 	}
-
-	// Clear the common permutations (host-only)
+	// clear common permutations
 	wipe(http.SameSiteLaxMode)
 	wipe(http.SameSiteNoneMode)
 
-	// Also clear helper cookies
+	// helper cookies
 	for _, name := range []string{"oauth_state", "post_login_redirect"} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
@@ -281,6 +285,13 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// If browser navigated via GET → send them to the SPA login screen.
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, "/login?auth=logged_out", http.StatusFound)
+		return
+	}
+
+	// XHR POST case → return JSON
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
