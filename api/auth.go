@@ -110,7 +110,7 @@ func randState() string {
 func (h *Handler) MountAuthRoutes(r chi.Router) {
 	r.Get("/auth/google", h.handleAuthStart)
 	r.Get("/auth/google/callback", h.handleAuthCallback)
-	r.Post("/api/logout", h.handleLogout)
+	r.Post("/auth/logout", h.handleLogout)
 	r.Get("/api/me", h.meHandler)
 }
 
