@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -228,11 +229,20 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	log.Printf("auth callback 302 → %q (Host=%q)", redirectTo, r.Host)
-
-	// --- 302 redirect straight to SPA (avoid HTML parsing)
+	// --- Return HTML that forces a client-side redirect (more reliable behind CDNs)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, redirectTo, http.StatusFound)
+	_, _ = w.Write([]byte(fmt.Sprintf(
+		`<!doctype html>
+<meta charset="utf-8">
+<title>Signing you in…</title>
+<meta http-equiv="refresh" content="0;url=%[1]s">
+<script>
+  // Double attempt in case a proxy caches the first load
+  try { window.location.replace(%q); } catch (_) { window.location.href = %q; }
+</script>`,
+		redirectTo, redirectTo, redirectTo,
+	)))
 }
 
 // in auth.go
