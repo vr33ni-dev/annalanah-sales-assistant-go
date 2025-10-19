@@ -164,7 +164,11 @@ func (h *Handler) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	http.Redirect(w, r, h.Auth.OAuth.AuthCodeURL(state, oauth2.AccessTypeOnline), http.StatusFound)
+	http.Redirect(w, r, h.Auth.OAuth.AuthCodeURL(
+		state,
+		oauth2.AccessTypeOnline,
+		oauth2.SetAuthURLParam("prompt", "select_account"),
+	), http.StatusFound)
 }
 
 func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +237,13 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 			Expires:  time.Unix(0, 0),
 			MaxAge:   -1,
 		})
+	}
+
+	// --- Tag the first SPA load so the interceptor won't bounce immediately
+	if strings.Contains(redirectTo, "?") {
+		redirectTo = redirectTo + "&auth=signed_in"
+	} else {
+		redirectTo = redirectTo + "?auth=signed_in"
 	}
 
 	// --- Return HTML that forces a client-side redirect (more reliable behind CDNs)

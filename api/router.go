@@ -73,9 +73,18 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 
 	// Protected API
 	r.Route("/api", func(pr chi.Router) {
+
 		if strings.ToLower(cfg.AppEnv) != "local" {
 			pr.Use(h.RequireAuth)
 		}
+
+		// Prevent caching of sensitive API responses
+		pr.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Cache-Control", "no-store")
+				next.ServeHTTP(w, r)
+			})
+		})
 
 		// Preflights to /api/... always return 204
 		pr.Options("/*", func(w http.ResponseWriter, r *http.Request) {
