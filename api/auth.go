@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -261,13 +262,11 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		redirectTo, redirectTo, redirectTo,
 	)))
 }
-
-// in auth.go, handleLogout (replace JSON with a 302 redirect)
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	expired := time.Unix(0, 0)
 	secure := isSecure(r)
 
-	// clear session cookie (host-only)
+	// clear session cookie (host-only + None variant)
 	for _, ss := range []http.SameSite{http.SameSiteLaxMode, http.SameSiteNoneMode} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     h.Auth.CookieName,
@@ -280,6 +279,22 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 			MaxAge:   -1,
 		})
 	}
+
+	// if you ever set a Domain cookie in prod, clear that too:
+	if dom := strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")); dom != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     h.Auth.CookieName,
+			Value:    "",
+			Path:     "/",
+			Domain:   dom,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteNoneMode,
+			Expires:  expired,
+			MaxAge:   -1,
+		})
+	}
+
 	// clear helpers
 	for _, name := range []string{"oauth_state", "post_login_redirect"} {
 		http.SetCookie(w, &http.Cookie{
@@ -294,8 +309,39 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// send them to SPA root with a hint param your UI already cleans
-	dest := "/?auth=logged_out"
+	// -------- determine SPA redirect target --------
+	dest := strings.TrimSpace(os.Getenv("POST_LOGOUT_REDIRECT"))
+
+	// fallback to POST_LOGIN_REDIRECT if not set
+	if dest == "" {
+		dest = strings.TrimSpace(os.Getenv("POST_LOGIN_REDIRECT"))
+	}
+
+	// final fallback: try Origin or Referer to go back to SPA origin
+	if dest == "" {
+		if o := strings.TrimSpace(r.Header.Get("Origin")); o != "" {
+			dest = o
+		} else if ref := strings.TrimSpace(r.Header.Get("Referer")); ref != "" {
+			if u, err := url.Parse(ref); err == nil {
+				// keep only scheme://host, point path to "/"
+				u.Path, u.RawQuery, u.Fragment = "/", "", ""
+				dest = u.String()
+			}
+		}
+	}
+
+	// last resort: relative root (works if you called /auth/logout on SPA origin)
+	if dest == "" {
+		dest = "/"
+	}
+
+	// append the hint param your SPA removes
+	if strings.Contains(dest, "?") {
+		dest = dest + "&auth=logged_out"
+	} else {
+		dest = dest + "?auth=logged_out"
+	}
+
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, dest, http.StatusFound)
 }
