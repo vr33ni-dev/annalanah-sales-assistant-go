@@ -251,27 +251,25 @@ func (h *Handler) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	)))
 }
 
+// in auth.go, handleLogout (replace JSON with a 302 redirect)
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 	expired := time.Unix(0, 0)
 	secure := isSecure(r)
 
-	wipe := func(sameSite http.SameSite) {
+	// clear session cookie (host-only)
+	for _, ss := range []http.SameSite{http.SameSiteLaxMode, http.SameSiteNoneMode} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     h.Auth.CookieName,
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   secure || sameSite == http.SameSiteNoneMode,
-			SameSite: sameSite,
+			Secure:   secure || ss == http.SameSiteNoneMode,
+			SameSite: ss,
 			Expires:  expired,
 			MaxAge:   -1,
 		})
 	}
-	// clear common permutations
-	wipe(http.SameSiteLaxMode)
-	wipe(http.SameSiteNoneMode)
-
-	// helper cookies
+	// clear helpers
 	for _, name := range []string{"oauth_state", "post_login_redirect"} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
@@ -285,16 +283,10 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// If browser navigated via GET → send them to the SPA login screen.
-	if r.Method == http.MethodGet {
-		http.Redirect(w, r, "/login?auth=logged_out", http.StatusFound)
-		return
-	}
-
-	// XHR POST case → return JSON
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	// send them to SPA root with a hint param your UI already cleans
+	dest := "/?auth=logged_out"
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, dest, http.StatusFound)
 }
 
 func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
