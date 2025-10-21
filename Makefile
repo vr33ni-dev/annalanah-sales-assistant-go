@@ -1,19 +1,20 @@
-DB_URL=postgres://sales_assistant_app:sales_assistant_app@localhost:5432/sales_assistant_db?sslmode=disable
+include .env
+export
 
 migrate-up:
-	migrate -path db/migrations -database "$(DB_URL)" up
+	migrate -path db/migrations -database "$(DATABASE_URL)" up
 
 migrate-down:
-	migrate -path db/migrations -database "$(DB_URL)" down -all
+	migrate -path db/migrations -database "$(DATABASE_URL)" down -all
 
 migrate-drop:
-	migrate -path db/migrations -database "$(DB_URL)" drop -f
+	migrate -path db/migrations -database "$(DATABASE_URL)" drop -f
 
 migrate-version:
-	migrate -path db/migrations -database "$(DB_URL)" version
+	migrate -path db/migrations -database "$(DATABASE_URL)" version
 
 seed:
-	psql "$(DB_URL)" -f db/seeds/dev_seed.sql
+	psql "$(DATABASE_URL)" -f db/seeds/dev_seed.sql
 
 reset:
 	make migrate-drop
