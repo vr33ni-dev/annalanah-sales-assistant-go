@@ -49,7 +49,7 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
             c.phone,
 						c.source,
             COALESCE(s.name, '') AS source_stage_name,
-						c.status
+						c.status,
 						c.completed_at
         FROM clients c
         LEFT JOIN stages s ON s.id = c.source_stage_id
