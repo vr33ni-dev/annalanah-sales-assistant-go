@@ -64,7 +64,7 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	clients := make([]ClientResponse, 0, 64)
 	for rows.Next() {
 		var c ClientResponse
-		if err := rows.Scan(&c.ID, &c.Name, &c.Email, &c.Phone, &c.Source, &c.SourceStageName, &c.Status); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Email, &c.Phone, &c.Source, &c.SourceStageName, &c.Status, &c.CompletedAt); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
