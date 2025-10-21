@@ -32,13 +32,14 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	type ClientResponse struct {
-		ID              int64  `json:"id"`
-		Name            string `json:"name"`
-		Email           string `json:"email"`
-		Phone           string `json:"phone"`
-		Source          string `json:"source"`
-		SourceStageName string `json:"source_stage_name"`
-		Status          string `json:"status"`
+		ID              int64   `json:"id"`
+		Name            string  `json:"name"`
+		Email           string  `json:"email"`
+		Phone           string  `json:"phone"`
+		Source          string  `json:"source"`
+		SourceStageName string  `json:"source_stage_name"`
+		Status          string  `json:"status"`
+		CompletedAt     *string `json:"completed_at,omitempty"`
 	}
 	rows, err := h.DB.QueryContext(ctx, `
         SELECT 
@@ -49,6 +50,7 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 						c.source,
             COALESCE(s.name, '') AS source_stage_name,
 						c.status
+						c.completed_at
         FROM clients c
         LEFT JOIN stages s ON s.id = c.source_stage_id
         ORDER BY c.id
