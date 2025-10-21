@@ -9,6 +9,9 @@ migrate-down:
 migrate-drop:
 	migrate -path db/migrations -database "$(DB_URL)" drop -f
 
+migrate-version:
+	migrate -path db/migrations -database "$(DB_URL)" version
+
 seed:
 	psql "$(DB_URL)" -f db/seeds/dev_seed.sql
 
