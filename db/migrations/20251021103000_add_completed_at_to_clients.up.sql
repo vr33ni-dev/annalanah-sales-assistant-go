@@ -1,2 +1,2 @@
-ALTER TABLE clients
-ADD COLUMN completed_at TIMESTAMP;
+ALTER TABLE clients 
+ADD COLUMN completed_at TIMESTAMPTZ;

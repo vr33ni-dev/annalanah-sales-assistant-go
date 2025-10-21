@@ -5,17 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type Client struct {
-	ID            int    `json:"id"`
-	Name          string `json:"name"`
-	Email         string `json:"email"`
-	Phone         string `json:"phone"`
-	Source        string `json:"source"`
-	SourceStageID *int   `json:"source_stage_id,omitempty"`
-	Status        string `json:"status"` //  "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive" etc.
+	ID            int        `json:"id"`
+	Name          string     `json:"name"`
+	Email         string     `json:"email"`
+	Phone         string     `json:"phone"`
+	Source        string     `json:"source"`
+	SourceStageID *int       `json:"source_stage_id,omitempty"`
+	Status        string     `json:"status"` //  "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive" etc.
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 }
 
 type Handler struct {
@@ -89,4 +92,84 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(c)
+}
+
+// PATCH /api/clients/{id}
+func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseIDFromURL(r.URL.Path)
+	if !ok {
+		http.Error(w, "invalid client ID", http.StatusBadRequest)
+		return
+	}
+
+	var updated Client
+	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	query := `
+		UPDATE clients
+		SET name = COALESCE($1, name),
+			email = COALESCE($2, email),
+			phone = COALESCE($3, phone),
+			source = COALESCE($4, source),
+			source_stage_id = COALESCE($5, source_stage_id),
+			status = COALESCE($6, status),
+			completed_at = COALESCE($7, completed_at)
+		WHERE id = $8
+	`
+
+	_, err := h.DB.Exec(
+		query,
+		nullStr(updated.Name),
+		nullStr(updated.Email),
+		nullStr(updated.Phone),
+		nullStr(updated.Source),
+		nullInt(updated.SourceStageID),
+		nullStr(updated.Status),
+		nullTime(updated.CompletedAt),
+		id,
+	)
+
+	if err != nil {
+		http.Error(w, "update failed: "+err.Error(), 500)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func nullStr(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func nullInt(i *int) sql.NullInt64 {
+	if i == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*i), Valid: true}
+}
+
+func nullTime(t *time.Time) sql.NullTime {
+	if t == nil || t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
+// Example parse helper
+func parseIDFromURL(path string) (int, bool) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 {
+		return 0, false
+	}
+	id, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return 0, false
+	}
+	return id, true
 }
