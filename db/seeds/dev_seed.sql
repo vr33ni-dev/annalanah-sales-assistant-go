@@ -14,6 +14,12 @@ settings_flat AS (
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
+settings_avg_rev AS (
+  INSERT INTO app_settings (key, value_numeric)
+  VALUES ('avg_revenue_per_participant', 250)
+  ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
+  RETURNING 1
+),
 
 -- 1) Stage
 s AS (
