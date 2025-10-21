@@ -95,6 +95,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/clients/{id}
+// PATCH /api/clients/{id}
 func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseIDFromURL(r.URL.Path)
 	if !ok {
@@ -102,10 +103,32 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var updated Client
-	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+	// Decode raw JSON into a map first
+	var raw map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
+	}
+
+	// Marshal back into JSON bytes so we can safely unmarshal into struct
+	data, _ := json.Marshal(raw)
+	var updated Client
+	if err := json.Unmarshal(data, &updated); err != nil {
+		http.Error(w, "invalid client data", http.StatusBadRequest)
+		return
+	}
+
+	// ✅ Manually parse "completed_at" if sent as "YYYY-MM-DD"
+	if v, ok := raw["completed_at"].(string); ok && v != "" {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			updated.CompletedAt = &t
+		}
+	}
+
+	// ✅ Normalize completed_at to date only (remove time component)
+	if updated.CompletedAt != nil {
+		dateOnly := updated.CompletedAt.Truncate(24 * time.Hour)
+		updated.CompletedAt = &dateOnly
 	}
 
 	query := `
@@ -133,7 +156,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		http.Error(w, "update failed: "+err.Error(), 500)
+		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
