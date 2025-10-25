@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,7 +19,7 @@ type Client struct {
 	Phone         string     `json:"phone"`
 	Source        string     `json:"source"`
 	SourceStageID *int       `json:"source_stage_id,omitempty"`
-	Status        string     `json:"status"` //  "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive" etc.
+	Status        string     `json:"status"` // "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive"
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 }
 
@@ -31,6 +33,7 @@ type Handler struct {
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
 	type ClientResponse struct {
 		ID              int64   `json:"id"`
 		Name            string  `json:"name"`
@@ -41,20 +44,21 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		Status          string  `json:"status"`
 		CompletedAt     *string `json:"completed_at,omitempty"`
 	}
+
 	rows, err := h.DB.QueryContext(ctx, `
-        SELECT 
-            c.id,
-            c.name,
-            c.email,
-            c.phone,
-						c.source,
-            COALESCE(s.name, '') AS source_stage_name,
-						c.status,
-						c.completed_at
-        FROM clients c
-        LEFT JOIN stages s ON s.id = c.source_stage_id
-        ORDER BY c.id
-    `)
+		SELECT 
+			c.id,
+			c.name,
+			c.email,
+			c.phone,
+			c.source,
+			COALESCE(s.name, '') AS source_stage_name,
+			c.status,
+			c.completed_at
+		FROM clients c
+		LEFT JOIN stages s ON s.id = c.source_stage_id
+		ORDER BY c.id
+	`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,9 +68,17 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	clients := make([]ClientResponse, 0, 64)
 	for rows.Next() {
 		var c ClientResponse
-		if err := rows.Scan(&c.ID, &c.Name, &c.Email, &c.Phone, &c.Source, &c.SourceStageName, &c.Status, &c.CompletedAt); err != nil {
-			http.Error(w, err.Error(), 500)
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&c.ID, &c.Name, &c.Email, &c.Phone,
+			&c.Source, &c.SourceStageName, &c.Status, &completedAt,
+		); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if completedAt.Valid {
+			date := completedAt.Time.Format("2006-01-02")
+			c.CompletedAt = &date
 		}
 		clients = append(clients, c)
 	}
@@ -79,15 +91,18 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	var c Client
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		http.Error(w, err.Error(), 400)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	err := h.DB.QueryRow(
-		"INSERT INTO clients (name, email, phone, source, source_stage_id, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-		c.Name, c.Email, c.Phone, c.Source, c.SourceStageID, c.Status).Scan(&c.ID)
+		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		c.Name, c.Email, c.Phone, c.Source, c.SourceStageID, c.Status,
+	).Scan(&c.ID)
+
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -97,7 +112,6 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/clients/{id}
-// PATCH /api/clients/{id}
 func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseIDFromURL(r.URL.Path)
 	if !ok {
@@ -105,32 +119,44 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode raw JSON into a map first
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		http.Error(w, "empty or unreadable body", http.StatusBadRequest)
+		return
+	}
+	log.Printf("PATCH /clients raw body: %s", string(body))
+
+	// Unmarshal into a generic map for flexible types
 	var raw map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	if err := json.Unmarshal(body, &raw); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	// Marshal back into JSON bytes so we can safely unmarshal into struct
-	data, _ := json.Marshal(raw)
-	var updated Client
-	if err := json.Unmarshal(data, &updated); err != nil {
+	// Unmarshal into an auxiliary struct so completed_at is a string
+	var updated struct {
+		Name          string  `json:"name"`
+		Email         string  `json:"email"`
+		Phone         string  `json:"phone"`
+		Source        string  `json:"source"`
+		SourceStageID *int    `json:"source_stage_id,omitempty"`
+		Status        string  `json:"status"`
+		CompletedAt   *string `json:"completed_at,omitempty"`
+	}
+	if err := json.Unmarshal(body, &updated); err != nil {
+		log.Printf("❌ decode error: %v", err)
 		http.Error(w, "invalid client data", http.StatusBadRequest)
 		return
 	}
 
-	// ✅ Manually parse "completed_at" if sent as "YYYY-MM-DD"
-	if v, ok := raw["completed_at"].(string); ok && v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			updated.CompletedAt = &t
+	// Parse completed_at string (if any)
+	var completedAt *time.Time
+	if updated.CompletedAt != nil && *updated.CompletedAt != "" {
+		if t, err := time.Parse("2006-01-02", *updated.CompletedAt); err == nil {
+			completedAt = &t
+		} else {
+			log.Printf("⚠️ could not parse completed_at: %v", err)
 		}
-	}
-
-	// ✅ Normalize completed_at to date only (remove time component)
-	if updated.CompletedAt != nil {
-		dateOnly := updated.CompletedAt.Truncate(24 * time.Hour)
-		updated.CompletedAt = &dateOnly
 	}
 
 	query := `
@@ -145,7 +171,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		WHERE id = $8
 	`
 
-	_, err := h.DB.Exec(
+	_, err = h.DB.Exec(
 		query,
 		nullStr(updated.Name),
 		nullStr(updated.Email),
@@ -153,11 +179,11 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		nullStr(updated.Source),
 		nullInt(updated.SourceStageID),
 		nullStr(updated.Status),
-		nullTime(updated.CompletedAt),
+		nullTime(completedAt),
 		id,
 	)
-
 	if err != nil {
+		log.Printf("❌ update failed: %v", err)
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -165,6 +191,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// --- Helpers ---
 func nullStr(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
@@ -186,7 +213,6 @@ func nullTime(t *time.Time) sql.NullTime {
 	return sql.NullTime{Time: *t, Valid: true}
 }
 
-// Example parse helper
 func parseIDFromURL(path string) (int, bool) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 3 {
