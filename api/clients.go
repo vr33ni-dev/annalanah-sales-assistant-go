@@ -167,7 +167,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 			source = COALESCE($4, source),
 			source_stage_id = COALESCE($5, source_stage_id),
 			status = COALESCE($6, status),
-			completed_at = COALESCE($7, completed_at)
+			completed_at = $7
 		WHERE id = $8
 	`
 
