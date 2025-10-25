@@ -30,13 +30,13 @@ s AS (
 
 -- 2) Clients
 anna AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-  VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active')
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
+  VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', '2025-10-20')
   RETURNING id
 ),
 maxc AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active'
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
+  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', '2025-10-15'
   FROM s
   RETURNING id
 ),

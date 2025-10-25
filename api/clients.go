@@ -111,6 +111,32 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(c)
 }
 
+// DELETE /api/clients/{id}
+func (h *Handler) DeleteClient(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseIDFromURL(r.URL.Path)
+	if !ok {
+		http.Error(w, "invalid client ID", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	result, err := h.DB.ExecContext(ctx, `DELETE FROM clients WHERE id = $1`, id)
+	if err != nil {
+		http.Error(w, "failed to delete client: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		http.Error(w, "client not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PATCH /api/clients/{id}
 func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseIDFromURL(r.URL.Path)
