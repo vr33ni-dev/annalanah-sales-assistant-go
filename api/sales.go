@@ -45,6 +45,7 @@ type SalesProcessUpdateRequest struct {
 	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
 	ContractStartDate      *string  `json:"contract_start_date,omitempty"` // YYYY-MM-DD
 	ContractFrequency      *string  `json:"contract_frequency,omitempty"`  // monthly | bi-monthly | quarterly
+	CompletedAt            *string  `json:"completed_at,omitempty"`
 }
 
 // GET /api/sales
@@ -141,7 +142,6 @@ func (h *Handler) CreateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sp)
 }
 
-// PATCH /api/sales/{id}
 // PATCH /api/sales/{id}
 func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -241,6 +241,25 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		if err := h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, id).Scan(&clientID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// If Abschluss is explicitly true, update completed_at to now
+		// Set completed_at to selected date if abschluss is true and completed_at is provided
+		if sp.Abschluss != nil && *sp.Abschluss && sp.CompletedAt != nil {
+			_, err := h.DB.Exec(`
+		UPDATE clients
+		SET completed_at = $1::date
+		WHERE id = $2
+	`, *sp.CompletedAt, clientID)
+			if err != nil {
+				http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if sp.Abschluss != nil && !*sp.Abschluss {
+			_, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID)
+			if err != nil {
+				http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		// avoid duplicate active contract
