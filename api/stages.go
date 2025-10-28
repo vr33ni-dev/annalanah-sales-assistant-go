@@ -204,6 +204,43 @@ func (h *Handler) UpdateStageStats(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// PATCH /api/stages/{id}
+// Update base stage info like name, date, ad_budget
+func (h *Handler) UpdateStageInfo(w http.ResponseWriter, r *http.Request) {
+	stageIDStr := chi.URLParam(r, "id")
+	stageID, err := strconv.Atoi(stageIDStr)
+	if err != nil {
+		http.Error(w, "invalid stage id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Name     *string  `json:"name,omitempty"`
+		Date     *string  `json:"date,omitempty"`
+		AdBudget *float64 `json:"ad_budget,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = h.DB.Exec(`
+		UPDATE stages
+		SET 
+			name = COALESCE($1, name),
+			date = COALESCE($2, date),
+			ad_budget = COALESCE($3, ad_budget)
+		WHERE id = $4
+	`, req.Name, req.Date, req.AdBudget, stageID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // POST /api/stages/{id}/assign-client
 func (h *Handler) AssignClientToStage(w http.ResponseWriter, r *http.Request) {
 	stageIDStr := chi.URLParam(r, "id")
