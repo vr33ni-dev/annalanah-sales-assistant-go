@@ -397,3 +397,21 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	}
 	return &s, true
 }
+
+// --- test helpers (ignored in production) ---
+// These wrappers let auth_test.go access private methods safely.
+func (h *Handler) ParseSessionForTest(r *http.Request) (*Session, bool) {
+	return h.parseSession(r)
+}
+
+func (h *Handler) HandleLogoutForTest(w http.ResponseWriter, r *http.Request) {
+	h.handleLogout(w, r)
+}
+
+func IsSecureForTest(r *http.Request) bool {
+	return isSecure(r)
+}
+
+func (a *Auth) MakeCookieForTest(sess Session, secure bool) *http.Cookie {
+	return a.makeCookie(sess, secure)
+}
