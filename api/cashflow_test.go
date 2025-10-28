@@ -34,7 +34,7 @@ func TestCashflowForecast_ReturnsJSON(t *testing.T) {
 	}
 
 	// Define a *local* handler function that behaves like CashflowForecast,
-	// but uses a simple SQLite query that works with our schema.
+	// but uses a simple SQLite query that works with the schema.
 	testHandler := func(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query(`SELECT month, confirmed, potential FROM joined`)
 		if err != nil {
