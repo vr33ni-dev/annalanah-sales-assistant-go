@@ -1,4 +1,3 @@
-// db/connect.go
 package db
 
 import (
@@ -8,16 +7,22 @@ import (
 	_ "github.com/lib/pq"
 )
 
+var (
+	openDB  = sql.Open
+	fatalFn = log.Fatal
+	pingFn  = func(db *sql.DB) error { return db.Ping() }
+)
+
 func ConnectDSN(dsn string) *sql.DB {
 	if dsn == "" {
-		log.Fatal("DATABASE_URL not set")
+		fatalFn("DATABASE_URL not set")
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := openDB("postgres", dsn)
 	if err != nil {
-		log.Fatal("Cannot open DB:", err)
+		fatalFn("Cannot open DB:", err)
 	}
-	if err := db.Ping(); err != nil {
-		log.Fatal("Cannot reach DB:", err)
+	if err := pingFn(db); err != nil {
+		fatalFn("Cannot reach DB:", err)
 	}
 	return db
 }
