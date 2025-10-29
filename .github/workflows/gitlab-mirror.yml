@@ -1,0 +1,13 @@
+name: Mirror to GitLab
+on:
+  push:
+    branches: ["**"]
+    tags: ["*"]
+
+jobs:
+  mirror:
+    uses: vr33ni-dev/ci-templates/.github/workflows/gitlab-mirror.yml@v1
+    with:
+      gitlab_url: https://gitlab.com/vr33ni-work/${{ github.event.repository.name }}.git
+    secrets:
+      gitlab_token: ${{ secrets.GITLAB_TOKEN }}
