@@ -30,9 +30,9 @@ func createSalesSchema(db *sql.DB, t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			client_id INTEGER,
 			stage TEXT,
-			zweitgespraech_date TEXT,
-			zweitgespraech_result BOOLEAN,
-			abschluss BOOLEAN,
+			follow_up_date TEXT,
+			follow_up_result BOOLEAN,
+			closed BOOLEAN,
 			revenue REAL,
 			stage_id INTEGER,
 			created_at TEXT
@@ -57,8 +57,8 @@ func createSalesSchema(db *sql.DB, t *testing.T) {
 	// ✅ required seed rows for UpdateSalesProcess to work
 	_, _ = db.Exec(`INSERT INTO clients (id, name, email, phone, source, status) 
 	                VALUES (1, 'Alice', 'a@example.com', '123', 'web', 'follow_up_scheduled')`)
-	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, zweitgespraech_result, abschluss, revenue, stage_id, created_at)
-	                VALUES (1, 1, 'zweitgespraech', NULL, NULL, NULL, NULL, '2025-01-01')`)
+	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, follow_up_result, closed, revenue, stage_id, created_at)
+	                VALUES (1, 1, 'follow_up', NULL, NULL, NULL, NULL, '2025-01-01')`)
 }
 
 // --- Tests ---
@@ -101,7 +101,7 @@ func TestCreateSalesProcess_NewOK(t *testing.T) {
 
 	body := api.SalesProcess{
 		ClientID: 2, // ✅ new client without a process
-		Stage:    "zweitgespraech",
+		Stage:    "follow_up",
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/sales", bytes.NewReader(b))
@@ -141,7 +141,7 @@ func TestCreateSalesProcess_DuplicateClient(t *testing.T) {
 	}
 }
 
-func TestUpdateSalesProcess_AbschlussValidationFails(t *testing.T) {
+func TestUpdateSalesProcess_ClosedValidationFails(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
 	createSalesSchema(db, t)
@@ -150,8 +150,8 @@ func TestUpdateSalesProcess_AbschlussValidationFails(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "1")
 
-	abschluss := true
-	body := map[string]any{"abschluss": abschluss}
+	closed := true
+	body := map[string]any{"closed": closed}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1", bytes.NewReader(b))
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -171,11 +171,11 @@ func TestStartSalesProcess(t *testing.T) {
 	h := &api.Handler{DB: db}
 
 	reqBody := api.StartSalesProcessRequest{
-		Name:               "Bob",
-		Email:              "b@example.com",
-		Phone:              "999",
-		Source:             "organic",
-		ZweitgespraechDate: strPtr("2025-11-01"),
+		Name:         "Bob",
+		Email:        "b@example.com",
+		Phone:        "999",
+		Source:       "organic",
+		FollowUpDate: strPtr("2025-11-01"),
 	}
 	b, _ := json.Marshal(reqBody)
 
@@ -197,8 +197,8 @@ func TestStartSalesProcess(t *testing.T) {
 	if out.Client.Name != "Bob" {
 		t.Fatalf("expected client=Bob, got %+v", out.Client)
 	}
-	if out.SalesProcess.Stage != "zweitgespraech" {
-		t.Fatalf("expected stage=zweitgespraech, got %s", out.SalesProcess.Stage)
+	if out.SalesProcess.Stage != "follow_up" {
+		t.Fatalf("expected stage=follow_up, got %s", out.SalesProcess.Stage)
 	}
 }
 

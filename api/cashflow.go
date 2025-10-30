@@ -102,7 +102,7 @@ confirmed AS (
 
 -- E) Potential from sales_process (unchanged logic, just parameterized)
 potential AS (
-  SELECT to_char(sp.zweitgespraech_date, 'YYYY-MM') AS ym,
+  SELECT to_char(sp.follow_up_date, 'YYYY-MM') AS ym,
          SUM(
            CASE
              WHEN c.id IS NOT NULL AND c.duration_months > 0
@@ -114,11 +114,11 @@ potential AS (
          ) AS amt
   FROM sales_process sp
   LEFT JOIN contracts c ON c.sales_process_id = sp.id
-  WHERE sp.stage = 'zweitgespraech'
-    AND COALESCE(sp.abschluss, false) = false
-    AND sp.zweitgespraech_result = true
-    AND sp.zweitgespraech_date IS NOT NULL
-    AND sp.zweitgespraech_date >= $1::date AND sp.zweitgespraech_date < $2::date
+  WHERE sp.stage = 'follow_up'
+    AND COALESCE(sp.closed, false) = false
+    AND sp.follow_up_result = true
+    AND sp.follow_up_date IS NOT NULL
+    AND sp.follow_up_date >= $1::date AND sp.follow_up_date < $2::date
   GROUP BY 1
 ),
 
