@@ -31,3 +31,7 @@ Thumbs.db
 # rest client
 *.http
 __debug_*
+
+
+# project specific utilities
+db/utils/
