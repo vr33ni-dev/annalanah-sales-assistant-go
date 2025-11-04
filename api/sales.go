@@ -11,36 +11,36 @@ import (
 )
 
 type SalesProcess struct {
-	ID                   int      `json:"id"`
-	ClientID             int      `json:"client_id"`
-	Stage                string   `json:"stage"`
-	ZweitgespraechDate   *string  `json:"zweitgespraech_date"`
-	ZweitgespraechResult *bool    `json:"zweitgespraech_result"`
-	Abschluss            *bool    `json:"abschluss"`
-	Revenue              *float64 `json:"revenue"`
-	StageID              *int     `json:"stage_id"`
+	ID             int      `json:"id"`
+	ClientID       int      `json:"client_id"`
+	Stage          string   `json:"stage"`
+	FollowUpDate   *string  `json:"follow_up_date"`
+	FollowUpResult *bool    `json:"follow_up_result"`
+	Closed         *bool    `json:"closed"`
+	Revenue        *float64 `json:"revenue"`
+	StageID        *int     `json:"stage_id"`
 }
 
 // What the API returns (GET /api/sales, PATCH /api/sales/{id})
 type SalesProcessResponse struct {
-	ID                   int      `json:"id"`
-	ClientID             int      `json:"client_id"`
-	ClientName           string   `json:"client_name"`
-	ClientEmail          *string  `json:"client_email,omitempty"`
-	ClientPhone          *string  `json:"client_phone,omitempty"`
-	ClientSource         *string  `json:"client_source,omitempty"`
-	Stage                string   `json:"stage"`
-	ZweitgespraechDate   *string  `json:"zweitgespraech_date"`
-	ZweitgespraechResult *bool    `json:"zweitgespraech_result"`
-	Abschluss            *bool    `json:"abschluss"`
-	Revenue              *float64 `json:"revenue"`
-	StageID              *int     `json:"stage_id"`
+	ID             int      `json:"id"`
+	ClientID       int      `json:"client_id"`
+	ClientName     string   `json:"client_name"`
+	ClientEmail    *string  `json:"client_email,omitempty"`
+	ClientPhone    *string  `json:"client_phone,omitempty"`
+	ClientSource   *string  `json:"client_source,omitempty"`
+	Stage          string   `json:"stage"`
+	FollowUpDate   *string  `json:"follow_up_date"`
+	FollowUpResult *bool    `json:"follow_up_result"`
+	Closed         *bool    `json:"closed"`
+	Revenue        *float64 `json:"revenue"`
+	StageID        *int     `json:"stage_id"`
 }
 
 // What the API accepts (PATCH /api/sales/{id})
 type SalesProcessUpdateRequest struct {
-	ZweitgespraechResult   *bool    `json:"zweitgespraech_result"`
-	Abschluss              *bool    `json:"abschluss"`
+	FollowUpResult         *bool    `json:"follow_up_result"`
+	Closed                 *bool    `json:"closed"`
 	Revenue                *float64 `json:"revenue"`
 	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
 	ContractStartDate      *string  `json:"contract_start_date,omitempty"` // YYYY-MM-DD
@@ -59,10 +59,10 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		cl.phone AS client_phone,
 		cl.source AS client_source,
 		sp.stage,
-		sp.zweitgespraech_date,
-		sp.zweitgespraech_result,
-		sp.abschluss,
-		CASE WHEN COALESCE(sp.abschluss, false) THEN sp.revenue ELSE NULL END AS revenue,
+		sp.follow_up_date,
+		sp.follow_up_result,
+		sp.closed,
+		CASE WHEN COALESCE(sp.closed, false) THEN sp.revenue ELSE NULL END AS revenue,
 		sp.stage_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
@@ -85,9 +85,9 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.ClientPhone,
 			&sp.ClientSource,
 			&sp.Stage,
-			&sp.ZweitgespraechDate,
-			&sp.ZweitgespraechResult,
-			&sp.Abschluss,
+			&sp.FollowUpDate,
+			&sp.FollowUpResult,
+			&sp.Closed,
 			&sp.Revenue,
 			&sp.StageID,
 		); err != nil {
@@ -122,13 +122,13 @@ func (h *Handler) CreateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = h.DB.QueryRow(
-		`INSERT INTO sales_process (client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id)
+		`INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
 		sp.ClientID,
 		sp.Stage,
-		sp.ZweitgespraechDate,
-		sp.ZweitgespraechResult,
-		sp.Abschluss,
+		sp.FollowUpDate,
+		sp.FollowUpResult,
+		sp.Closed,
 		sp.Revenue,
 		sp.StageID,
 	).Scan(&sp.ID)
@@ -159,44 +159,44 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---------- VALIDATION ----------
-	// If abschluss=true, all contract fields must be present/valid.
-	if sp.Abschluss != nil && *sp.Abschluss == true {
+	// If closed=true, all contract fields must be present/valid.
+	if sp.Closed != nil && *sp.Closed == true {
 		if sp.Revenue == nil ||
 			sp.ContractDurationMonths == nil || *sp.ContractDurationMonths <= 0 ||
 			sp.ContractStartDate == nil ||
 			sp.ContractFrequency == nil ||
 			(*sp.ContractFrequency != "monthly" && *sp.ContractFrequency != "bi-monthly" && *sp.ContractFrequency != "quarterly") {
-			http.Error(w, "cannot set abschluss=true without contract details (revenue, duration>0, start date, frequency)", http.StatusBadRequest)
+			http.Error(w, "cannot set closed=true without contract details (revenue, duration>0, start date, frequency)", http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Small ergonomics: if abschluss=true but result wasn’t provided, assume the call happened
-	if sp.Abschluss != nil && *sp.Abschluss == true && sp.ZweitgespraechResult == nil {
+	// Small ergonomics: if closed=true but result wasn’t provided, assume the call happened
+	if sp.Closed != nil && *sp.Closed == true && sp.FollowUpResult == nil {
 		t := true
-		sp.ZweitgespraechResult = &t
+		sp.FollowUpResult = &t
 	}
 
 	// ---------- UPDATE SALES_PROCESS (fields + normalized stage) ----------
 	_, err = h.DB.Exec(`
 		UPDATE sales_process
 		SET
-			zweitgespraech_result = COALESCE($1, zweitgespraech_result),
-			abschluss             = COALESCE($2, abschluss),
+			follow_up_result = COALESCE($1, follow_up_result),
+			closed             = COALESCE($2, closed),
 			revenue               = CASE
 				WHEN $2 IS TRUE  THEN $3
 				WHEN $2 IS FALSE THEN NULL
 				ELSE revenue
 			END,
 			stage = CASE
-				WHEN COALESCE($2, abschluss) IS TRUE  THEN 'abschluss'         -- closed won
-				WHEN COALESCE($2, abschluss) IS FALSE THEN 'lost'              -- explicit no
-				WHEN COALESCE($1, zweitgespraech_result) IS FALSE THEN 'lost'  -- no-show
-				WHEN COALESCE($1, zweitgespraech_result) IS TRUE  THEN 'zweitgespraech' -- call done, awaiting decision
-				ELSE 'zweitgespraech'                                          -- planned / not happened yet
+				WHEN COALESCE($2, closed) IS TRUE  THEN 'closed'         -- closed won
+				WHEN COALESCE($2, closed) IS FALSE THEN 'lost'              -- explicit no
+				WHEN COALESCE($1, follow_up_result) IS FALSE THEN 'lost'  -- no-show
+				WHEN COALESCE($1, follow_up_result) IS TRUE  THEN 'follow_up' -- call done, awaiting decision
+				ELSE 'follow_up'                                          -- planned / not happened yet
 			END
 		WHERE id = $4
-	`, sp.ZweitgespraechResult, sp.Abschluss, sp.Revenue, id)
+	`, sp.FollowUpResult, sp.Closed, sp.Revenue, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -205,21 +205,21 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// ---------- SYNC CLIENT STATUS ----------
 	_, err = h.DB.Exec(`
 	  WITH s AS (
-	    SELECT client_id, stage, zweitgespraech_result, abschluss
+	    SELECT client_id, stage, follow_up_result, closed
 	    FROM sales_process WHERE id = $1
 	  )
 	  UPDATE clients c
 	  SET status = CASE
-	    WHEN (SELECT stage FROM s) = 'abschluss'
-	         AND COALESCE((SELECT abschluss FROM s), FALSE) = TRUE
+	    WHEN (SELECT stage FROM s) = 'closed'
+	         AND COALESCE((SELECT closed FROM s), FALSE) = TRUE
 	      THEN 'active'
 	    WHEN (SELECT stage FROM s) = 'lost'
 	      THEN 'lost'
-	    WHEN (SELECT stage FROM s) = 'zweitgespraech'
-	         AND (SELECT zweitgespraech_result FROM s) IS NULL
+	    WHEN (SELECT stage FROM s) = 'follow_up'
+	         AND (SELECT follow_up_result FROM s) IS NULL
 	      THEN 'follow_up_scheduled'
-	    WHEN (SELECT stage FROM s) = 'zweitgespraech'
-	         AND (SELECT zweitgespraech_result FROM s) IS TRUE
+	    WHEN (SELECT stage FROM s) = 'follow_up'
+	         AND (SELECT follow_up_result FROM s) IS TRUE
 	      THEN 'awaiting_response'
 	    ELSE c.status
 	  END
@@ -231,7 +231,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---------- (OPTIONAL) AUTO-CREATE CONTRACT ON CLOSE-WON ----------
-	if sp.Abschluss != nil && *sp.Abschluss == true &&
+	if sp.Closed != nil && *sp.Closed == true &&
 		sp.Revenue != nil &&
 		sp.ContractDurationMonths != nil && *sp.ContractDurationMonths > 0 &&
 		sp.ContractStartDate != nil && sp.ContractFrequency != nil {
@@ -242,9 +242,9 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// If Abschluss is explicitly true, update completed_at to now
-		// Set completed_at to selected date if abschluss is true and completed_at is provided
-		if sp.Abschluss != nil && *sp.Abschluss && sp.CompletedAt != nil {
+		// If Closed is explicitly true, update completed_at to now
+		// Set completed_at to selected date if closed is true and completed_at is provided
+		if sp.Closed != nil && *sp.Closed && sp.CompletedAt != nil {
 			_, err := h.DB.Exec(`
 		UPDATE clients
 		SET completed_at = $1::date
@@ -254,7 +254,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-		} else if sp.Abschluss != nil && !*sp.Abschluss {
+		} else if sp.Closed != nil && !*sp.Closed {
 			_, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID)
 			if err != nil {
 				http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
@@ -294,10 +294,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	    c.phone AS client_phone,
 	    c.source AS client_source,
 	    sp.stage,
-	    sp.zweitgespraech_date,
-	    sp.zweitgespraech_result,
-	    sp.abschluss,
-	    CASE WHEN COALESCE(sp.abschluss, false) THEN sp.revenue ELSE NULL END AS revenue,
+	    sp.follow_up_date,
+	    sp.follow_up_result,
+	    sp.closed,
+	    CASE WHEN COALESCE(sp.closed, false) THEN sp.revenue ELSE NULL END AS revenue,
 	    sp.stage_id
 	  FROM sales_process sp
 	  JOIN clients c ON c.id = sp.client_id
@@ -313,9 +313,9 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		&updated.ClientPhone,
 		&updated.ClientSource,
 		&updated.Stage,
-		&updated.ZweitgespraechDate,
-		&updated.ZweitgespraechResult,
-		&updated.Abschluss,
+		&updated.FollowUpDate,
+		&updated.FollowUpResult,
+		&updated.Closed,
 		&updated.Revenue,
 		&updated.StageID,
 	); err != nil {
@@ -334,12 +334,12 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 // POST /api/sales/start
 // types you already have somewhere are fine; these keep the payload stable.
 type StartSalesProcessRequest struct {
-	Name               string  `json:"name"`
-	Email              string  `json:"email"`
-	Phone              string  `json:"phone"`
-	Source             string  `json:"source"` // "organic" | "paid"
-	SourceStageID      *int    `json:"source_stage_id,omitempty"`
-	ZweitgespraechDate *string `json:"zweitgespraech_date"`
+	Name          string  `json:"name"`
+	Email         string  `json:"email"`
+	Phone         string  `json:"phone"`
+	Source        string  `json:"source"` // "organic" | "paid"
+	SourceStageID *int    `json:"source_stage_id,omitempty"`
+	FollowUpDate  *string `json:"follow_up_date"`
 }
 
 type StartSalesProcessClient struct {
@@ -352,14 +352,14 @@ type StartSalesProcessClient struct {
 }
 
 type StartSalesProcessDTO struct {
-	ID                   int     `json:"id"`
-	ClientID             int     `json:"client_id"`
-	Stage                string  `json:"stage"`
-	ZweitgespraechDate   *string `json:"zweitgespraech_date"`
-	ZweitgespraechResult *bool   `json:"zweitgespraech_result"`
-	Abschluss            *bool   `json:"abschluss"`
-	Revenue              *int    `json:"revenue"`
-	StageID              *int    `json:"stage_id"`
+	ID             int     `json:"id"`
+	ClientID       int     `json:"client_id"`
+	Stage          string  `json:"stage"`
+	FollowUpDate   *string `json:"follow_up_date"`
+	FollowUpResult *bool   `json:"follow_up_result"`
+	Closed         *bool   `json:"closed"`
+	Revenue        *int    `json:"revenue"`
+	StageID        *int    `json:"stage_id"`
 }
 
 type StartSalesProcessResponse struct {
@@ -397,10 +397,10 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// 2) insert sales process
 	var salesProcessID int
 	if err := tx.QueryRow(
-		`INSERT INTO sales_process (client_id, stage, zweitgespraech_date, stage_id)
-		 VALUES ($1, 'zweitgespraech', $2, $3)
+		`INSERT INTO sales_process (client_id, stage, follow_up_date, stage_id)
+		 VALUES ($1, 'follow_up', $2, $3)
 		 RETURNING id`,
-		clientID, req.ZweitgespraechDate, req.SourceStageID,
+		clientID, req.FollowUpDate, req.SourceStageID,
 	).Scan(&salesProcessID); err != nil {
 		http.Error(w, "insert sales_process: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -422,14 +422,14 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			SourceStageID: req.SourceStageID,
 		},
 		SalesProcess: StartSalesProcessDTO{
-			ID:                   salesProcessID,
-			ClientID:             clientID,
-			Stage:                "zweitgespraech",
-			ZweitgespraechDate:   req.ZweitgespraechDate,
-			ZweitgespraechResult: nil,
-			Abschluss:            nil,
-			Revenue:              nil,
-			StageID:              req.SourceStageID,
+			ID:             salesProcessID,
+			ClientID:       clientID,
+			Stage:          "follow_up",
+			FollowUpDate:   req.FollowUpDate,
+			FollowUpResult: nil,
+			Closed:         nil,
+			Revenue:        nil,
+			StageID:        req.SourceStageID,
 		},
 	}
 

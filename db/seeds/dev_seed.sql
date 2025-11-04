@@ -1,4 +1,4 @@
--- ensure app_settings table exists in a migration before running this seed
+-- Ensure app_settings table exists before running this seed
 
 WITH
 -- 0) Global tunables
@@ -21,7 +21,7 @@ settings_avg_rev AS (
   RETURNING 1
 ),
 
--- 1) Stage
+-- 1) Stage (ad campaign)
 s AS (
   INSERT INTO stages (name, date, ad_budget, registrations, participants)
   VALUES ('Facebook Ads September', '2025-09-01', 2000, 50, 30)
@@ -54,36 +54,36 @@ maria AS (
 ),
 
 -- 3) Sales processes
--- Anna: closed/won so she can have a contract
+-- Anna: closed/won (Abschluss)
 sp_anna AS (
-  INSERT INTO sales_process (client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id)
-  SELECT a.id, 'abschluss', '2025-09-10', TRUE, TRUE, 4800, NULL
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
+  SELECT a.id, 'closed', '2025-09-10', TRUE, TRUE, 4800, NULL
   FROM anna a
   RETURNING id, client_id
 ),
--- Max: closed/won linked to stage
+-- Max: closed/won (Abschluss) linked to stage
 sp_max AS (
-  INSERT INTO sales_process (client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id)
-  SELECT m.id, 'abschluss', '2025-09-05', TRUE, TRUE, 6000, s.id
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
+  SELECT m.id, 'closed', '2025-09-05', TRUE, TRUE, 6000, s.id
   FROM maxc m, s
   RETURNING id, client_id
 ),
--- Moritz: post-zweitgespräch but not closed (potential)
+-- Moritz: follow-up done, not closed (FollowUp)
 sp_moritz AS (
-  INSERT INTO sales_process (client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id)
-  SELECT mo.id, 'zweitgespraech', '2025-10-02', TRUE, FALSE, 5400, s.id
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
+  SELECT mo.id, 'follow_up', '2025-10-02', TRUE, FALSE, 5400, s.id
   FROM moritz mo, s
   RETURNING id, client_id
 ),
--- Maria: lost
+-- Maria: lost (lost)
 sp_maria AS (
-  INSERT INTO sales_process (client_id, stage, zweitgespraech_date, zweitgespraech_result, abschluss, revenue, stage_id)
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
   SELECT ma.id, 'lost', '2025-09-20', FALSE, FALSE, NULL, s.id
   FROM maria ma, s
   RETURNING id, client_id
 ),
 
--- 4) Contracts for BOTH active clients (Anna + Max)
+-- 4) Contracts for both active clients (Anna + Max)
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
   SELECT sa.client_id, sa.id, '2025-09-20', NULL, 6, 4800, 'monthly'
@@ -97,7 +97,7 @@ contract_max AS (
   RETURNING id
 ),
 
--- 5) Cashflow entries (some upcoming payments for both)
+-- 5) Cashflow entries (pending payments)
 cf_ins AS (
   INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
   SELECT c.id, d.due_date, d.amount, d.status
@@ -111,7 +111,7 @@ cf_ins AS (
   RETURNING 1
 ),
 
--- 6) Stage assignment + participants (all still inside the same WITH)
+-- 6) Stage assignments & participants
 assign_ins AS (
   INSERT INTO stage_client_assignments (client_id, stage_id)
   SELECT m.id, s.id FROM maxc m, s
@@ -133,5 +133,5 @@ part_max AS (
   RETURNING 1
 )
 
--- Final select just to end the statement
+-- Final confirmation
 SELECT 'ok';
