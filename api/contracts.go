@@ -139,6 +139,11 @@ ORDER BY c.id;
 		}
 		out = append(out, x)
 	}
+
+	if out == nil {
+		out = []ContractResponse{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }

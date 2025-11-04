@@ -97,6 +97,10 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		processes = append(processes, sp)
 	}
 
+	if processes == nil {
+		processes = []SalesProcessResponse{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(processes)
 }
