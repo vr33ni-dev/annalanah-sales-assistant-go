@@ -30,6 +30,7 @@ type Handler struct {
 }
 
 // GET /api/clients
+// GET /api/clients
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -66,6 +67,7 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	clients := make([]ClientResponse, 0, 64)
+
 	for rows.Next() {
 		var c ClientResponse
 		var completedAt sql.NullTime
@@ -83,8 +85,13 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		clients = append(clients, c)
 	}
 
+	// ✅ Ensure empty slice ([]), not null
+	if clients == nil {
+		clients = []ClientResponse{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(clients)
+	_ = json.NewEncoder(w).Encode(clients)
 }
 
 // POST /api/clients

@@ -38,6 +38,10 @@ func (h *Handler) ListStages(w http.ResponseWriter, r *http.Request) {
 		stages = append(stages, s)
 	}
 
+	if stages == nil {
+		stages = []Stage{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stages)
 }
