@@ -379,6 +379,11 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.FollowUpDate == nil || *req.FollowUpDate == "" {
+		http.Error(w, "follow_up_date is required", http.StatusBadRequest)
+		return
+	}
+
 	tx, err := h.DB.Begin()
 	if err != nil {
 		http.Error(w, "begin tx: "+err.Error(), http.StatusInternalServerError)
