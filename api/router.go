@@ -128,6 +128,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/settings", h.ListSettings)
 		pr.Get("/settings/{key}", h.GetSetting)
 		pr.Put("/settings/{key}", h.UpsertSetting)
+
+		// NLQ (natural language query)
+		pr.Post("/nlq", h.RunNLQ)
+
 	})
 
 	return r
