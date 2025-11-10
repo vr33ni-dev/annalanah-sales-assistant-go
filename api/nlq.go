@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -18,9 +17,30 @@ type nlqRequest struct {
 }
 
 type nlqResponse struct {
-	SQL   string        `json:"sql"`
-	Rows  []interface{} `json:"rows"`
-	Error string        `json:"error,omitempty"`
+	SQL     string                   `json:"sql"`
+	Columns []string                 `json:"columns,omitempty"`
+	Rows    []map[string]interface{} `json:"rows"`
+	Error   string                   `json:"error,omitempty"`
+}
+
+func isLikelySQLQuestion(q string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+
+	keywords := []string{
+		// English
+		"client", "customer", "revenue", "follow", "contract",
+		"sales", "stage", "status", "list", "show", "report", "data", "query",
+		// German
+		"kunde", "kunden", "umsatz", "vertrag", "zweitgespräch", "follow-up",
+		"phase", "stufe", "status", "analyse", "bericht", "zeige", "liste",
+	}
+
+	for _, k := range keywords {
+		if strings.Contains(q, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunNLQ handles POST /api/nlq
@@ -28,7 +48,14 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req nlqRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json", 400)
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+
+	if !isLikelySQLQuestion(req.Question) {
+		writeJSON(w, map[string]interface{}{
+			"answer": "🤖 Ich kann dir bei Datenabfragen helfen, z. B. 'Zeige mir Kunden mit geplantem Zweitgespräch'.",
+		})
 		return
 	}
 
@@ -46,7 +73,7 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		sqlText += " LIMIT 100"
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	rows, err := h.DB.QueryContext(ctx, sqlText)
@@ -57,25 +84,43 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	cols, _ := rows.Columns()
-	data := make([]interface{}, 0)
+	results := make([]map[string]interface{}, 0)
+
 	for rows.Next() {
-		colsData := make([]interface{}, len(cols))
-		colsPtrs := make([]interface{}, len(cols))
-		for i := range colsData {
-			colsPtrs[i] = &colsData[i]
+		columnVals := make([]interface{}, len(cols))
+		columnPtrs := make([]interface{}, len(cols))
+		for i := range columnVals {
+			columnPtrs[i] = &columnVals[i]
 		}
-		if err := rows.Scan(colsPtrs...); err != nil {
+
+		if err := rows.Scan(columnPtrs...); err != nil {
 			writeJSON(w, nlqResponse{Error: err.Error(), SQL: sqlText})
 			return
 		}
-		rowMap := map[string]interface{}{}
+
+		rowMap := make(map[string]interface{}, len(cols))
 		for i, col := range cols {
-			rowMap[col] = colsData[i]
+			val := columnVals[i]
+			switch v := val.(type) {
+			case []byte:
+				rowMap[col] = string(append([]byte(nil), v...)) // clone bytes
+			default:
+				// Deep copy value before storing
+				b, _ := json.Marshal(v)
+				var copyVal interface{}
+				_ = json.Unmarshal(b, &copyVal)
+				rowMap[col] = copyVal
+			}
 		}
-		data = append(data, rowMap)
+
+		results = append(results, rowMap)
 	}
 
-	writeJSON(w, nlqResponse{SQL: sqlText, Rows: data})
+	writeJSON(w, nlqResponse{
+		SQL:     sqlText,
+		Columns: cols,
+		Rows:    results,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -84,9 +129,9 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 }
 
 func isSelect(sql string) bool {
-	re := regexp.MustCompile(`(?i)^\s*select\s`)
-	return re.MatchString(sql)
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(sql)), "select")
 }
+
 func hasLimit(sql string) bool {
 	return strings.Contains(strings.ToLower(sql), "limit")
 }
@@ -112,7 +157,7 @@ TABLE sales_process (
   client_id INT REFERENCES clients(id),
   stage TEXT CHECK (stage IN ('follow_up','closed','lost')),
   follow_up_date DATE,
-  follow_up_result BOOLEAN,   -- true = appeared / call happened, false = no-show
+  follow_up_result BOOLEAN,
   closed BOOLEAN,
   revenue NUMERIC,
   stage_id INT REFERENCES stages(id),
@@ -171,7 +216,6 @@ When the user speaks in natural language, interpret as:
       AND sp.follow_up_date < CURRENT_DATE
       AND (sp.closed IS NULL OR sp.closed = FALSE)
 
-
 - "Erschienen":
     means sp.follow_up_result = TRUE.
 
@@ -183,7 +227,6 @@ When the user speaks in natural language, interpret as:
 
 - "Verloren", "Closed Lost":
     means sp.stage = 'lost' OR (sp.closed = FALSE AND sp.stage = 'lost').
-
 
 ---------------------------
 -- QUERY STYLE RULES
@@ -198,41 +241,38 @@ When the user speaks in natural language, interpret as:
 - If no LIMIT is mentioned, append "LIMIT 100".
 - DO NOT include comments, explanations, markdown, or code fences.
 - Output MUST be ONLY the SQL text.
+
+---------------------------
+-- ADDITIONAL INSTRUCTIONS
+---------------------------
+
+When generating queries about clients, follow-ups, or Zweitgespräche:
+- Always include identifying client info (c.name, c.email).
+- Include sp.follow_up_date AS zweites_gespraech_datum if relevant.
+- Include stage, follow_up_result, and closed columns if context involves progress or status.
 `
 
 func generateSQL(ctx context.Context, question string) (string, error) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 
-	// 🚧 Fallback for local dev
 	if apiKey == "" {
 		fmt.Println("⚠️  OPENAI_API_KEY not set — using local fallback mode")
-
-		// Simple heuristic examples so you can test without the API
 		q := strings.ToLower(question)
 		switch {
 		case strings.Contains(q, "zweitgespräch"):
 			return `SELECT c.id, c.name, sp.stage, sp.follow_up_date
 			        FROM sales_process sp
 			        JOIN clients c ON c.id = sp.client_id
-			        WHERE (sp.stage = 'follow_up' OR sp.stage_id = 2)
-			          AND (sp.follow_up_result IS NULL)
+			        WHERE sp.stage = 'follow_up'
+			          AND sp.follow_up_result IS NULL
 			          AND (sp.follow_up_date IS NULL OR sp.follow_up_date < NOW() - INTERVAL '14 days')
 			        ORDER BY sp.follow_up_date NULLS FIRST
 			        LIMIT 100;`, nil
-		case strings.Contains(q, "client") && strings.Contains(q, "revenue"):
-			return `SELECT c.name, SUM(sp.revenue) AS total_revenue
-			        FROM sales_process sp
-			        JOIN clients c ON c.id = sp.client_id
-			        GROUP BY c.name
-			        ORDER BY total_revenue DESC
-			        LIMIT 100;`, nil
 		default:
-			// Generic stub query
 			return `SELECT id, name, email, status FROM clients LIMIT 10;`, nil
 		}
 	}
 
-	// ✅ Real LLM call (when API key exists)
 	client := openai.NewClient(apiKey)
 
 	resp, err := client.CreateChatCompletion(
@@ -249,17 +289,13 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 		return "", err
 	}
 
-	txt := resp.Choices[0].Message.Content
-	re := regexp.MustCompile("(?is)```sql\\s*(.*?)\\s*```")
-	m := re.FindStringSubmatch(txt)
-	if len(m) >= 2 {
-		return strings.TrimSpace(m[1]), nil
-	}
+	txt := strings.TrimSpace(resp.Choices[0].Message.Content)
+	txt = strings.ReplaceAll(txt, "```sql", "")
+	txt = strings.ReplaceAll(txt, "```", "")
+	txt = strings.TrimSpace(txt)
 
-	// fallback: assume the model already output raw SQL (no code block)
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(txt)), "select") {
-		return strings.TrimSpace(txt), nil
+	if !strings.HasPrefix(strings.ToLower(txt), "select") {
+		return "", fmt.Errorf("no SQL found in model output: %s", txt)
 	}
-
-	return "", fmt.Errorf("no SQL found in model output: %s", txt)
+	return txt, nil
 }

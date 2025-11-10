@@ -39,12 +39,13 @@ type SalesProcessResponse struct {
 
 // What the API accepts (PATCH /api/sales/{id})
 type SalesProcessUpdateRequest struct {
+	FollowUpDate           *string  `json:"follow_up_date,omitempty"`
 	FollowUpResult         *bool    `json:"follow_up_result"`
 	Closed                 *bool    `json:"closed"`
 	Revenue                *float64 `json:"revenue"`
 	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
-	ContractStartDate      *string  `json:"contract_start_date,omitempty"` // YYYY-MM-DD
-	ContractFrequency      *string  `json:"contract_frequency,omitempty"`  // monthly | bi-monthly | quarterly
+	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
+	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
 	CompletedAt            *string  `json:"completed_at,omitempty"`
 }
 
@@ -183,24 +184,32 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 	// ---------- UPDATE SALES_PROCESS (fields + normalized stage) ----------
 	_, err = h.DB.Exec(`
-		UPDATE sales_process
-		SET
-			follow_up_result = COALESCE($1, follow_up_result),
-			closed             = COALESCE($2, closed),
-			revenue               = CASE
-				WHEN $2 IS TRUE  THEN $3
-				WHEN $2 IS FALSE THEN NULL
-				ELSE revenue
-			END,
-			stage = CASE
-				WHEN COALESCE($2, closed) IS TRUE  THEN 'closed'         -- closed won
-				WHEN COALESCE($2, closed) IS FALSE THEN 'lost'              -- explicit no
-				WHEN COALESCE($1, follow_up_result) IS FALSE THEN 'lost'  -- no-show
-				WHEN COALESCE($1, follow_up_result) IS TRUE  THEN 'follow_up' -- call done, awaiting decision
-				ELSE 'follow_up'                                          -- planned / not happened yet
-			END
-		WHERE id = $4
-	`, sp.FollowUpResult, sp.Closed, sp.Revenue, id)
+  UPDATE sales_process
+  SET
+    follow_up_date   = COALESCE($1, follow_up_date),
+    follow_up_result = COALESCE($2, follow_up_result),
+    closed           = COALESCE($3, closed),
+    revenue          = CASE
+      WHEN $3 IS TRUE  THEN $4
+      WHEN $3 IS FALSE THEN NULL
+      ELSE revenue
+    END,
+    stage = CASE
+      WHEN COALESCE($3, closed) IS TRUE  THEN 'closed'
+      WHEN COALESCE($3, closed) IS FALSE THEN 'lost'
+      WHEN COALESCE($2, follow_up_result) IS FALSE THEN 'lost'
+      WHEN COALESCE($2, follow_up_result) IS TRUE  THEN 'follow_up'
+      ELSE 'follow_up'
+    END
+  WHERE id = $5
+`,
+		sp.FollowUpDate,
+		sp.FollowUpResult,
+		sp.Closed,
+		sp.Revenue,
+		id,
+	)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -395,10 +404,16 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	var clientID int
 	if err := tx.QueryRow(
 		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-		 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
-		 RETURNING id`,
+	 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
+	 RETURNING id`,
 		req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
 	).Scan(&clientID); err != nil {
+
+		if isUniqueViolation(err, "unique_client_email") {
+			http.Error(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits.", http.StatusConflict)
+			return
+		}
+
 		http.Error(w, "insert client: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

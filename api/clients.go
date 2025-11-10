@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type Client struct {
@@ -98,23 +101,36 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	var c Client
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "Ungültige Anfrage", http.StatusBadRequest)
 		return
 	}
 
 	err := h.DB.QueryRow(
 		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 		c.Name, c.Email, c.Phone, c.Source, c.SourceStageID, c.Status,
 	).Scan(&c.ID)
 
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) {
+			log.Printf("Postgres error: %s (code=%s, constraint=%s)", pqErr.Message, pqErr.Code, pqErr.Constraint)
+
+			if pqErr.Code == "23505" { // unique_violation
+				if pqErr.Constraint == "unique_client_email" {
+					writeJSONError(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits.", http.StatusConflict)
+					return
+				}
+				writeJSONError(w, "Doppelter Eintrag: "+pqErr.Constraint, http.StatusConflict)
+				return
+			}
+		}
+
+		writeJSONError(w, "Fehler beim Anlegen des Kunden.", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(c)
 }
 
@@ -244,6 +260,12 @@ func nullTime(t *time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: *t, Valid: true}
+}
+
+func writeJSONError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func parseIDFromURL(path string) (int, bool) {
