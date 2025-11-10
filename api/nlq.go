@@ -216,6 +216,13 @@ When the user speaks in natural language, interpret as:
       AND sp.follow_up_date < CURRENT_DATE
       AND (sp.closed IS NULL OR sp.closed = FALSE)
 
+- "alle Kunden und deren Zweitgespräch-Termine", "potenzielle, aktive und verlorene Kunden mit Zweitgespräch":
+    means include ALL clients (regardless of status) who have an entry in sales_process,
+    even if the stage is 'follow_up', 'closed', or 'lost'.
+    In SQL: use LEFT JOIN between clients and sales_process, 
+    and no stage filter unless explicitly requested.
+
+
 - "Erschienen":
     means sp.follow_up_result = TRUE.
 
