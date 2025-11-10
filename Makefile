@@ -20,3 +20,16 @@ reset:
 	make migrate-drop
 	make migrate-up
 	make seed	
+
+# Create a new migration with timestamp-based filenames
+# Usage: make migrate-new name=add_unique_email_to_clients
+migrate-new:
+	@if [ -z "$(name)" ]; then \
+		echo "❌ Please provide a migration name, e.g. make migrate-new name=add_unique_email_to_clients"; \
+		exit 1; \
+	fi; \
+	migrate create \
+		-ext sql \
+		-dir db/migrations \
+		-format "20060102150405" \
+		$(name)

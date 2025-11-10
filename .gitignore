@@ -35,3 +35,5 @@ __debug_*
 
 # project specific utilities
 db/utils/
+
+.envrc

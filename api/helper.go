@@ -4,9 +4,11 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lib/pq"
 )
 
 /* ------------ Public JSON types ------------ */
@@ -146,4 +148,9 @@ func (h *Handler) getNumericSetting(key string, def float64) float64 {
 		return v.Float64
 	}
 	return def
+}
+
+func isUniqueViolation(err error, constraint string) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.Constraint == constraint
 }
