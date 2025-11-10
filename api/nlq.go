@@ -229,6 +229,11 @@ When the user speaks in natural language, interpret as:
 - "Nicht erschienen":
     means sp.follow_up_result = FALSE OR (sp.follow_up_date < CURRENT_DATE AND sp.follow_up_result IS NULL).
 
+
+- "nicht abgeschlossen", "noch nicht abgeschlossen", "offen", "noch offen", "nicht beendet", "nicht geschlossen":
+    means clients whose sales process is NOT yet closed.
+    In SQL: (sp.closed IS NULL OR sp.closed = FALSE)
+
 - "Abgeschlossen", "Closed Won":
     means sp.stage = 'closed' AND sp.closed = TRUE.
 
