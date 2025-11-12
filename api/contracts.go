@@ -36,7 +36,6 @@ type ContractResponse struct {
 }
 
 // GET /api/contracts
-// GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
 WITH paid AS (

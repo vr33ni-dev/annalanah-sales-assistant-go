@@ -1,0 +1,2 @@
+ALTER TABLE clients 
+ADD COLUMN completed_at TIMESTAMPTZ;

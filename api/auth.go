@@ -415,3 +415,17 @@ func IsSecureForTest(r *http.Request) bool {
 func (a *Auth) MakeCookieForTest(sess Session, secure bool) *http.Cookie {
 	return a.makeCookie(sess, secure)
 }
+
+func (h *Handler) HandleAuthStartForTest(w http.ResponseWriter, r *http.Request) {
+	h.handleAuthStart(w, r)
+}
+
+func (h *Handler) HandleAuthCallbackForTest(w http.ResponseWriter, r *http.Request) {
+	h.handleAuthCallback(w, r)
+}
+
+func (h *Handler) MeHandlerForTest(w http.ResponseWriter, r *http.Request) {
+	h.meHandler(w, r)
+}
+
+func RandStateForTest() string { return randState() }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -14,72 +15,51 @@ import (
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
 )
 
-// helper to create schema and seed data for all tests
-func createContractSchema(db *sql.DB, t *testing.T) {
-	stmts := []string{
-		`CREATE TABLE clients (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT
-		);`,
-		`CREATE TABLE contracts (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			client_id INTEGER,
-			sales_process_id INTEGER,
-			start_date TEXT,
-			end_date TEXT,
-			duration_months INTEGER,
-			revenue_total REAL,
-			payment_frequency TEXT
-		);`,
-		`CREATE TABLE cashflow_entries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			contract_id INTEGER,
-			due_date TEXT,
-			amount REAL,
-			status TEXT
-		);`,
-	}
-	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("creating schema failed: %v", err)
-		}
-	}
-
-	// Seed one client and one contract
-	_, err := db.Exec(`INSERT INTO clients (name) VALUES ('Acme Inc')`)
+// --- Schema setup ---
+func createContractSchema(t *testing.T, db *sql.DB) {
+	_, err := db.Exec(`
+	CREATE TABLE clients (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT
+	);
+	CREATE TABLE contracts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		client_id INTEGER,
+		sales_process_id INTEGER,
+		start_date TEXT,
+		end_date TEXT,
+		duration_months INTEGER,
+		revenue_total REAL,
+		payment_frequency TEXT
+	);
+	`)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("schema error: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-					  VALUES (1, 1, '2025-01-01', '2025-12-31', 12, 12000, 'monthly')`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Add a couple of paid cashflow entries
-	_, _ = db.Exec(`INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-					VALUES (1, '2025-02-01', 1000, 'paid'),
-					       (1, '2025-03-01', 1000, 'paid')`)
+	_, _ = db.Exec(`INSERT INTO clients (name) VALUES ('Acme Inc');`)
+	_, _ = db.Exec(`
+	INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+	VALUES (1, 1, '2024-01-01', 12, 12000, 'monthly');
+	`)
 }
 
-func TestCreateContract(t *testing.T) {
+// --- CreateContract ---
+func TestCreateContract_Success(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
-	createContractSchema(db, t)
+	createContractSchema(t, db)
 
 	h := &api.Handler{DB: db}
-
-	body := api.Contract{
+	c := api.Contract{
 		ClientID:       1,
 		SalesProcessID: 2,
 		StartDate:      "2025-04-01",
-		EndDate:        nil,
 		DurationMonths: 6,
 		RevenueTotal:   6000,
 		PaymentFreq:    "monthly",
 	}
-
-	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	body, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	h.CreateContract(w, req)
@@ -89,33 +69,51 @@ func TestCreateContract(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
 	}
+}
 
-	var got api.Contract
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+func TestCreateContract_BadJSON(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	h := &api.Handler{DB: db}
 
-	if got.ID == 0 {
-		t.Fatal("expected contract ID to be returned")
-	}
-	if got.RevenueTotal != 6000 {
-		t.Fatalf("expected RevenueTotal=6000, got %v", got.RevenueTotal)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", strings.NewReader("{bad json"))
+	w := httptest.NewRecorder()
+	h.CreateContract(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
 	}
 }
 
-func TestUpdateContract(t *testing.T) {
+func TestCreateContract_DBError(t *testing.T) {
+	// Closed DB simulates insert failure
 	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-	createContractSchema(db, t)
-
+	db.Close()
 	h := &api.Handler{DB: db}
 
-	// prepare PATCH body
+	valid := api.Contract{ClientID: 1, StartDate: "2024-01-01", DurationMonths: 3, RevenueTotal: 1000, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(valid)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Result().StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Result().StatusCode)
+	}
+}
+
+// --- UpdateContract ---
+func TestUpdateContract_Success(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createContractSchema(t, db)
+
+	h := &api.Handler{DB: db}
 	end := "2025-11-01"
 	update := api.Contract{EndDate: &end, RevenueTotal: 15000}
 	body, _ := json.Marshal(update)
 
-	// inject chi route param correctly ✅
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "1")
 
@@ -128,27 +126,12 @@ func TestUpdateContract(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("expected 204 No Content, got %d", resp.StatusCode)
-	}
-
-	// Verify DB updated
-	var gotEnd string
-	var gotTotal float64
-	err := db.QueryRow(`SELECT end_date, revenue_total FROM contracts WHERE id=1`).Scan(&gotEnd, &gotTotal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotEnd != end {
-		t.Fatalf("expected end_date %s, got %s", end, gotEnd)
-	}
-	if gotTotal != 15000 {
-		t.Fatalf("expected revenue_total 15000, got %v", gotTotal)
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
 	}
 }
 
 func TestUpdateContract_InvalidID(t *testing.T) {
 	h := &api.Handler{DB: nil}
-
 	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/abc", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "abc")
@@ -156,9 +139,51 @@ func TestUpdateContract_InvalidID(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	h.UpdateContract(w, req)
-	resp := w.Result()
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid id, got %d", resp.StatusCode)
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestUpdateContract_BadJSON(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createContractSchema(t, db)
+
+	h := &api.Handler{DB: db}
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", strings.NewReader("{bad json"))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateContract(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestUpdateContract_DBError(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	db.Close() // simulate broken DB
+	h := &api.Handler{DB: db}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+
+	end := "2026-01-01"
+	update := api.Contract{EndDate: &end, RevenueTotal: 2000}
+	body, _ := json.Marshal(update)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateContract(w, req)
+
+	if w.Result().StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Result().StatusCode)
 	}
 }

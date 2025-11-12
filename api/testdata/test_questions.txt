@@ -1,0 +1,4 @@
+Wie viele Kunden habe ich?
+Zeige alle aktiven Kunden.
+Wie viele Stages gibt es?
+Was ist der Umsatz pro Kunde?

@@ -49,3 +49,10 @@ make seed
 ```bash
 go run main.go
 ```
+
+### 6. Test (with coverage)
+
+```bash
+go test ./api -coverprofile=coverage.out
+go tool cover -func=coverage.out
+```
