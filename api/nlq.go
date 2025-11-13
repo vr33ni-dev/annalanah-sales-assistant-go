@@ -179,16 +179,6 @@ func isAggregateQuery(sql string) bool {
 		strings.Contains(s, "avg(")
 }
 
-func isCountQuestion(q string) bool {
-	q = strings.ToLower(q)
-	return strings.Contains(q, "wie viele") ||
-		strings.Contains(q, "wieviele") ||
-		strings.Contains(q, "anzahl") ||
-		strings.Contains(q, "how many") ||
-		strings.Contains(q, "number of") ||
-		strings.Contains(q, "count of")
-}
-
 // generateSQL uses three modes:
 // 1) NLQ_MOCK=1  -> deterministic for tests
 // 2) no OPENAI key -> simple hardcoded fallback
