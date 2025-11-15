@@ -35,7 +35,7 @@ TABLE contracts (
   client_id INT,
   sales_process_id INT,
   start_date DATE,
-  end_date DATE,
+  end_date_computed DATE,
   duration_months INT,
   revenue_total NUMERIC,
   payment_frequency TEXT CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly'))
@@ -50,6 +50,16 @@ TABLE stages (
   participants INT
 );
 
+---------------------------
+-- TABLE ALIASES
+---------------------------
+
+Throughout all examples and SQL generation:
+- c  → clients
+- sp → sales_process
+- ct → contracts
+- st → stages
+
 
 ---------------------------
 -- SEMANTIC MAPPINGS
@@ -57,30 +67,16 @@ TABLE stages (
 
 When the user speaks in natural language, interpret as:
 
-- "Zweitgespräch", "Follow-up":
+- "Zweitgespräch", "zweites Gespräch":
     use sales_process.stage = 'follow_up'.
 
-- "Kein Ergebnis", "noch offen", "wartet auf Rückmeldung":
-    means a follow-up took place (sp.follow_up_result = TRUE)
-    but no final decision (sp.closed IS NULL OR sp.closed = FALSE).
-
-- "Zweitgespräch geplant", "noch kein Zweitgespräch durchgeführt":
+- "Zweitgespräch geplant", "noch kein Zweitgespräch durchgeführt", "Zweitgespräch ausstehend":
     means follow-up is scheduled but not yet completed.
     In SQL: sp.follow_up_result IS NULL AND sp.follow_up_date >= CURRENT_DATE.
 
-- "Zweitgespräch überfällig", "nicht erschienen":
-    means follow-up date has passed and no attendance was recorded.
-    In SQL: sp.follow_up_result IS NULL AND sp.follow_up_date < CURRENT_DATE.
-
-- "hatten ein Zweitgespräch", "Zweitgespräch hatte", 
-  "Follow-Up noch aussteht", "kein Ergebnis nach Zweitgespräch":
-    means the follow-up has already taken place (not scheduled in the future)
-    and there is no final decision yet.
-    Use together:
-      sp.stage = 'follow_up'
-      AND sp.follow_up_result = TRUE
-      AND sp.follow_up_date < CURRENT_DATE
-      AND (sp.closed IS NULL OR sp.closed = FALSE)
+- "bereits ein Zweitgespräch hatten", "Zweitgespräch gehabt", "Zweitgespräch war schon":
+    means the follow-up date has already passed, regardless of attendance or result.
+    In SQL: sp.stage = 'follow_up' AND sp.follow_up_date <= CURRENT_DATE
 
 - "alle Kunden und deren Zweitgespräch-Termine", "potenzielle, aktive und verlorene Kunden mit Zweitgespräch":
     means include ALL clients (regardless of status) who have an entry in sales_process,
@@ -88,11 +84,103 @@ When the user speaks in natural language, interpret as:
     In SQL: use LEFT JOIN between clients and sales_process, 
     and no stage filter unless explicitly requested.
 
+
+- ### Zweitgespräch Scenarios
+  The sales_process table tracks follow-ups via these fields:
+  - stage (TEXT) – current phase, e.g. 'follow_up'
+  - follow_up_date (DATE) – when the follow-up (Zweitgespräch) is scheduled
+  - follow_up_result (BOOLEAN or NULL)
+      - TRUE → Follow-up happened (salesperson confirmed attendance)
+      - FALSE → No-show or canceled
+      - NULL → Salesperson has not entered result yet
+  - closed (BOOLEAN) – indicates final decision (e.g., lost or won)
+  - outcome (TEXT) – optional outcome reason, e.g. 'lost', 'won'
+
+  #### Zweitgespräch geplant, noch kein Eintrag / kein Ergebnis
+  User might say:
+  "Zweitgespräch war geplant, aber noch kein Ergebnis", "noch kein Eintrag erfolgt", "Zweitgesprächtermine in der Vergangenheit", "vergangene Termine"
+
+  Meaning:
+  The follow-up date has already passed, but the salesperson has not entered
+  whether the meeting took place or not.
+
+  SQL condition:
+  sp.stage = 'follow_up'
+  AND sp.follow_up_date <= CURRENT_DATE 
+  AND sp.follow_up_result IS NULL
+
+  #### Zweitgespräch durchgeführt, Kunde überlegt noch (offen)
+  User might say:
+  "Zweitgespräch durchgeführt", "noch kein Abschluss", "Kunde überlegt noch", "Ergebnis offen"
+
+  Meaning:
+  The follow-up happened and attendance was marked, but there is no final
+  decision or contract yet.
+
+  SQL condition:
+  sp.stage = 'follow_up'
+  AND sp.follow_up_result = TRUE
+  AND sp.follow_up_date <= CURRENT_DATE
+  AND (sp.closed IS NULL OR sp.closed = FALSE)
+
+  #### Zweitgespräch – Kunde ist nicht erschienen (No-show)
+  User might say:
+  "Kunde ist nicht erschienen", "hat abgesagt", "no-show", "Zweitgespräch nicht wahrgenommen", "Zweitgespräch verpasst", "Zweitgespräch nicht stattgefunden"
+
+  Meaning:
+  The follow-up date has passed, and the salesperson explicitly recorded that
+  the client did not show up.
+
+  SQL condition:
+  sp.stage = 'follow_up'
+  AND sp.follow_up_result = FALSE
+  AND sp.follow_up_date <= CURRENT_DATE
+
+  #### Zweitgespräch durchgeführt, Kunde hat kein Interesse (kein Abschluss)
+  User might say:
+  "kein Abschluss", "Kunde will nicht", "verloren", "abgesagt", "lost", "kein Vertrag zustande gekommen", "Zweitgespräch verloren"
+
+  Meaning:
+  The follow-up happened, and the salesperson marked it as attended, but the
+  outcome was negative (the customer declined, no collaboration).
+
+  SQL condition:
+  sp.stage = 'follow_up'
+  AND sp.follow_up_result = TRUE
+  AND sp.closed = TRUE
+  AND sp.outcome = 'lost'
+  
+
+  #### Zweitgespräch durchgeführt, Abschluss erzielt (Closed Won)
+  User might say:
+  "Abschluss", "Closed, "Abgeschlossen", "Vertrag unterschrieben", "bestätigt", "confirmed", "won", "Vertrag zustande gekommen", "Zweitgespräch mit Abschluss", "Kunde hat unterschrieben", "Kunde gewonnen"
+
+  Meaning:
+  The follow-up happened, and the salesperson marked it as attended, and the
+  outcome was positive (the customer confirmed, contract has been signed).
+
+  SQL condition:
+  sp.stage = 'follow_up'
+  AND sp.follow_up_result = TRUE
+  AND sp.closed = TRUE
+  AND sp.outcome = 'closed'
+
+
+  #### Summary
+  | Case | Meaning | Key Conditions |
+  |------|----------|----------------|
+  | 1 | Scheduled, no entry yet | result IS NULL |
+  | 2 | Happened, open | result = TRUE, closed IS NULL/FALSE |
+  | 3 | No-show | result = FALSE |
+  | 4 | Lost after follow-up | result = TRUE, closed = TRUE (and optionally outcome = 'lost') |
+
+
+##### Mappings Summary
 - "Erschienen":
     means sp.follow_up_result = TRUE.
 
 - "Nicht erschienen":
-    means sp.follow_up_result = FALSE OR (sp.follow_up_date < CURRENT_DATE AND sp.follow_up_result IS NULL).
+    means sp.follow_up_result = FALSE OR (sp.follow_up_date <= CURRENT_DATE AND sp.follow_up_result IS NULL).
 
 - "nicht abgeschlossen", "noch nicht abgeschlossen", "offen", "noch offen", "nicht beendet", "nicht geschlossen":
     means clients whose sales process is NOT yet closed.
@@ -103,6 +191,41 @@ When the user speaks in natural language, interpret as:
 
 - "Verloren", "Closed Lost":
     means sp.stage = 'lost' OR (sp.closed = FALSE AND sp.stage = 'lost').
+
+### Contracts (ct)
+- "mit Vertrag", "hat Vertrag" → EXISTS a row in contracts for the client
+  (JOIN contracts ct ON ct.client_id = c.id)
+
+- "aktive Verträge", "laufende Verträge"
+  → ct.start_date <= CURRENT_DATE
+    AND (ct.end_date_computed IS NULL OR ct.end_date_computed >= CURRENT_DATE)
+
+- "läuft bald aus", "endet in den nächsten 30 Tagen"
+  → ct.end_date_computed IS NOT NULL
+    AND ct.end_date_computed > CURRENT_DATE
+    AND ct.end_date_computed <= CURRENT_DATE + INTERVAL '30 days'
+
+- "bereits beendet", "abgelaufen"
+  → ct.end_date_computed IS NOT NULL AND ct.end_date_computed < CURRENT_DATE
+
+- "monatlicher Betrag", "monatlicher Umsatz"
+  → If monthly amount is requested conceptually, but not stored, return revenue_total
+    and duration_months, do NOT fabricate computed columns unless asked explicitly.
+
+### Sales Process (sp)
+- "offen", "noch nicht abgeschlossen": (sp.closed IS NULL OR sp.closed = FALSE)
+- "geschlossen", "Closed Won": sp.stage = 'closed' AND sp.closed = TRUE
+- "verloren", "Closed Lost": sp.stage = 'lost'
+
+### Stages (st)
+- "Anmeldungen", "Registrierungen" → st.registrations
+- "Teilnehmer", "Teilnahmen" → st.participants
+- "Werbebudget", "Ad Budget" → st.ad_budget
+- "heute" → st.date = CURRENT_DATE
+- "diesen Monat" → date_trunc('month', st.date) = date_trunc('month', CURRENT_DATE)
+- "letzten Monat" → date_trunc('month', st.date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+- "diese Woche" → date_trunc('week', st.date) = date_trunc('week', CURRENT_DATE)
+
 
 ---------------------------
 -- QUERY STYLE RULES
@@ -132,6 +255,19 @@ When the user speaks in natural language, interpret as:
 - "Summe" or "gesamt" → SUM()
 - "im Monat" → filter by EXTRACT(MONTH FROM date)
 
+---------------------------
+-- DATE PHRASES (German)
+---------------------------
+- "heute" → = CURRENT_DATE
+- "gestern" → = CURRENT_DATE - INTERVAL '1 day'
+- "morgen" → = CURRENT_DATE + INTERVAL '1 day'
+- "diese Woche" → date_trunc('week', <col>) = date_trunc('week', CURRENT_DATE)
+- "diesen Monat" → date_trunc('month', <col>) = date_trunc('month', CURRENT_DATE)
+- "letzten Monat" → date_trunc('month', <col>) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+- "letzte 7 Tage" → <col> >= CURRENT_DATE - INTERVAL '7 days'
+- "letzte 30 Tage" → <col> >= CURRENT_DATE - INTERVAL '30 days'
+(Choose the correct date column based on context:
+ follow-ups → sp.follow_up_date; contracts → ct.start_date/ct.end_date_computed; stages → st.date; clients → c.completed_at.)
 
 ---------------------------
 -- ADDITIONAL INSTRUCTIONS
@@ -142,17 +278,29 @@ When generating queries about clients, follow-ups, or Zweitgespräche:
 - Include sp.follow_up_date AS zweites_gespraech_datum if relevant.
 - Include stage, follow_up_result, and closed columns if context involves progress or status.
 
+
+
 ---------------------------
 -- EXAMPLES
 ---------------------------
 
-User: "Wie viele Stages habe ich?"
+User: "Wie viele Bühnen habe ich?"
 SQL: SELECT COUNT(*) FROM stages;
 
 User: "Zeige alle Kunden mit abgeschlossenem Vertrag"
 SQL: SELECT c.name, ct.revenue_total, ct.start_date
      FROM clients c
      JOIN contracts ct ON ct.client_id = c.id
-     WHERE ct.start_date IS NOT NULL
-     LIMIT 100;
+     WHERE ct.start_date IS NOT NULL;
+
+User: "Kunden mit geplantem Zweitgespräch in der Zukunft"
+SQL:
+SELECT c.id, c.name, c.email,
+       sp.follow_up_date AS zweites_gespraech_datum,
+       sp.stage, sp.follow_up_result, sp.closed
+FROM clients c
+JOIN sales_process sp ON sp.client_id = c.id
+WHERE sp.stage = 'follow_up'
+  AND sp.follow_up_result IS NULL
+  AND sp.follow_up_date > CURRENT_DATE
 `

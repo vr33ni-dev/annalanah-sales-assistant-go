@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -131,15 +132,23 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		for i, col := range cols {
 			val := columnVals[i]
 			switch v := val.(type) {
+			case nil:
+				rowMap[col] = nil
 			case []byte:
-				// copy []byte -> string
-				rowMap[col] = string(append([]byte(nil), v...))
+				// Handle booleans stored as bytes ("t"/"f" or 0/1)
+				s := strings.TrimSpace(string(v))
+				if s == "t" || s == "true" || s == "1" {
+					rowMap[col] = true
+				} else if s == "f" || s == "false" || s == "0" {
+					rowMap[col] = false
+				} else {
+					rowMap[col] = s
+				}
+			case bool, int64, float64, string:
+				rowMap[col] = v
 			default:
-				// JSON round-trip to avoid pointer aliasing issues
-				b, _ := json.Marshal(v)
-				var copyVal interface{}
-				_ = json.Unmarshal(b, &copyVal)
-				rowMap[col] = copyVal
+				// Fallback safe stringify for unknown types
+				rowMap[col] = fmt.Sprintf("%v", v)
 			}
 		}
 
@@ -168,7 +177,8 @@ func isSelect(sql string) bool {
 }
 
 func hasLimit(sql string) bool {
-	return strings.Contains(strings.ToLower(sql), " limit ")
+	re := regexp.MustCompile(`(?i)\blimit\b`)
+	return re.MatchString(sql)
 }
 
 // very dumb heuristic: if it has COUNT( / SUM( / AVG(, treat as aggregate
@@ -212,6 +222,7 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 			        FROM sales_process sp
 			        JOIN clients c ON c.id = sp.client_id
 			        WHERE sp.stage = 'follow_up'
+							  AND sp.follow_up_date <= CURRENT_DATE
 			        ORDER BY sp.follow_up_date NULLS FIRST
 			        LIMIT 100`, nil
 		case strings.Contains(q, "wie viele stages") || strings.Contains(q, "wieviele stages"):

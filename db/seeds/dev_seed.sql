@@ -84,15 +84,16 @@ sp_maria AS (
 ),
 
 -- 4) Contracts for both active clients (Anna + Max)
+-- ⚠️ end_date is GENERATED ALWAYS, so we do NOT insert into it.
 contract_anna AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-  SELECT sa.client_id, sa.id, '2025-09-20', NULL, 6, 4800, 'monthly'
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+  SELECT sa.client_id, sa.id, '2025-09-20', 6, 4800, 'monthly'
   FROM sp_anna sa
   RETURNING id
 ),
 contract_max AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, '2025-09-15', NULL, 6, 6000, 'bi-monthly'
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+  SELECT sm.client_id, sm.id, '2025-09-15', 6, 6000, 'bi-monthly'
   FROM sp_max sm
   RETURNING id
 ),
