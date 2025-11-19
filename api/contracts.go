@@ -13,7 +13,7 @@ type Contract struct {
 	ClientID       int     `json:"client_id"`
 	SalesProcessID int     `json:"sales_process_id"`
 	StartDate      string  `json:"start_date"`
-	EndDate        *string `json:"end_date,omitempty"`
+	EndDate        *string `json:"end_date_computed,omitempty"`
 	DurationMonths int     `json:"duration_months"`
 	RevenueTotal   float64 `json:"revenue_total"`
 	PaymentFreq    string  `json:"payment_frequency"`
@@ -25,7 +25,7 @@ type ContractResponse struct {
 	ClientName      string  `json:"client_name"`
 	SalesProcessID  int     `json:"sales_process_id"`
 	StartDate       string  `json:"start_date"`
-	EndDate         *string `json:"end_date,omitempty"`
+	EndDate         *string `json:"end_date_computed,omitempty"`
 	DurationMonths  int     `json:"duration_months"`
 	RevenueTotal    float64 `json:"revenue_total"`
 	PaymentFreq     string  `json:"payment_frequency"`
@@ -61,7 +61,7 @@ SELECT
   cl.name AS client_name,
   c.sales_process_id,
   c.start_date,
-  c.end_date,
+  c.end_date_computed,
   c.duration_months,
   c.revenue_total,
   c.payment_frequency,
@@ -156,8 +156,10 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := h.DB.QueryRow(
-		`INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		`INSERT INTO contracts
+    (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+VALUES ($1, $2, $3::date, $4, $5, $6)
+`,
 		c.ClientID,
 		c.SalesProcessID,
 		c.StartDate,
@@ -193,7 +195,7 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.DB.Exec(`
 		UPDATE contracts
-		SET end_date = $1, revenue_total = $2
+		SET revenue_total = $2
 		WHERE id = $3`,
 		c.EndDate, c.RevenueTotal, id,
 	)

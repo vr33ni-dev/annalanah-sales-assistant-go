@@ -84,7 +84,7 @@ sp_maria AS (
 ),
 
 -- 4) Contracts for both active clients (Anna + Max)
--- ⚠️ end_date is GENERATED ALWAYS, so we do NOT insert into it.
+-- ⚠️ end_date_computed is GENERATED ALWAYS, so we do NOT insert into it.
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
   SELECT sa.client_id, sa.id, '2025-09-20', 6, 4800, 'monthly'

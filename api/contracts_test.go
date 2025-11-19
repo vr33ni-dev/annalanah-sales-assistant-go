@@ -27,7 +27,7 @@ func createContractSchema(t *testing.T, db *sql.DB) {
 		client_id INTEGER,
 		sales_process_id INTEGER,
 		start_date TEXT,
-		end_date TEXT,
+		end_date_computed TEXT,
 		duration_months INTEGER,
 		revenue_total REAL,
 		payment_frequency TEXT
