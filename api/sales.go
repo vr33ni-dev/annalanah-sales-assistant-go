@@ -243,17 +243,27 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if !exists {
-			_, err = h.DB.Exec(`
-				INSERT INTO contracts
-					(client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-				VALUES ($1, $2, $3::date, $4, $5, $6)
-			`, clientID, id, *sp.ContractStartDate, *sp.ContractDurationMonths, *sp.Revenue, *sp.ContractFrequency)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		// Create contract with flexible fields
+		_, err = h.DB.Exec(`
+    INSERT INTO contracts (
+        client_id, sales_process_id, start_date,
+        duration_months, revenue_total, payment_frequency
+    )
+    VALUES ($1, $2, $3::date, $4, $5, $6)
+`,
+			clientID,
+			id,
+			*sp.ContractStartDate,
+			*sp.ContractDurationMonths,
+			*sp.Revenue,
+			*sp.ContractFrequency,
+		)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+
 	}
 
 	// ---------- RETURN UPDATED ROW ----------
@@ -435,11 +445,16 @@ type ContractUpsell struct {
 	UpsellRevenue      *float64 `json:"upsell_revenue,omitempty"`
 	PreviousContractID *int     `json:"previous_contract_id,omitempty"`
 	NewContractID      *int     `json:"new_contract_id,omitempty"`
+	CreatedAt          *string  `json:"created_at"`
+	UpdatedAt          *string  `json:"updated_at"`
 }
 type CreateUpsellRequest struct {
-	UpsellDate    *string  `json:"upsell_date,omitempty"`
-	UpsellResult  *string  `json:"upsell_result,omitempty"`
-	UpsellRevenue *float64 `json:"upsell_revenue,omitempty"`
+	UpsellDate             *string  `json:"upsell_date,omitempty"`
+	UpsellResult           *string  `json:"upsell_result,omitempty"`
+	UpsellRevenue          *float64 `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
+	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
+	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
 }
 
 func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Request) {
@@ -459,7 +474,9 @@ func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Reques
             upsell_result,
             upsell_revenue,
             previous_contract_id,
-            new_contract_id
+            new_contract_id,
+						created_at,
+						updated_at
         FROM contract_upsells
         WHERE sales_process_id = $1
         ORDER BY upsell_date DESC, id DESC
@@ -483,6 +500,8 @@ func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Reques
 			&u.UpsellRevenue,
 			&u.PreviousContractID,
 			&u.NewContractID,
+			&u.CreatedAt,
+			&u.UpdatedAt,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -508,7 +527,9 @@ func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
             upsell_result,
             upsell_revenue,
             previous_contract_id,
-            new_contract_id
+            new_contract_id,
+						created_at,
+						updated_at
         FROM contract_upsells
         ORDER BY upsell_date DESC NULLS LAST, id DESC
     `)
@@ -535,6 +556,8 @@ func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
 			&u.UpsellRevenue,
 			&u.PreviousContractID,
 			&u.NewContractID,
+			&u.CreatedAt,
+			&u.UpdatedAt,
 		)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -621,10 +644,13 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 
 	var existingUpsellID *int
 	err = tx.QueryRow(`
-        SELECT id FROM contract_upsells
-        WHERE sales_process_id = $1 AND upsell_result IS NULL
-        ORDER BY upsell_date DESC LIMIT 1
-    `, salesID).Scan(&existingUpsellID)
+			SELECT id FROM contract_upsells
+			WHERE sales_process_id = $1
+				AND upsell_result IS NULL
+			ORDER BY upsell_date DESC NULLS LAST, id DESC
+			LIMIT 1
+	`, salesID).Scan(&existingUpsellID)
+
 	if err == sql.ErrNoRows {
 		existingUpsellID = nil
 	} else if err != nil {
@@ -650,21 +676,69 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var newContractID *int = nil
 
 	if req.UpsellResult != nil && *req.UpsellResult == "verlaengerung" {
+
+		// ----- VALIDATE required contract fields -----
+		if req.ContractStartDate == nil ||
+			req.ContractDurationMonths == nil || *req.ContractDurationMonths <= 0 ||
+			req.ContractFrequency == nil ||
+			(*req.ContractFrequency != "monthly" &&
+				*req.ContractFrequency != "bi-monthly" &&
+				*req.ContractFrequency != "quarterly") {
+
+			http.Error(w, "contract_start_date, contract_duration_months > 0 and contract_frequency (monthly|bi-monthly|quarterly) are required", http.StatusBadRequest)
+			return
+		}
+
+		// ----- INSERT CONTRACT -----
 		err = tx.QueryRow(`
-            INSERT INTO contracts (client_id, sales_process_id, start_date,
-                                   duration_months, revenue_total, payment_frequency)
-            VALUES ($1, $2, CURRENT_DATE, 6, $3, 'monthly')
-            RETURNING id
-        `, clientID, salesID, *req.UpsellRevenue).Scan(&newContractID)
+        INSERT INTO contracts (
+            client_id, sales_process_id, start_date,
+            duration_months, revenue_total, payment_frequency
+        )
+        VALUES ($1, $2, $3::date, $4, $5, $6)
+        RETURNING id
+    `,
+			clientID,
+			salesID,
+			*req.ContractStartDate,
+			*req.ContractDurationMonths,
+			*req.UpsellRevenue,
+			*req.ContractFrequency,
+		).Scan(&newContractID)
+
 		if err != nil {
 			http.Error(w, "failed to create contract: "+err.Error(), 500)
 			return
 		}
 
+		// ----- CALCULATE FIRST PAYMENT DATE -----
+		// monthly = +1 month
+		// bi-monthly = +2 months
+		// quarterly = +3 months
+		var months int
+		switch *req.ContractFrequency {
+		case "monthly":
+			months = 1
+		case "bi-monthly":
+			months = 2
+		case "quarterly":
+			months = 3
+		}
+
+		// compute individual payment amount
+		monthlyAmount := *req.UpsellRevenue / float64(*req.ContractDurationMonths)
+
+		// ----- INSERT FIRST CASHFLOW ENTRY -----
 		_, err = tx.Exec(`
-            INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-            VALUES ($1, CURRENT_DATE + INTERVAL '30 days', $2, 'pending')
-        `, *newContractID, *req.UpsellRevenue/6)
+        INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
+        VALUES ($1, ($2::date + make_interval(months => $3))::date, $4, 'pending')
+    `,
+			*newContractID,
+			*req.ContractStartDate,
+			months,
+			monthlyAmount,
+		)
+
 		if err != nil {
 			http.Error(w, "failed to create cashflow entries: "+err.Error(), 500)
 			return

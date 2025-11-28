@@ -44,13 +44,19 @@ make migrate-up
 make seed
 ```
 
-### 5. Run the server
+### 5. Add new migration
+
+```bash
+migrate create -ext sql -dir db/migrations alter_upsell_revenue_column
+```
+
+### 6. Run the server
 
 ```bash
 go run main.go
 ```
 
-### 6. Test (with coverage)
+### 7. Test (with coverage)
 
 ```bash
 go test ./api -coverprofile=coverage.out
