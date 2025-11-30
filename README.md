@@ -47,7 +47,7 @@ make seed
 ### 5. Add new migration
 
 ```bash
-migrate create -ext sql -dir db/migrations alter_upsell_revenue_column
+migrate create -ext sql -dir db/migrations alter_example_table
 ```
 
 ### 6. Run the server
@@ -62,3 +62,6 @@ go run main.go
 go test ./api -coverprofile=coverage.out
 go tool cover -func=coverage.out
 ```
+
+---
+> **Note:** The canonical repository is [**on GitHub**](https://github.com/vr33ni-dev/annalanah-sales-assistant-go) · [Mirror on GitLab →](https://gitlab.com/vr33ni-work/annalanah-sales-assistant-go) [![Mirror Status](https://github.com/vr33ni-dev/annalanah-sales-assistant-go/actions/workflows/gitlab-mirror.yml/badge.svg)](https://github.com/vr33ni-dev/annalanah-sales-assistant-go/actions/workflows/gitlab-mirror.yml)
