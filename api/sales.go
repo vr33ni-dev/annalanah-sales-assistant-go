@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -437,16 +438,19 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 // Upsells
 // Using Pointers because PostgreSQL can return NULL, and Go's plain string cannot represent NULL, only "" and these fields can return nil
 type ContractUpsell struct {
-	ID                 int      `json:"id"`
-	SalesProcessID     int      `json:"sales_process_id"`
-	ClientID           int      `json:"client_id"`
-	UpsellDate         *string  `json:"upsell_date"`
-	UpsellResult       *string  `json:"upsell_result"` // "verlaengerung" or "keine_verlaengerung"`
-	UpsellRevenue      *float64 `json:"upsell_revenue,omitempty"`
-	PreviousContractID *int     `json:"previous_contract_id,omitempty"`
-	NewContractID      *int     `json:"new_contract_id,omitempty"`
-	CreatedAt          *string  `json:"created_at"`
-	UpdatedAt          *string  `json:"updated_at"`
+	ID                     int        `json:"id"`
+	SalesProcessID         int        `json:"sales_process_id"`
+	ClientID               int        `json:"client_id"`
+	UpsellDate             *string    `json:"upsell_date"`
+	UpsellResult           *string    `json:"upsell_result"` // "verlaengerung" or "keine_verlaengerung"`
+	UpsellRevenue          *float64   `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *time.Time `json:"contract_start_date"`
+	ContractDurationMonths *int       `json:"contract_duration_months"`
+	ContractFrequency      *string    `json:"contract_frequency"`
+	PreviousContractID     *int       `json:"previous_contract_id,omitempty"`
+	NewContractID          *int       `json:"new_contract_id,omitempty"`
+	CreatedAt              *string    `json:"created_at"`
+	UpdatedAt              *string    `json:"updated_at"`
 }
 type CreateUpsellRequest struct {
 	UpsellDate             *string  `json:"upsell_date,omitempty"`
@@ -466,21 +470,26 @@ func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Reques
 	}
 
 	rows, err := h.DB.Query(`
-        SELECT 
-            id,
-            sales_process_id,
-            client_id,
-            upsell_date,
-            upsell_result,
-            upsell_revenue,
-            previous_contract_id,
-            new_contract_id,
-						created_at,
-						updated_at
-        FROM contract_upsells
-        WHERE sales_process_id = $1
-        ORDER BY upsell_date DESC, id DESC
-    `, salesID)
+SELECT 
+    cu.id,
+    cu.sales_process_id,
+    cu.client_id,
+    cu.upsell_date,
+    cu.upsell_result,
+    cu.upsell_revenue,
+    cu.previous_contract_id,
+    cu.new_contract_id,
+    cu.created_at,
+    cu.updated_at,
+    c.start_date AS contract_start_date,
+    c.duration_months AS contract_duration_months,
+    c.payment_frequency AS contract_frequency
+FROM contract_upsells cu
+LEFT JOIN contracts c
+       ON c.id = cu.new_contract_id
+WHERE cu.sales_process_id = $1
+ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
+`, salesID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -502,6 +511,9 @@ func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Reques
 			&u.NewContractID,
 			&u.CreatedAt,
 			&u.UpdatedAt,
+			&u.ContractStartDate,
+			&u.ContractDurationMonths,
+			&u.ContractFrequency,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -514,40 +526,43 @@ func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	_ = json.NewEncoder(w).Encode(list)
 }
 
 func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
-        SELECT 
-            id,
-            sales_process_id,
-            client_id,
-            upsell_date,
-            upsell_result,
-            upsell_revenue,
-            previous_contract_id,
-            new_contract_id,
-						created_at,
-						updated_at
-        FROM contract_upsells
-        ORDER BY upsell_date DESC NULLS LAST, id DESC
-    `)
+SELECT 
+    cu.id,
+    cu.sales_process_id,
+    cu.client_id,
+    cu.upsell_date,
+    cu.upsell_result,
+    cu.upsell_revenue,
+    cu.previous_contract_id,
+    cu.new_contract_id,
+    cu.created_at,
+    cu.updated_at,
+    c.start_date AS contract_start_date,
+    c.duration_months AS contract_duration_months,
+    c.payment_frequency AS contract_frequency
+FROM contract_upsells cu
+LEFT JOIN contracts c
+       ON c.id = cu.new_contract_id
+ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
+`)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	defer rows.Close()
 
-	// categories
 	var scheduled []ContractUpsell
 	var successful []ContractUpsell
 	var unsuccessful []ContractUpsell
 
 	for rows.Next() {
 		var u ContractUpsell
-
-		err := rows.Scan(
+		if err := rows.Scan(
 			&u.ID,
 			&u.SalesProcessID,
 			&u.ClientID,
@@ -558,8 +573,10 @@ func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
 			&u.NewContractID,
 			&u.CreatedAt,
 			&u.UpdatedAt,
-		)
-		if err != nil {
+			&u.ContractStartDate,
+			&u.ContractDurationMonths,
+			&u.ContractFrequency,
+		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -571,10 +588,8 @@ func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
 		} else if *u.UpsellResult == "keine_verlaengerung" {
 			unsuccessful = append(unsuccessful, u)
 		}
-
 	}
 
-	// return structured response
 	resp := map[string]any{
 		"scheduled":    scheduled,
 		"successful":   successful,
@@ -582,7 +597,7 @@ func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
