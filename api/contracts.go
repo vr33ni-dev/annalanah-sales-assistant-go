@@ -155,15 +155,16 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.DB.QueryRow(
-		`INSERT INTO contracts
-    (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-VALUES ($1, $2, $3::date, $4, $5, $6)
+	/* Insert contract - requires RETURNING id to tell PostgreSQL to output the newly inserted row’s primary key (without it, the result set is missing and Scan(&c.ID) fails because there is nothing to scan => 500 error. */
+	err := h.DB.QueryRow(`
+    INSERT INTO contracts
+        (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+    VALUES ($1, $2, $3::date, $4, $5, $6)
+    RETURNING id
 `,
 		c.ClientID,
 		c.SalesProcessID,
 		c.StartDate,
-		c.EndDate,
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
@@ -195,10 +196,13 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.DB.Exec(`
 		UPDATE contracts
-		SET revenue_total = $2
-		WHERE id = $3`,
-		c.EndDate, c.RevenueTotal, id,
+		SET revenue_total = $1
+		WHERE id = $2
+	`,
+		c.RevenueTotal, // $1
+		id,             // $2
 	)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
