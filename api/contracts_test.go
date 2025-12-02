@@ -18,6 +18,18 @@ import (
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api/testhelpers"
 )
 
+/*
+1️⃣ Success-path tests → use Embedded Postgres + testhelpers
+These tests require:
+real schema
+real migrations
+real foreign key constraints
+real SQL behavior (Postgres syntax, RETURNING, computed columns, etc.)
+
+2️⃣ Error-path tests → use SQLite
+These tests do NOT need schema, migrations, or Postgres.2
+*/
+
 //
 // ----------------------------------------------------------
 // CREATE CONTRACT (success path – real PostgreSQL)
