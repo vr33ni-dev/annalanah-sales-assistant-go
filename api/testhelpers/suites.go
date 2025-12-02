@@ -54,25 +54,35 @@ VALUES (2, 1, 'follow_up');
 }
 
 func (s *APITestSuite) Cleanup(t *testing.T) {
-	// truncate all tables or reset DB
 	s.ResetDB(t)
 }
 
 func (s *APITestSuite) ResetDB(t *testing.T) {
+	t.Helper()
+
+	// drop only user-defined tables
 	_, err := s.DB.DB.Exec(`
         DO $$
         DECLARE
             r RECORD;
         BEGIN
-            -- drop all tables
-            FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
-                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+            FOR r IN (
+                SELECT tablename 
+                FROM pg_tables 
+                WHERE schemaname='public'
+                  AND tablename NOT LIKE 'pg_%'
+                  AND tablename NOT LIKE 'sql_%'
+            )
+            LOOP
+                EXECUTE 'DROP TABLE IF EXISTS "' || r.tablename || '" CASCADE';
             END LOOP;
         END $$;
     `)
+
 	if err != nil {
 		t.Fatalf("failed to drop tables: %v", err)
 	}
 
+	// reload migrations
 	loadMigrations(s.DB.DB, t)
 }

@@ -1,5 +1,7 @@
 package testhelpers
 
+import "time"
+
 /* Factory:
 - dynamically creates correct data
 - always consistent with schema
@@ -99,4 +101,27 @@ func (s *APITestSuite) CreateContract(clientID, processID int) Contract {
 		RevenueTotal:   revenue,
 		PaymentFreq:    payFreq,
 	}
+}
+
+type CashflowEntry struct {
+	ID         int
+	ContractID int
+	DueDate    time.Time
+	Amount     float64
+}
+
+func (s *APITestSuite) CreateCashflowEntry(contractID int, due time.Time, amount float64) CashflowEntry {
+	var id int
+
+	err := s.DB.DB.QueryRow(`
+		INSERT INTO cashflow_entries (contract_id, due_date, amount)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, contractID, due, amount).Scan(&id)
+
+	if err != nil {
+		s.T.Fatalf("CreateCashflowEntry failed: %v", err)
+	}
+
+	return CashflowEntry{ID: id, ContractID: contractID, DueDate: due, Amount: amount}
 }
