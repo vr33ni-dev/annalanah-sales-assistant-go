@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -14,6 +15,13 @@ type Contract struct {
 	SalesProcessID int     `json:"sales_process_id"`
 	StartDate      string  `json:"start_date"`
 	EndDate        *string `json:"end_date_computed,omitempty"`
+	DurationMonths int     `json:"duration_months"`
+	RevenueTotal   float64 `json:"revenue_total"`
+	PaymentFreq    string  `json:"payment_frequency"`
+}
+
+type UpdateContractRequest struct {
+	StartDate      string  `json:"start_date"`
 	DurationMonths int     `json:"duration_months"`
 	RevenueTotal   float64 `json:"revenue_total"`
 	PaymentFreq    string  `json:"payment_frequency"`
@@ -180,6 +188,7 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/contracts/{id}
+// PATCH /api/contracts/{id}
 func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -188,19 +197,33 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c Contract
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	var req UpdateContractRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// Convert "YYYY-MM-DD" → time.Time
+	t, err := time.Parse("2006-01-02", req.StartDate)
+	if err != nil {
+		http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
 	_, err = h.DB.Exec(`
-		UPDATE contracts
-		SET revenue_total = $1
-		WHERE id = $2
-	`,
-		c.RevenueTotal, // $1
-		id,             // $2
+        UPDATE contracts
+        SET 
+            start_date = $1,
+            duration_months = $2,
+            revenue_total = $3,
+            payment_frequency = $4
+        WHERE id = $5
+    `,
+		t,
+		req.DurationMonths,
+		req.RevenueTotal,
+		req.PaymentFreq,
+		id,
 	)
 
 	if err != nil {
