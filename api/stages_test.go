@@ -205,6 +205,36 @@ func TestUpdateStageParticipant(t *testing.T) {
 	}
 }
 
+func TestUpdateStageInfo(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createStageSchema(db, t)
+	h := &api.Handler{DB: db}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+
+	body := map[string]any{"name": "Updated Stage", "ad_budget": 7500}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/stages/1", bytes.NewReader(b))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateStageInfo(w, req)
+	resp := w.Result()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	var name string
+	var budget float64
+	_ = db.QueryRow(`SELECT name, ad_budget FROM stages WHERE id=1`).Scan(&name, &budget)
+	if name != "Updated Stage" || budget != 7500 {
+		t.Fatalf("expected updated values, got name=%s, ad_budget=%f", name, budget)
+	}
+}
+
 func TestUpdateStageStats(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()

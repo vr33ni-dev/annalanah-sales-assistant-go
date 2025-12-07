@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
+	"golang.org/x/oauth2"
 )
 
 // --- helpers ---
@@ -20,6 +23,15 @@ func newTestAuth() *api.Auth {
 		CookieKey:  key,
 		Allowed: map[string]bool{
 			"user@example.com": true,
+		},
+		OAuth: &oauth2.Config{
+			ClientID:     "test-client-id",
+			ClientSecret: "test-secret",
+			RedirectURL:  "https://example.com/auth/callback",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://example.com/auth",
+				TokenURL: "https://example.com/token",
+			},
 		},
 	}
 }
@@ -128,5 +140,111 @@ func TestHandleLogoutClearsCookies(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected session cookie to be cleared")
+	}
+}
+
+func TestInitAuth(t *testing.T) {
+	os.Setenv("ALLOWED_EMAILS", "a@example.com,b@example.com")
+	os.Setenv("COOKIE_SIGNING_KEY", "12345678901234567890123456789012")
+	os.Setenv("GOOGLE_CLIENT_ID", "cid")
+	os.Setenv("GOOGLE_CLIENT_SECRET", "secret")
+	os.Setenv("OAUTH_REDIRECT_URL", "https://frontend/auth/google/callback")
+
+	h := &api.Handler{}
+	if err := h.InitAuth(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h.Auth == nil || h.Auth.OAuth == nil {
+		t.Fatal("expected Auth to be initialized")
+	}
+
+	// failure branch: short key
+	os.Setenv("COOKIE_SIGNING_KEY", "short")
+	if err := h.InitAuth(); err == nil {
+		t.Fatal("expected error for short key")
+	}
+}
+
+func TestRandState(t *testing.T) {
+	s := api.RandStateForTest() // or expose randState through a test wrapper
+	if s == "" {
+		t.Fatal("expected non-empty random state")
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(s); err != nil {
+		t.Fatalf("expected valid base64, got %v", err)
+	}
+}
+
+func TestMountAuthRoutes(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	r := chi.NewRouter()
+	h.MountAuthRoutes(r)
+
+	// Test that routes mount and don't panic for a harmless endpoint
+	req := httptest.NewRequest("GET", "/api/me", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code == 0 {
+		t.Fatal("expected router to respond")
+	}
+}
+
+func TestMeHandlerAndRequireAuth(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	sess := api.Session{Email: "user@example.com", Name: "Alice", Exp: time.Now().Add(time.Hour)}
+	c := h.Auth.MakeCookieForTest(sess, false)
+
+	req := httptest.NewRequest("GET", "/api/me", nil)
+	req.AddCookie(c)
+	w := httptest.NewRecorder()
+	h.MeHandlerForTest(w, req)
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Result().StatusCode)
+	}
+
+	// test RequireAuth with missing cookie (unauthorized)
+	protected := h.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req2 := httptest.NewRequest("GET", "/protected", nil)
+	w2 := httptest.NewRecorder()
+	protected.ServeHTTP(w2, req2)
+	if w2.Result().StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w2.Result().StatusCode)
+	}
+}
+
+func TestHandleAuthCallback_StateMismatch(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/auth/google/callback?state=bad", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "good"})
+	w := httptest.NewRecorder()
+	h.HandleAuthCallbackForTest(w, req)
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad state, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestHandleAuthStart(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/auth/google?redirect=/dashboard", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleAuthStartForTest(w, req) // simple wrapper for tests
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", resp.StatusCode)
+	}
+	foundState := false
+	for _, c := range resp.Cookies() {
+		if c.Name == "oauth_state" {
+			foundState = true
+		}
+	}
+	if !foundState {
+		t.Fatal("expected oauth_state cookie")
 	}
 }

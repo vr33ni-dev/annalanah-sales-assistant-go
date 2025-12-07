@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -13,7 +14,14 @@ type Contract struct {
 	ClientID       int     `json:"client_id"`
 	SalesProcessID int     `json:"sales_process_id"`
 	StartDate      string  `json:"start_date"`
-	EndDate        *string `json:"end_date,omitempty"`
+	EndDate        *string `json:"end_date_computed,omitempty"`
+	DurationMonths int     `json:"duration_months"`
+	RevenueTotal   float64 `json:"revenue_total"`
+	PaymentFreq    string  `json:"payment_frequency"`
+}
+
+type UpdateContractRequest struct {
+	StartDate      string  `json:"start_date"`
 	DurationMonths int     `json:"duration_months"`
 	RevenueTotal   float64 `json:"revenue_total"`
 	PaymentFreq    string  `json:"payment_frequency"`
@@ -25,7 +33,7 @@ type ContractResponse struct {
 	ClientName      string  `json:"client_name"`
 	SalesProcessID  int     `json:"sales_process_id"`
 	StartDate       string  `json:"start_date"`
-	EndDate         *string `json:"end_date,omitempty"`
+	EndDate         *string `json:"end_date_computed,omitempty"`
 	DurationMonths  int     `json:"duration_months"`
 	RevenueTotal    float64 `json:"revenue_total"`
 	PaymentFreq     string  `json:"payment_frequency"`
@@ -35,7 +43,6 @@ type ContractResponse struct {
 	NextDueDate     *string `json:"next_due_date,omitempty"`
 }
 
-// GET /api/contracts
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
@@ -62,7 +69,7 @@ SELECT
   cl.name AS client_name,
   c.sales_process_id,
   c.start_date,
-  c.end_date,
+  c.end_date_computed,
   c.duration_months,
   c.revenue_total,
   c.payment_frequency,
@@ -156,13 +163,16 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.DB.QueryRow(
-		`INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+	/* Insert contract - requires RETURNING id to tell PostgreSQL to output the newly inserted row’s primary key (without it, the result set is missing and Scan(&c.ID) fails because there is nothing to scan => 500 error. */
+	err := h.DB.QueryRow(`
+    INSERT INTO contracts
+        (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+    VALUES ($1, $2, $3::date, $4, $5, $6)
+    RETURNING id
+`,
 		c.ClientID,
 		c.SalesProcessID,
 		c.StartDate,
-		c.EndDate,
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
@@ -178,6 +188,7 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/contracts/{id}
+// PATCH /api/contracts/{id}
 func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -186,18 +197,35 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c Contract
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	var req UpdateContractRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// Convert "YYYY-MM-DD" → time.Time
+	t, err := time.Parse("2006-01-02", req.StartDate)
+	if err != nil {
+		http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
 	_, err = h.DB.Exec(`
-		UPDATE contracts
-		SET end_date = $1, revenue_total = $2
-		WHERE id = $3`,
-		c.EndDate, c.RevenueTotal, id,
+        UPDATE contracts
+        SET 
+            start_date = $1,
+            duration_months = $2,
+            revenue_total = $3,
+            payment_frequency = $4
+        WHERE id = $5
+    `,
+		t,
+		req.DurationMonths,
+		req.RevenueTotal,
+		req.PaymentFreq,
+		id,
 	)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -1,0 +1,1 @@
+-- noop: stage names remain 'follow_up', 'closed', 'lost'

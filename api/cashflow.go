@@ -170,3 +170,7 @@ ORDER BY month;
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
+
+func (h *Handler) GetNumericSettingForTest(key string, def float64) float64 {
+	return h.getNumericSetting(key, def)
+}

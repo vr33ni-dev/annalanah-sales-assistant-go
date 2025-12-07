@@ -33,7 +33,6 @@ type Handler struct {
 }
 
 // GET /api/clients
-// GET /api/clients
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -131,6 +130,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(c)
 }
 
@@ -279,3 +279,28 @@ func parseIDFromURL(path string) (int, bool) {
 	}
 	return id, true
 }
+
+// --- Test helpers ---
+func NullStrForTest(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func NullIntForTest(i *int) sql.NullInt64 {
+	if i == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: int64(*i), Valid: true}
+}
+
+func NullTimeForTest(t *time.Time) sql.NullTime {
+	if t == nil || t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
+func ParseIDFromURLForTest(p string) (int, bool)                        { return parseIDFromURL(p) }
+func WriteJSONErrorForTest(w http.ResponseWriter, msg string, code int) { writeJSONError(w, msg, code) }

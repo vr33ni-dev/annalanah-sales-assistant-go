@@ -42,7 +42,7 @@ func createSalesSchema(db *sql.DB, t *testing.T) {
 			client_id INTEGER,
 			sales_process_id INTEGER,
 			start_date TEXT,
-			end_date TEXT,
+			end_date_computed TEXT,
 			duration_months INTEGER,
 			revenue_total REAL,
 			payment_frequency TEXT
@@ -87,57 +87,6 @@ func TestListSalesProcesses(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ClientName != "Alice" {
 		t.Fatalf("expected one record with client=Alice, got %+v", got)
-	}
-}
-
-func TestCreateSalesProcess_NewOK(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-	createSalesSchema(db, t)
-	// insert a second client with no sales_process
-	_, _ = db.Exec(`INSERT INTO clients (name, email, phone, source, status) VALUES ('Bob', 'b@example.com', '555', 'referral', 'follow_up_scheduled')`)
-
-	h := &api.Handler{DB: db}
-
-	body := api.SalesProcess{
-		ClientID: 2, // ✅ new client without a process
-		Stage:    "follow_up",
-	}
-	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/sales", bytes.NewReader(b))
-	w := httptest.NewRecorder()
-
-	h.CreateSalesProcess(w, req)
-	resp := w.Result()
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
-	}
-
-	var created api.SalesProcess
-	_ = json.NewDecoder(resp.Body).Decode(&created)
-	if created.ID == 0 {
-		t.Fatal("expected new ID assigned")
-	}
-}
-
-func TestCreateSalesProcess_DuplicateClient(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-	createSalesSchema(db, t)
-	h := &api.Handler{DB: db}
-
-	// already has one process for client 1
-	body := api.SalesProcess{ClientID: 1, Stage: "lost"}
-	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/sales", bytes.NewReader(b))
-	w := httptest.NewRecorder()
-
-	h.CreateSalesProcess(w, req)
-	resp := w.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for duplicate client, got %d", resp.StatusCode)
 	}
 }
 

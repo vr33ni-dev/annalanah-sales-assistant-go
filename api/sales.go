@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -104,47 +105,6 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(processes)
-}
-
-// POST /api/sales
-func (h *Handler) CreateSalesProcess(w http.ResponseWriter, r *http.Request) {
-	var sp SalesProcess
-	if err := json.NewDecoder(r.Body).Decode(&sp); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// Before inserting, check if this client already has a sales process
-	var exists bool
-	err := h.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM sales_process WHERE client_id = $1)", sp.ClientID).Scan(&exists)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if exists {
-		http.Error(w, "this client already has a sales process (only one allowed)", http.StatusBadRequest)
-		return
-	}
-
-	err = h.DB.QueryRow(
-		`INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		sp.ClientID,
-		sp.Stage,
-		sp.FollowUpDate,
-		sp.FollowUpResult,
-		sp.Closed,
-		sp.Revenue,
-		sp.StageID,
-	).Scan(&sp.ID)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(sp)
 }
 
 // PATCH /api/sales/{id}
@@ -278,23 +238,33 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		// avoid duplicate active contract
 		var exists bool
 		if err := h.DB.QueryRow(`
-			SELECT EXISTS (SELECT 1 FROM contracts WHERE client_id = $1 AND end_date IS NULL)
+			SELECT EXISTS (SELECT 1 FROM contracts WHERE client_id = $1 AND end_date_computed IS NULL)
 		`, clientID).Scan(&exists); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if !exists {
-			_, err = h.DB.Exec(`
-				INSERT INTO contracts
-					(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-				VALUES ($1, $2, $3::date, NULL, $4, $5, $6)
-			`, clientID, id, *sp.ContractStartDate, *sp.ContractDurationMonths, *sp.Revenue, *sp.ContractFrequency)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		// Create contract with flexible fields
+		_, err = h.DB.Exec(`
+    INSERT INTO contracts (
+        client_id, sales_process_id, start_date,
+        duration_months, revenue_total, payment_frequency
+    )
+    VALUES ($1, $2, $3::date, $4, $5, $6)
+`,
+			clientID,
+			id,
+			*sp.ContractStartDate,
+			*sp.ContractDurationMonths,
+			*sp.Revenue,
+			*sp.ContractFrequency,
+		)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+
 	}
 
 	// ---------- RETURN UPDATED ROW ----------
@@ -463,4 +433,434 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		// last-ditch error path: headers are already sent; just log
 		log.Printf("encode StartSalesProcessResponse failed: %v", err)
 	}
+}
+
+// Upsells
+// Using Pointers because PostgreSQL can return NULL, and Go's plain string cannot represent NULL, only "" and these fields can return nil
+type ContractUpsell struct {
+	ID                     int        `json:"id"`
+	SalesProcessID         int        `json:"sales_process_id"`
+	ClientID               int        `json:"client_id"`
+	UpsellDate             *string    `json:"upsell_date"`
+	UpsellResult           *string    `json:"upsell_result"` // "verlaengerung" or "keine_verlaengerung"`
+	UpsellRevenue          *float64   `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *time.Time `json:"contract_start_date"`
+	ContractDurationMonths *int       `json:"contract_duration_months"`
+	ContractFrequency      *string    `json:"contract_frequency"`
+	PreviousContractID     *int       `json:"previous_contract_id,omitempty"`
+	NewContractID          *int       `json:"new_contract_id,omitempty"`
+	CreatedAt              *string    `json:"created_at"`
+	UpdatedAt              *string    `json:"updated_at"`
+}
+type CreateUpsellRequest struct {
+	UpsellDate             *string  `json:"upsell_date,omitempty"`
+	UpsellResult           *string  `json:"upsell_result,omitempty"`
+	UpsellRevenue          *float64 `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
+	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
+	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
+}
+
+func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	salesID, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid sales process id", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := h.DB.Query(`
+SELECT 
+    cu.id,
+    cu.sales_process_id,
+    cu.client_id,
+    cu.upsell_date,
+    cu.upsell_result,
+    cu.upsell_revenue,
+    cu.previous_contract_id,
+    cu.new_contract_id,
+    cu.created_at,
+    cu.updated_at,
+    c.start_date AS contract_start_date,
+    c.duration_months AS contract_duration_months,
+    c.payment_frequency AS contract_frequency
+FROM contract_upsells cu
+LEFT JOIN contracts c
+       ON c.id = cu.new_contract_id
+WHERE cu.sales_process_id = $1
+ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
+`, salesID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	var list []ContractUpsell
+
+	for rows.Next() {
+		var u ContractUpsell
+		if err := rows.Scan(
+			&u.ID,
+			&u.SalesProcessID,
+			&u.ClientID,
+			&u.UpsellDate,
+			&u.UpsellResult,
+			&u.UpsellRevenue,
+			&u.PreviousContractID,
+			&u.NewContractID,
+			&u.CreatedAt,
+			&u.UpdatedAt,
+			&u.ContractStartDate,
+			&u.ContractDurationMonths,
+			&u.ContractFrequency,
+		); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		list = append(list, u)
+	}
+
+	if list == nil {
+		list = []ContractUpsell{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(list)
+}
+
+func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(`
+SELECT 
+    cu.id,
+    cu.sales_process_id,
+    cu.client_id,
+    cu.upsell_date,
+    cu.upsell_result,
+    cu.upsell_revenue,
+    cu.previous_contract_id,
+    cu.new_contract_id,
+    cu.created_at,
+    cu.updated_at,
+    c.start_date AS contract_start_date,
+    c.duration_months AS contract_duration_months,
+    c.payment_frequency AS contract_frequency
+FROM contract_upsells cu
+LEFT JOIN contracts c
+       ON c.id = cu.new_contract_id
+ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
+`)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	var scheduled []ContractUpsell
+	var successful []ContractUpsell
+	var unsuccessful []ContractUpsell
+
+	for rows.Next() {
+		var u ContractUpsell
+		if err := rows.Scan(
+			&u.ID,
+			&u.SalesProcessID,
+			&u.ClientID,
+			&u.UpsellDate,
+			&u.UpsellResult,
+			&u.UpsellRevenue,
+			&u.PreviousContractID,
+			&u.NewContractID,
+			&u.CreatedAt,
+			&u.UpdatedAt,
+			&u.ContractStartDate,
+			&u.ContractDurationMonths,
+			&u.ContractFrequency,
+		); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		if u.UpsellResult == nil {
+			scheduled = append(scheduled, u)
+		} else if *u.UpsellResult == "verlaengerung" {
+			successful = append(successful, u)
+		} else if *u.UpsellResult == "keine_verlaengerung" {
+			unsuccessful = append(unsuccessful, u)
+		}
+	}
+
+	resp := map[string]any{
+		"scheduled":    scheduled,
+		"successful":   successful,
+		"unsuccessful": unsuccessful,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	salesID, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid sales process id", http.StatusBadRequest)
+		return
+	}
+
+	var req CreateUpsellRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// -----------------------
+	// VALIDATION
+	// -----------------------
+
+	// Validate upsell_result only if provided
+	if req.UpsellResult != nil {
+		if *req.UpsellResult != "verlaengerung" && *req.UpsellResult != "keine_verlaengerung" {
+			http.Error(w, "upsell_result must be 'verlaengerung' or 'keine_verlaengerung'", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// If verlängerung → revenue is required
+	if req.UpsellResult != nil && *req.UpsellResult == "verlaengerung" {
+		if req.UpsellRevenue == nil {
+			http.Error(w, "upsell_revenue required for verlängerung", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// -----------------------
+	// Resolve client_id
+	// -----------------------
+
+	var clientID int
+	err = h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, salesID).Scan(&clientID)
+	if err != nil {
+		http.Error(w, "sales process not found", http.StatusNotFound)
+		return
+	}
+
+	tx, err := h.DB.Begin()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer tx.Rollback()
+
+	// -----------------------
+	// Check if there is an existing open (pending) upsell
+	// pending = has date but no result yet
+	// -----------------------
+
+	var existingUpsellID *int
+	err = tx.QueryRow(`
+			SELECT id FROM contract_upsells
+			WHERE sales_process_id = $1
+				AND upsell_result IS NULL
+			ORDER BY upsell_date DESC NULLS LAST, id DESC
+			LIMIT 1
+	`, salesID).Scan(&existingUpsellID)
+
+	if err == sql.ErrNoRows {
+		existingUpsellID = nil
+	} else if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	// -----------------------
+	// Determine active previous contract (may be null)
+	// -----------------------
+
+	var prevContractID *int
+	_ = tx.QueryRow(`
+        SELECT id FROM contracts
+        WHERE client_id = $1 AND end_date_computed IS NULL
+        ORDER BY id DESC LIMIT 1
+    `, clientID).Scan(&prevContractID)
+
+	// -----------------------
+	// If verlängerung → create new contract + cashflow
+	// -----------------------
+
+	var newContractID *int = nil
+
+	if req.UpsellResult != nil && *req.UpsellResult == "verlaengerung" {
+
+		// ----- VALIDATE required contract fields -----
+		if req.ContractStartDate == nil ||
+			req.ContractDurationMonths == nil || *req.ContractDurationMonths <= 0 ||
+			req.ContractFrequency == nil ||
+			(*req.ContractFrequency != "monthly" &&
+				*req.ContractFrequency != "bi-monthly" &&
+				*req.ContractFrequency != "quarterly") {
+
+			http.Error(w, "contract_start_date, contract_duration_months > 0 and contract_frequency (monthly|bi-monthly|quarterly) are required", http.StatusBadRequest)
+			return
+		}
+
+		// ----- INSERT CONTRACT -----
+		err = tx.QueryRow(`
+        INSERT INTO contracts (
+            client_id, sales_process_id, start_date,
+            duration_months, revenue_total, payment_frequency
+        )
+        VALUES ($1, $2, $3::date, $4, $5, $6)
+        RETURNING id
+    `,
+			clientID,
+			salesID,
+			*req.ContractStartDate,
+			*req.ContractDurationMonths,
+			*req.UpsellRevenue,
+			*req.ContractFrequency,
+		).Scan(&newContractID)
+
+		if err != nil {
+			http.Error(w, "failed to create contract: "+err.Error(), 500)
+			return
+		}
+
+		// ----- CALCULATE FIRST PAYMENT DATE -----
+		// monthly = +1 month
+		// bi-monthly = +2 months
+		// quarterly = +3 months
+		var months int
+		switch *req.ContractFrequency {
+		case "monthly":
+			months = 1
+		case "bi-monthly":
+			months = 2
+		case "quarterly":
+			months = 3
+		}
+
+		// compute individual payment amount
+		monthlyAmount := *req.UpsellRevenue / float64(*req.ContractDurationMonths)
+
+		// ----- INSERT FIRST CASHFLOW ENTRY -----
+		_, err = tx.Exec(`
+        INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
+        VALUES ($1, ($2::date + make_interval(months => $3))::date, $4, 'pending')
+    `,
+			*newContractID,
+			*req.ContractStartDate,
+			months,
+			monthlyAmount,
+		)
+
+		if err != nil {
+			http.Error(w, "failed to create cashflow entries: "+err.Error(), 500)
+			return
+		}
+	}
+
+	// -----------------------
+	// Insert or update upsell
+	// -----------------------
+
+	var upsellID int
+
+	if existingUpsellID == nil {
+		// CREATE
+		err = tx.QueryRow(`
+            INSERT INTO contract_upsells
+                (sales_process_id, client_id, upsell_date, upsell_result,
+                 upsell_revenue, previous_contract_id, new_contract_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            RETURNING id
+        `,
+			salesID,
+			clientID,
+			req.UpsellDate,    // may be NULL
+			req.UpsellResult,  // may be NULL
+			req.UpsellRevenue, // may be NULL
+			prevContractID,
+			newContractID,
+		).Scan(&upsellID)
+	} else {
+		// UPDATE
+		err = tx.QueryRow(`
+            UPDATE contract_upsells
+            SET
+                upsell_date   = COALESCE($2, upsell_date),
+                upsell_result = COALESCE($3, upsell_result),
+                upsell_revenue = COALESCE($4, upsell_revenue),
+                new_contract_id = COALESCE($5, new_contract_id)
+            WHERE id = $1
+            RETURNING id
+        `,
+			*existingUpsellID,
+			req.UpsellDate,
+			req.UpsellResult,
+			req.UpsellRevenue,
+			newContractID,
+		).Scan(&upsellID)
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "commit: "+err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"upsell_id":       upsellID,
+		"updated":         existingUpsellID != nil,
+		"new_contract_id": newContractID,
+	})
+}
+
+func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
+
+	var stats struct {
+		VerlaengerungCount      int      `json:"verlangerung_count"`
+		KeineVerlaengerungCount int      `json:"keine_verlangerung_count"`
+		ScheduledCount          int      `json:"scheduled_count"`
+		Verlaengerungsquote     *float64 `json:"verlangerungsquote"`
+		UmsatzSum               float64  `json:"umsatz_sum"`
+	}
+
+	err := h.DB.QueryRow(`
+        SELECT
+			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlangerung_count,
+			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlangerung_count,
+			COUNT(*) FILTER (WHERE upsell_result IS NULL)                  AS scheduled_count,
+
+			ROUND(
+				100.0 * COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')
+				/ NULLIF(
+					COUNT(*) FILTER (WHERE upsell_result IN ('verlaengerung','keine_verlaengerung')),
+					0
+				),
+				1
+			) AS verlangerungsquote,
+
+			COALESCE(SUM(upsell_revenue), 0) AS umsatz_sum
+        FROM contract_upsells;
+    `).Scan(
+		&stats.VerlaengerungCount,
+		&stats.KeineVerlaengerungCount,
+		&stats.ScheduledCount,
+		&stats.Verlaengerungsquote,
+		&stats.UmsatzSum,
+	)
+
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }

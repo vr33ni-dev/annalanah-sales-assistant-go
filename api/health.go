@@ -15,3 +15,7 @@ func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
 		"status": "healthy",
 	})
 }
+
+func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	h.health(w, r)
+}
