@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +22,7 @@ type SalesProcess struct {
 	Closed         *bool    `json:"closed"`
 	Revenue        *float64 `json:"revenue"`
 	StageID        *int     `json:"stage_id"`
+	LeadID         *int     `json:"lead_id,omitempty"`
 }
 
 // What the API returns (GET /api/sales, PATCH /api/sales/{id})
@@ -36,6 +39,7 @@ type SalesProcessResponse struct {
 	Closed         *bool    `json:"closed"`
 	Revenue        *float64 `json:"revenue"`
 	StageID        *int     `json:"stage_id"`
+	LeadID         *int     `json:"lead_id,omitempty"`
 }
 
 // What the API accepts (PATCH /api/sales/{id})
@@ -65,7 +69,8 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		sp.follow_up_result,
 		sp.closed,
 		CASE WHEN COALESCE(sp.closed, false) THEN sp.revenue ELSE NULL END AS revenue,
-		sp.stage_id
+		sp.stage_id,
+		sp.lead_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
 	ORDER BY sp.created_at DESC, sp.id DESC
@@ -92,6 +97,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.Closed,
 			&sp.Revenue,
 			&sp.StageID,
+			&sp.LeadID,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -265,6 +271,27 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
+		_, err = h.DB.Exec(`
+	UPDATE leads
+	SET
+		converted = TRUE,
+		converted_at = now(),
+		converted_client_id = $1
+	WHERE id = (
+		SELECT lead_id
+		FROM sales_process
+		WHERE id = $2
+		  AND lead_id IS NOT NULL
+	)
+	  AND converted = FALSE
+`, clientID, id)
+
+		if err != nil {
+			http.Error(w, "failed to convert lead: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 	}
 
 	// ---------- RETURN UPDATED ROW ----------
@@ -315,14 +342,15 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/sales/start
-// types you already have somewhere are fine; these keep the payload stable.
 type StartSalesProcessRequest struct {
 	Name          string  `json:"name"`
 	Email         string  `json:"email"`
 	Phone         string  `json:"phone"`
-	Source        string  `json:"source"` // "organic" | "paid"
+	Source        string  `json:"source"`
 	SourceStageID *int    `json:"source_stage_id,omitempty"`
 	FollowUpDate  *string `json:"follow_up_date"`
+	LeadID        *int    `json:"lead_id,omitempty"`
+	MergeStrategy *string `json:"merge_strategy,omitempty"` // overwrite | keep_existing
 }
 
 type StartSalesProcessClient struct {
@@ -343,6 +371,7 @@ type StartSalesProcessDTO struct {
 	Closed         *bool   `json:"closed"`
 	Revenue        *int    `json:"revenue"`
 	StageID        *int    `json:"stage_id"`
+	LeadID         *int    `json:"lead_id,omitempty"`
 }
 
 type StartSalesProcessResponse struct {
@@ -352,61 +381,271 @@ type StartSalesProcessResponse struct {
 }
 
 func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// ------------------------------------------------
+	// 0) Parse & validate request
+	// ------------------------------------------------
 	var req StartSalesProcessRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if req.FollowUpDate == nil || *req.FollowUpDate == "" {
+	if req.FollowUpDate == nil || strings.TrimSpace(*req.FollowUpDate) == "" {
 		http.Error(w, "follow_up_date is required", http.StatusBadRequest)
 		return
 	}
 
-	tx, err := h.DB.Begin()
+	log.Printf("merge_strategy=%v", req.MergeStrategy)
+
+	normalize := func(s string) string {
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+
+	// ------------------------------------------------
+	// 1) Resolve lead (ignore already converted)
+	// ------------------------------------------------
+	var foundLeadID *int
+
+	if req.LeadID != nil {
+		var converted bool
+		if err := h.DB.QueryRowContext(ctx,
+			`SELECT converted FROM leads WHERE id = $1`,
+			*req.LeadID,
+		).Scan(&converted); err != nil {
+			http.Error(w, "lead lookup failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !converted {
+			foundLeadID = req.LeadID
+		}
+	}
+
+	// ------------------------------------------------
+	// 2) Detect existing client + conflicts
+	// ------------------------------------------------
+	var existingClientID *int
+	var existing struct {
+		ID     int
+		Name   string
+		Phone  sql.NullString
+		Source sql.NullString
+	}
+
+	conflicts := map[string]any{}
+
+	if strings.TrimSpace(req.Email) != "" {
+		err := h.DB.QueryRowContext(ctx,
+			`SELECT id, name, phone, source
+			 FROM clients
+			 WHERE LOWER(email) = LOWER($1)`,
+			strings.TrimSpace(req.Email),
+		).Scan(&existing.ID, &existing.Name, &existing.Phone, &existing.Source)
+
+		if err == nil {
+			existingClientID = &existing.ID
+
+			if normalize(req.Name) != normalize(existing.Name) {
+				conflicts["name"] = map[string]any{
+					"existing": existing.Name,
+					"incoming": req.Name,
+				}
+			}
+
+			if req.Phone != "" && existing.Phone.Valid &&
+				normalize(req.Phone) != normalize(existing.Phone.String) {
+				conflicts["phone"] = map[string]any{
+					"existing": existing.Phone.String,
+					"incoming": req.Phone,
+				}
+			}
+
+			if req.Source != "" && existing.Source.Valid &&
+				normalize(req.Source) != normalize(existing.Source.String) {
+				conflicts["source"] = map[string]any{
+					"existing": existing.Source.String,
+					"incoming": req.Source,
+				}
+			}
+		} else if err != sql.ErrNoRows {
+			http.Error(w, "client lookup failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// ------------------------------------------------
+	// 3) HARD STOP: active contract (NO tx yet)
+	// ------------------------------------------------
+	if existingClientID != nil {
+		var hasActiveContract bool
+		if err := h.DB.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM contracts
+				WHERE client_id = $1
+				AND end_date_computed IS NULL
+			)
+		`, *existingClientID).Scan(&hasActiveContract); err != nil {
+			http.Error(w, "contract lookup failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if hasActiveContract {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":     "client_has_active_contract",
+				"client_id": *existingClientID,
+			})
+			return
+		}
+	}
+
+	// ------------------------------------------------
+	// 4) Merge conflict dialog (decision required)
+	// ------------------------------------------------
+	if existingClientID != nil &&
+		len(conflicts) > 0 &&
+		req.MergeStrategy == nil {
+
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":               "client_exists",
+			"client_id":           *existingClientID,
+			"has_active_contract": false,
+			"conflicts":           conflicts,
+			"original_payload":    req,
+		})
+		return
+	}
+
+	// ------------------------------------------------
+	// 5) Transaction (WRITE ONLY from here)
+	// ------------------------------------------------
+	tx, err := h.DB.BeginTx(ctx, nil)
 	if err != nil {
-		http.Error(w, "begin tx: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "tx begin failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
 
-	// 1) insert client
+	// ------------------------------------------------
+	// 6) Create or update client
+	// ------------------------------------------------
 	var clientID int
-	if err := tx.QueryRow(
-		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-	 VALUES ($1, $2, $3, $4, $5, 'follow_up_scheduled')
-	 RETURNING id`,
-		req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
-	).Scan(&clientID); err != nil {
 
-		if isUniqueViolation(err, "unique_client_email") {
-			http.Error(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits.", http.StatusConflict)
+	if existingClientID != nil {
+		clientID = *existingClientID
+
+		if req.MergeStrategy != nil && *req.MergeStrategy == "overwrite" {
+			_, err := tx.ExecContext(ctx, `
+				UPDATE clients
+				SET
+					name   = COALESCE(NULLIF($1,''), name),
+					phone  = COALESCE(NULLIF($2,''), phone),
+					source = COALESCE(NULLIF($3,''), source)
+				WHERE id = $4
+			`,
+				req.Name,
+				req.Phone,
+				req.Source,
+				clientID,
+			)
+			if err != nil {
+				http.Error(w, "client overwrite failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	} else {
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO clients (name, email, phone, source, source_stage_id)
+			VALUES ($1,$2,$3,$4,$5)
+			RETURNING id
+		`,
+			req.Name,
+			req.Email,
+			req.Phone,
+			req.Source,
+			req.SourceStageID,
+		).Scan(&clientID); err != nil {
+			http.Error(w, "client insert failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		http.Error(w, "insert client: "+err.Error(), http.StatusInternalServerError)
-		return
 	}
 
-	// 2) insert sales process
-	var salesProcessID int
-	if err := tx.QueryRow(
-		`INSERT INTO sales_process (client_id, stage, follow_up_date, stage_id)
-		 VALUES ($1, 'follow_up', $2, $3)
-		 RETURNING id`,
-		clientID, req.FollowUpDate, req.SourceStageID,
-	).Scan(&salesProcessID); err != nil {
-		http.Error(w, "insert sales_process: "+err.Error(), http.StatusInternalServerError)
+	// ------------------------------------------------
+	// 6.1) Attach lead to client on overwrite (NOT conversion)
+	// ------------------------------------------------
+	if req.MergeStrategy != nil &&
+		*req.MergeStrategy == "overwrite" &&
+		foundLeadID != nil {
+
+		_, err := tx.ExecContext(ctx, `
+		UPDATE leads
+		SET
+			name   = COALESCE(NULLIF($1,''), name),
+			email  = COALESCE(NULLIF($2,''), email),
+			phone  = COALESCE(NULLIF($3,''), phone),
+			source = COALESCE(NULLIF($4,''), source),
+			source_stage_id = COALESCE($5, source_stage_id)
+		WHERE id = $6
+	`,
+			req.Name,
+			req.Email,
+			req.Phone,
+			req.Source,
+			req.SourceStageID,
+			*foundLeadID,
+		)
+
+		if err != nil {
+			http.Error(w, "lead overwrite failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// ------------------------------------------------
+	// 7) Create or reuse sales_process
+	// ------------------------------------------------
+	var salesID int
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO sales_process
+			(client_id, follow_up_date, stage, stage_id, created_at, lead_id)
+		VALUES ($1,$2,'follow_up',$3,now(),$4)
+		ON CONFLICT (client_id) DO NOTHING
+		RETURNING id
+	`,
+		clientID,
+		req.FollowUpDate,
+		req.SourceStageID,
+		foundLeadID,
+	).Scan(&salesID)
+
+	if err == sql.ErrNoRows {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id FROM sales_process WHERE client_id = $1`,
+			clientID,
+		).Scan(&salesID); err != nil {
+			http.Error(w, "sales_process reuse failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if err != nil {
+		http.Error(w, "sales_process insert failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		http.Error(w, "commit: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "commit failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	resp := StartSalesProcessResponse{
-		SalesProcessID: salesProcessID,
+	// ------------------------------------------------
+	// 8) Response
+	// ------------------------------------------------
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(StartSalesProcessResponse{
+		SalesProcessID: salesID,
 		Client: StartSalesProcessClient{
 			ID:            clientID,
 			Name:          req.Name,
@@ -416,23 +655,97 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			SourceStageID: req.SourceStageID,
 		},
 		SalesProcess: StartSalesProcessDTO{
-			ID:             salesProcessID,
-			ClientID:       clientID,
-			Stage:          "follow_up",
-			FollowUpDate:   req.FollowUpDate,
-			FollowUpResult: nil,
-			Closed:         nil,
-			Revenue:        nil,
-			StageID:        req.SourceStageID,
+			ID:           salesID,
+			ClientID:     clientID,
+			Stage:        "follow_up",
+			FollowUpDate: req.FollowUpDate,
+			StageID:      req.SourceStageID,
+			LeadID:       foundLeadID,
 		},
+	})
+}
+
+// createClientAndSalesProcessTx creates a client and a follow-up sales_process inside the provided tx.
+// Returns clientID, salesProcessID or error. leadID may be nil.
+func (h *Handler) createClientAndSalesProcessTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	name string,
+	email *string,
+	phone *string,
+	source string,
+	sourceStageID *int,
+	followUpDate *string,
+	leadID *int,
+) (int, int, error) {
+
+	var clientID int
+	var salesProcessID int
+
+	// ------------------------------------------
+	// 1) Create OR reuse client (email-idempotent)
+	// ------------------------------------------
+	if email != nil && *email != "" {
+		err := tx.QueryRowContext(ctx,
+			`SELECT id FROM clients WHERE LOWER(email) = LOWER($1)`,
+			*email,
+		).Scan(&clientID)
+
+		if err == sql.ErrNoRows {
+			err = tx.QueryRowContext(ctx,
+				`INSERT INTO clients (name, email, phone, source, source_stage_id)
+				 VALUES ($1,$2,$3,$4,$5)
+				 RETURNING id`,
+				name, email, phone, source, sourceStageID,
+			).Scan(&clientID)
+			if err != nil {
+				return 0, 0, err
+			}
+		} else if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		// no email → always new client
+		err := tx.QueryRowContext(ctx,
+			`INSERT INTO clients (name, phone, source, source_stage_id)
+			 VALUES ($1,$2,$3,$4)
+			 RETURNING id`,
+			name, phone, source, sourceStageID,
+		).Scan(&clientID)
+		if err != nil {
+			return 0, 0, err
+		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated) // 201 + body
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		// last-ditch error path: headers are already sent; just log
-		log.Printf("encode StartSalesProcessResponse failed: %v", err)
+	// ------------------------------------------
+	// 2) Create OR reuse sales_process (SAFE)
+	// ------------------------------------------
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO sales_process
+			(client_id, follow_up_date, stage, stage_id, created_at, lead_id)
+		 VALUES ($1,$2,'follow_up',$3,now(),$4)
+		 ON CONFLICT (client_id)
+		 DO NOTHING
+		 RETURNING id`,
+		clientID,
+		followUpDate,
+		sourceStageID,
+		leadID,
+	).Scan(&salesProcessID)
+
+	if err == sql.ErrNoRows {
+		// conflict happened → reuse existing sales_process
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id FROM sales_process WHERE client_id = $1`,
+			clientID,
+		).Scan(&salesProcessID); err != nil {
+			return 0, 0, err
+		}
+	} else if err != nil {
+		return 0, 0, err
 	}
+
+	return clientID, salesProcessID, nil
 }
 
 // Upsells
