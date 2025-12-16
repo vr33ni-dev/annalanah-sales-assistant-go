@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -351,6 +350,7 @@ type StartSalesProcessRequest struct {
 	FollowUpDate  *string `json:"follow_up_date"`
 	LeadID        *int    `json:"lead_id,omitempty"`
 	MergeStrategy *string `json:"merge_strategy,omitempty"` // overwrite | keep_existing
+	ClientID      *int    `json:"client_id,omitempty"`
 }
 
 type StartSalesProcessClient struct {
@@ -398,14 +398,12 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("merge_strategy=%v", req.MergeStrategy)
-
 	normalize := func(s string) string {
 		return strings.ToLower(strings.TrimSpace(s))
 	}
 
 	// ------------------------------------------------
-	// 1) Resolve lead (ignore already converted)
+	// 1) Resolve lead (ignore converted)
 	// ------------------------------------------------
 	var foundLeadID *int
 
@@ -414,17 +412,26 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		if err := h.DB.QueryRowContext(ctx,
 			`SELECT converted FROM leads WHERE id = $1`,
 			*req.LeadID,
-		).Scan(&converted); err != nil {
-			http.Error(w, "lead lookup failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if !converted {
+		).Scan(&converted); err == nil && !converted {
 			foundLeadID = req.LeadID
 		}
 	}
 
+	if foundLeadID == nil && strings.TrimSpace(req.Email) != "" {
+		var id int
+		if err := h.DB.QueryRowContext(ctx, `
+			SELECT id FROM leads
+			WHERE LOWER(email) = LOWER($1)
+			  AND converted = FALSE
+			ORDER BY id DESC
+			LIMIT 1
+		`, req.Email).Scan(&id); err == nil {
+			foundLeadID = &id
+		}
+	}
+
 	// ------------------------------------------------
-	// 2) Detect existing client + conflicts
+	// 2) Resolve existing client (PIN via client_id if present)
 	// ------------------------------------------------
 	var existingClientID *int
 	var existing struct {
@@ -434,9 +441,14 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		Source sql.NullString
 	}
 
-	conflicts := map[string]any{}
-
-	if strings.TrimSpace(req.Email) != "" {
+	if req.ClientID != nil {
+		existingClientID = req.ClientID
+		_ = h.DB.QueryRowContext(ctx,
+			`SELECT name, phone, source FROM clients WHERE id = $1`,
+			*req.ClientID,
+		).Scan(&existing.Name, &existing.Phone, &existing.Source)
+		existing.ID = *req.ClientID
+	} else if strings.TrimSpace(req.Email) != "" {
 		err := h.DB.QueryRowContext(ctx,
 			`SELECT id, name, phone, source
 			 FROM clients
@@ -446,29 +458,6 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 		if err == nil {
 			existingClientID = &existing.ID
-
-			if normalize(req.Name) != normalize(existing.Name) {
-				conflicts["name"] = map[string]any{
-					"existing": existing.Name,
-					"incoming": req.Name,
-				}
-			}
-
-			if req.Phone != "" && existing.Phone.Valid &&
-				normalize(req.Phone) != normalize(existing.Phone.String) {
-				conflicts["phone"] = map[string]any{
-					"existing": existing.Phone.String,
-					"incoming": req.Phone,
-				}
-			}
-
-			if req.Source != "" && existing.Source.Valid &&
-				normalize(req.Source) != normalize(existing.Source.String) {
-				conflicts["source"] = map[string]any{
-					"existing": existing.Source.String,
-					"incoming": req.Source,
-				}
-			}
 		} else if err != sql.ErrNoRows {
 			http.Error(w, "client lookup failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -476,17 +465,20 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ------------------------------------------------
-	// 3) HARD STOP: active contract (NO tx yet)
+	// 3) ABSOLUTE HARD STOP: active contract
 	// ------------------------------------------------
 	if existingClientID != nil {
 		var hasActiveContract bool
-		if err := h.DB.QueryRowContext(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM contracts
-				WHERE client_id = $1
-				AND end_date_computed IS NULL
-			)
-		`, *existingClientID).Scan(&hasActiveContract); err != nil {
+		err := h.DB.QueryRowContext(ctx, `
+    SELECT EXISTS (
+        SELECT 1
+        FROM contracts
+        WHERE client_id = $1
+          AND end_date_computed >= CURRENT_DATE
+    )
+`, *existingClientID).Scan(&hasActiveContract)
+
+		if err != nil {
 			http.Error(w, "contract lookup failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -497,12 +489,43 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 				"error":     "client_has_active_contract",
 				"client_id": *existingClientID,
 			})
-			return
+			return // ⛔ ABSOLUTE STOP
+		}
+
+	}
+
+	// ------------------------------------------------
+	// 4) Detect conflicts
+	// ------------------------------------------------
+	conflicts := map[string]any{}
+
+	if existingClientID != nil {
+		if normalize(req.Name) != normalize(existing.Name) {
+			conflicts["name"] = map[string]any{
+				"existing": existing.Name,
+				"incoming": req.Name,
+			}
+		}
+
+		if req.Phone != "" && existing.Phone.Valid &&
+			normalize(req.Phone) != normalize(existing.Phone.String) {
+			conflicts["phone"] = map[string]any{
+				"existing": existing.Phone.String,
+				"incoming": req.Phone,
+			}
+		}
+
+		if req.Source != "" && existing.Source.Valid &&
+			normalize(req.Source) != normalize(existing.Source.String) {
+			conflicts["source"] = map[string]any{
+				"existing": existing.Source.String,
+				"incoming": req.Source,
+			}
 		}
 	}
 
 	// ------------------------------------------------
-	// 4) Merge conflict dialog (decision required)
+	// 5) Merge decision required
 	// ------------------------------------------------
 	if existingClientID != nil &&
 		len(conflicts) > 0 &&
@@ -520,7 +543,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ------------------------------------------------
-	// 5) Transaction (WRITE ONLY from here)
+	// 6) Transaction (WRITES ONLY)
 	// ------------------------------------------------
 	tx, err := h.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -530,7 +553,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	// ------------------------------------------------
-	// 6) Create or update client
+	// 7) Create or update client
 	// ------------------------------------------------
 	var clientID int
 
@@ -538,20 +561,14 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		clientID = *existingClientID
 
 		if req.MergeStrategy != nil && *req.MergeStrategy == "overwrite" {
-			_, err := tx.ExecContext(ctx, `
+			if _, err := tx.ExecContext(ctx, `
 				UPDATE clients
 				SET
 					name   = COALESCE(NULLIF($1,''), name),
 					phone  = COALESCE(NULLIF($2,''), phone),
 					source = COALESCE(NULLIF($3,''), source)
 				WHERE id = $4
-			`,
-				req.Name,
-				req.Phone,
-				req.Source,
-				clientID,
-			)
-			if err != nil {
+			`, req.Name, req.Phone, req.Source, clientID); err != nil {
 				http.Error(w, "client overwrite failed: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -562,11 +579,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			VALUES ($1,$2,$3,$4,$5)
 			RETURNING id
 		`,
-			req.Name,
-			req.Email,
-			req.Phone,
-			req.Source,
-			req.SourceStageID,
+			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
 		).Scan(&clientID); err != nil {
 			http.Error(w, "client insert failed: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -574,38 +587,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ------------------------------------------------
-	// 6.1) Attach lead to client on overwrite (NOT conversion)
-	// ------------------------------------------------
-	if req.MergeStrategy != nil &&
-		*req.MergeStrategy == "overwrite" &&
-		foundLeadID != nil {
-
-		_, err := tx.ExecContext(ctx, `
-		UPDATE leads
-		SET
-			name   = COALESCE(NULLIF($1,''), name),
-			email  = COALESCE(NULLIF($2,''), email),
-			phone  = COALESCE(NULLIF($3,''), phone),
-			source = COALESCE(NULLIF($4,''), source),
-			source_stage_id = COALESCE($5, source_stage_id)
-		WHERE id = $6
-	`,
-			req.Name,
-			req.Email,
-			req.Phone,
-			req.Source,
-			req.SourceStageID,
-			*foundLeadID,
-		)
-
-		if err != nil {
-			http.Error(w, "lead overwrite failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// ------------------------------------------------
-	// 7) Create or reuse sales_process
+	// 8) Create or reuse sales_process
 	// ------------------------------------------------
 	var salesID int
 	err = tx.QueryRowContext(ctx, `
@@ -640,19 +622,17 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ------------------------------------------------
-	// 8) Response
+	// 9) Response
 	// ------------------------------------------------
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(StartSalesProcessResponse{
 		SalesProcessID: salesID,
 		Client: StartSalesProcessClient{
-			ID:            clientID,
-			Name:          req.Name,
-			Email:         req.Email,
-			Phone:         req.Phone,
-			Source:        req.Source,
-			SourceStageID: req.SourceStageID,
+			ID:     clientID,
+			Name:   req.Name,
+			Email:  req.Email,
+			Phone:  req.Phone,
+			Source: req.Source,
 		},
 		SalesProcess: StartSalesProcessDTO{
 			ID:           salesID,
@@ -663,6 +643,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			LeadID:       foundLeadID,
 		},
 	})
+
 }
 
 // createClientAndSalesProcessTx creates a client and a follow-up sales_process inside the provided tx.
@@ -720,6 +701,7 @@ func (h *Handler) createClientAndSalesProcessTx(
 	// ------------------------------------------
 	// 2) Create OR reuse sales_process (SAFE)
 	// ------------------------------------------
+
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO sales_process
 			(client_id, follow_up_date, stage, stage_id, created_at, lead_id)
