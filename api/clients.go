@@ -8,8 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -24,12 +22,6 @@ type Client struct {
 	SourceStageID *int       `json:"source_stage_id,omitempty"`
 	Status        string     `json:"status"` // "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive"
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
-}
-
-type Handler struct {
-	DB   *sql.DB
-	Cfg  *Config
-	Auth *Auth
 }
 
 // GET /api/clients
@@ -49,18 +41,19 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.DB.QueryContext(ctx, `
-		SELECT 
-			c.id,
-			c.name,
-			c.email,
-			c.phone,
-			c.source,
-			COALESCE(s.name, '') AS source_stage_name,
-			c.status,
-			c.completed_at
-		FROM clients c
-		LEFT JOIN stages s ON s.id = c.source_stage_id
-		ORDER BY c.id
+SELECT 
+  c.id,
+  c.name,
+  c.email,
+  c.phone,
+  c.source,
+  COALESCE(s.name, '') AS source_stage_name,
+  COALESCE(c.status, 'new') AS status,
+  c.completed_at
+FROM clients c
+LEFT JOIN stages s ON s.id = c.source_stage_id
+ORDER BY c.id
+
 	`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -239,68 +232,3 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// --- Helpers ---
-func nullStr(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: s, Valid: true}
-}
-
-func nullInt(i *int) sql.NullInt64 {
-	if i == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: int64(*i), Valid: true}
-}
-
-func nullTime(t *time.Time) sql.NullTime {
-	if t == nil || t.IsZero() {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: *t, Valid: true}
-}
-
-func writeJSONError(w http.ResponseWriter, msg string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-func parseIDFromURL(path string) (int, bool) {
-	parts := strings.Split(path, "/")
-	if len(parts) < 3 {
-		return 0, false
-	}
-	id, err := strconv.Atoi(parts[len(parts)-1])
-	if err != nil {
-		return 0, false
-	}
-	return id, true
-}
-
-// --- Test helpers ---
-func NullStrForTest(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: s, Valid: true}
-}
-
-func NullIntForTest(i *int) sql.NullInt64 {
-	if i == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: int64(*i), Valid: true}
-}
-
-func NullTimeForTest(t *time.Time) sql.NullTime {
-	if t == nil || t.IsZero() {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: *t, Valid: true}
-}
-
-func ParseIDFromURLForTest(p string) (int, bool)                        { return parseIDFromURL(p) }
-func WriteJSONErrorForTest(w http.ResponseWriter, msg string, code int) { writeJSONError(w, msg, code) }

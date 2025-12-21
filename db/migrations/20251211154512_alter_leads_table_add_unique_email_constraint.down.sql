@@ -1,0 +1,2 @@
+ALTER TABLE leads
+DROP CONSTRAINT IF EXISTS unique_lead_email;

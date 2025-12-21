@@ -59,8 +59,12 @@ go run main.go
 ### 7. Test (with coverage)
 
 ```bash
-go test ./api -coverprofile=coverage.out
-go tool cover -func=coverage.out
+go test ./... \
+  -coverpkg=./... \
+  -coverprofile=coverage.out # run tests + create coverage report
+
+go tool cover -func=coverage.out # view coverage in command line
+go tool cover -html=coverage.out # line by line coverage view
 ```
 
 ---

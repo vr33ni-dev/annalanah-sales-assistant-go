@@ -53,6 +53,25 @@ maria AS (
   RETURNING id
 ),
 
+-- 2b) Leads (dev seed)
+leads_ins AS (
+  INSERT INTO leads (name, email, phone, source, source_stage_id)
+  SELECT 'Peter Beispiel', 'peter@lead.de', '555987654', 'organic', NULL
+  UNION ALL
+  SELECT 'Laura Beispiel', 'laura@example.com', '444333333', 'paid', s.id FROM s
+  UNION ALL
+  SELECT 'Test Lead', 'test@example.com', NULL, 'organic', NULL
+  RETURNING id
+),
+
+-- optional: a lead already converted and linked to Anna
+converted_lead AS (
+  INSERT INTO leads (name, email, phone, source, source_stage_id, converted, converted_at, converted_client_id)
+  SELECT 'Converted Lead', 'conv@example.com', '111222333', 'organic', NULL, TRUE, now(), (SELECT id FROM anna)
+  RETURNING id
+),
+
+
 -- 3) Sales processes
 -- Anna: closed/won (Abschluss)
 sp_anna AS (
@@ -133,6 +152,8 @@ part_max AS (
   SELECT s.id, m.id, TRUE FROM s, maxc m
   RETURNING 1
 )
+
+
 
 -- Final confirmation
 SELECT 'ok';

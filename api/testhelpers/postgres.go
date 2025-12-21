@@ -1,21 +1,23 @@
 package testhelpers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	_ "github.com/lib/pq"
+	tc "github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
-/* Start database & load schema */
 type TestDB struct {
-	DB       *sql.DB
-	postgres *embeddedpostgres.EmbeddedPostgres
+	DB        *sql.DB
+	container *postgres.PostgresContainer
 }
 
 func findProjectRoot() (string, error) {
@@ -68,38 +70,58 @@ func loadMigrations(db *sql.DB, t testing.TB) {
 }
 
 func SetupPostgres(t testing.TB) *TestDB {
-	t.Helper()
+	if t != nil {
+		t.Helper()
+	}
 
-	pg := embeddedpostgres.NewDatabase(
-		embeddedpostgres.DefaultConfig().
-			Port(15432).
-			Database("testdb").
-			Username("testuser").
-			Password("testpass"),
+	ctx := context.Background()
+
+	container, err := postgres.RunContainer(
+		ctx,
+		tc.WithImage("postgres:14"), // ✅ THIS is the fix
+		postgres.WithDatabase("testdb"),
+		postgres.WithUsername("testuser"),
+		postgres.WithPassword("testpass"),
 	)
-
-	if err := pg.Start(); err != nil {
-		t.Fatalf("failed to start embedded postgres: %v", err)
-	}
-
-	conn := "postgres://testuser:testpass@localhost:15432/testdb?sslmode=disable"
-
-	db, err := sql.Open("postgres", conn)
 	if err != nil {
-		t.Fatalf("failed to open DB: %v", err)
+		panic(fmt.Sprintf("failed to start postgres container: %v", err))
 	}
 
-	if err := db.Ping(); err != nil {
-		t.Fatalf("failed to ping DB: %v", err)
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		panic(err)
+	}
+
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		panic(err)
+	}
+
+	// Wait until Postgres is ready
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := db.Ping(); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			panic("postgres did not become ready")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	loadMigrations(db, t)
 
-	return &TestDB{DB: db, postgres: pg}
+	return &TestDB{
+		DB:        db,
+		container: container,
+	}
 }
 
 func (tdb *TestDB) TearDown(t testing.TB) {
-	t.Helper()
-	tdb.DB.Close()
-	tdb.postgres.Stop()
+	if tdb.DB != nil {
+		tdb.DB.Close()
+	}
+	if tdb.container != nil {
+		_ = tdb.container.Terminate(context.Background())
+	}
 }
