@@ -283,7 +283,9 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 
 	var lr LeadResponse
 	var createdAt sql.NullTime
-	if err := row.Scan(&lr.ID, &lr.Name, &lr.Email, &lr.Phone, &lr.Source, &lr.SourceStageName, &createdAt); err != nil {
+	var emailNS, phoneNS sql.NullString
+
+	if err := row.Scan(&lr.ID, &lr.Name, &emailNS, &phoneNS, &lr.Source, &lr.SourceStageName, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "lead not found", http.StatusNotFound)
 			return

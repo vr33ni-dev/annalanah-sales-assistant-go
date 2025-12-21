@@ -587,6 +587,36 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ------------------------------------------------
+	// 7.1) Overwrite lead data (ONLY if overwrite chosen)
+	// ------------------------------------------------
+	if req.MergeStrategy != nil &&
+		*req.MergeStrategy == "overwrite" &&
+		foundLeadID != nil {
+
+		if _, err := tx.ExecContext(ctx, `
+        UPDATE leads
+        SET
+            name   = COALESCE(NULLIF($1,''), name),
+            email  = COALESCE(NULLIF($2,''), email),
+            phone  = COALESCE(NULLIF($3,''), phone),
+            source = COALESCE(NULLIF($4,''), source),
+            source_stage_id = COALESCE($5, source_stage_id)
+        WHERE id = $6
+          AND converted = FALSE
+    `,
+			req.Name,
+			req.Email,
+			req.Phone,
+			req.Source,
+			req.SourceStageID,
+			*foundLeadID,
+		); err != nil {
+			http.Error(w, "lead overwrite failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// ------------------------------------------------
 	// 8) Create or reuse sales_process
 	// ------------------------------------------------
 	var salesID int
