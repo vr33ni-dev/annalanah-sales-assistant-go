@@ -126,8 +126,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Patch("/stages/{id}", h.UpdateStageInfo)
 
 		// Stage participants
+		pr.Get("/stages/{id}/participants", h.ListStageParticipants)
 		pr.Post("/stages/{id}/participants", h.AddStageParticipant)
 		pr.Patch("/stages/{id}/participants/{participant_id}", h.UpdateStageParticipant)
+		pr.Delete("/stages/{id}/participants/{participant_id}", h.DeleteStageParticipant)
 
 		// Assign client
 		pr.Post("/stages/{id}/assign-client", h.AssignClientToStage)

@@ -9,19 +9,37 @@ import (
 )
 
 type Stage struct {
-	ID            int      `json:"id"`
-	Name          string   `json:"name"`
-	Date          *string  `json:"date,omitempty"`
-	AdBudget      *float64 `json:"ad_budget,omitempty"`
-	Registrations *int     `json:"registrations,omitempty"`
-	Participants  *int     `json:"participants,omitempty"`
+	ID               int      `json:"id"`
+	Name             string   `json:"name"`
+	Date             *string  `json:"date,omitempty"`
+	AdBudget         *float64 `json:"ad_budget,omitempty"`
+	Registrations    *int     `json:"registrations,omitempty"`
+	Participants     *int     `json:"participants,omitempty"`      // manual
+	RecordedContacts *int     `json:"recorded_contacts,omitempty"` // derived
 }
 
 // GET /api/stages
 func (h *Handler) ListStages(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
-		SELECT id, name, date, ad_budget, registrations, participants
-		FROM stages`)
+SELECT
+  s.id,
+  s.name,
+  s.date,
+  s.ad_budget,
+  s.registrations,
+  s.participants,
+  COUNT(sp.id) AS recorded_contacts
+FROM stages s
+LEFT JOIN stage_participants sp ON sp.stage_id = s.id
+GROUP BY
+  s.id,
+  s.name,
+  s.date,
+  s.ad_budget,
+  s.registrations,
+  s.participants
+ORDER BY s.id;
+`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -31,7 +49,7 @@ func (h *Handler) ListStages(w http.ResponseWriter, r *http.Request) {
 	var stages []Stage
 	for rows.Next() {
 		var s Stage
-		if err := rows.Scan(&s.ID, &s.Name, &s.Date, &s.AdBudget, &s.Registrations, &s.Participants); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.Date, &s.AdBudget, &s.Registrations, &s.Participants, &s.RecordedContacts); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -46,26 +64,114 @@ func (h *Handler) ListStages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stages)
 }
 
+type StageParticipant struct {
+	ID      int `json:"id"`
+	StageID int `json:"stage_id"`
+
+	LinkedClientID *int `json:"linked_client_id,omitempty"`
+	LinkedLeadID   *int `json:"linked_lead_id,omitempty"`
+
+	ParticipantName  string  `json:"name"`
+	ParticipantEmail *string `json:"email,omitempty"`
+	ParticipantPhone *string `json:"phone,omitempty"`
+
+	Attended  bool    `json:"attended"`
+	CreatedAt *string `json:"created_at,omitempty"`
+}
+
+// GET /api/stages/{id}/participants
+func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) {
+	stageID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid stage id", http.StatusBadRequest)
+		return
+	}
+
+	limit := 25
+	offset := 0
+
+	rows, err := h.DB.Query(`
+		SELECT
+		  sp.id,
+		  sp.stage_id,
+		  sp.linked_client_id,
+		  sp.linked_lead_id,
+		  COALESCE(c.name, l.name, sp.participant_name),
+		  COALESCE(c.email, l.email, sp.participant_email),
+		  COALESCE(c.phone, l.phone, sp.participant_phone),
+		  sp.attended,
+		  sp.created_at
+		FROM stage_participants sp
+		LEFT JOIN clients c ON c.id = sp.linked_client_id
+		LEFT JOIN leads   l ON l.id = sp.linked_lead_id
+		WHERE sp.stage_id = $1
+		ORDER BY sp.id
+		LIMIT $2 OFFSET $3
+	`, stageID, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var out []StageParticipant
+	for rows.Next() {
+		var p StageParticipant
+		if err := rows.Scan(
+			&p.ID,
+			&p.StageID,
+			&p.LinkedClientID,
+			&p.LinkedLeadID,
+			&p.ParticipantName,
+			&p.ParticipantEmail,
+			&p.ParticipantPhone,
+			&p.Attended,
+			&p.CreatedAt,
+		); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out = append(out, p)
+	}
+
+	if out == nil {
+		out = []StageParticipant{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
 // POST /api/stages
 func (h *Handler) CreateStage(w http.ResponseWriter, r *http.Request) {
-	var s Stage
+	var s struct {
+		Name          string   `json:"name"`
+		Date          *string  `json:"date,omitempty"`
+		AdBudget      *float64 `json:"ad_budget,omitempty"`
+		Registrations *int     `json:"registrations,omitempty"`
+		Participants  *int     `json:"participants,omitempty"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	err := h.DB.QueryRow(
-		`INSERT INTO stages (name, date, ad_budget, registrations, participants)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		s.Name, s.Date, s.AdBudget, s.Registrations, s.Participants,
-	).Scan(&s.ID)
+	var id int
+	err := h.DB.QueryRow(`
+		INSERT INTO stages (name, date, ad_budget, registrations, participants)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`, s.Name, s.Date, s.AdBudget, s.Registrations, s.Participants).Scan(&id)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s)
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]int{"id": id})
 }
 
 /*
@@ -88,47 +194,54 @@ Request-Body (bestehender Client):
 	}
 */
 func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
-	stageIDStr := chi.URLParam(r, "id")
-	stageID, err := strconv.Atoi(stageIDStr)
+	stageID, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid stage id", http.StatusBadRequest)
 		return
 	}
 
 	var req struct {
-		ClientID  *int    `json:"client_id,omitempty"`
-		LeadName  *string `json:"lead_name,omitempty"`
-		LeadEmail *string `json:"lead_email,omitempty"`
-		LeadPhone *string `json:"lead_phone,omitempty"`
-		Attended  bool    `json:"attended"`
+		ParticipantName  string  `json:"participant_name"`
+		ParticipantEmail *string `json:"participant_email,omitempty"`
+		ParticipantPhone *string `json:"participant_phone,omitempty"`
+		LinkedClientID   *int    `json:"linked_client_id,omitempty"`
+		LinkedLeadID     *int    `json:"linked_lead_id,omitempty"`
+		Attended         bool    `json:"attended"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// einfache Validierung: entweder client_id ODER lead_name muss vorhanden sein
-	if req.ClientID == nil && (req.LeadName == nil || *req.LeadName == "") {
-		http.Error(w, "either client_id or lead_name is required", http.StatusBadRequest)
+	if req.ParticipantName == "" {
+		http.Error(w, "participant_name is required", http.StatusBadRequest)
 		return
 	}
 
-	var insertErr error
-	if req.ClientID != nil {
-		_, insertErr = h.DB.Exec(
-			`INSERT INTO stage_participants (stage_id, linked_client_id, attended)
-			 VALUES ($1, $2, $3)`,
-			stageID, *req.ClientID, req.Attended,
+	_, err = h.DB.Exec(`
+		INSERT INTO stage_participants (
+			stage_id,
+			participant_name,
+			participant_email,
+			participant_phone,
+			linked_client_id,
+			linked_lead_id,
+			attended
 		)
-	} else {
-		_, insertErr = h.DB.Exec(
-			`INSERT INTO stage_participants (stage_id, lead_name, lead_email, lead_phone, attended)
-			 VALUES ($1, $2, $3, $4, $5)`,
-			stageID, req.LeadName, req.LeadEmail, req.LeadPhone, req.Attended,
-		)
-	}
-	if insertErr != nil {
-		http.Error(w, insertErr.Error(), http.StatusInternalServerError)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`,
+		stageID,
+		req.ParticipantName,
+		req.ParticipantEmail,
+		req.ParticipantPhone,
+		req.LinkedClientID,
+		req.LinkedLeadID,
+		req.Attended,
+	)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -174,11 +287,43 @@ func (h *Handler) UpdateStageParticipant(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DELETE /api/stages/{id}/participants/{participant_id}
+func (h *Handler) DeleteStageParticipant(w http.ResponseWriter, r *http.Request) {
+	stageID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid stage id", http.StatusBadRequest)
+		return
+	}
+
+	participantID, err := strconv.Atoi(chi.URLParam(r, "participant_id"))
+	if err != nil {
+		http.Error(w, "invalid participant id", http.StatusBadRequest)
+		return
+	}
+
+	res, err := h.DB.Exec(`
+		DELETE FROM stage_participants
+		WHERE id = $1 AND stage_id = $2
+	`, participantID, stageID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		http.Error(w, "participant not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PATCH /api/stages/{id}/stats
 // Update aggregated numbers like registrations and participants count
 func (h *Handler) UpdateStageStats(w http.ResponseWriter, r *http.Request) {
-	stageIDStr := chi.URLParam(r, "id")
-	stageID, err := strconv.Atoi(stageIDStr)
+	stageID, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid stage id", http.StatusBadRequest)
 		return
@@ -188,6 +333,7 @@ func (h *Handler) UpdateStageStats(w http.ResponseWriter, r *http.Request) {
 		Registrations *int `json:"registrations,omitempty"`
 		Participants  *int `json:"participants,omitempty"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -196,10 +342,10 @@ func (h *Handler) UpdateStageStats(w http.ResponseWriter, r *http.Request) {
 	_, err = h.DB.Exec(`
 		UPDATE stages
 		SET registrations = COALESCE($1, registrations),
-		    participants  = COALESCE($2, participants)
-		WHERE id = $3`,
-		req.Registrations, req.Participants, stageID,
-	)
+		    participants = COALESCE($2, participants)
+		WHERE id = $3
+	`, req.Registrations, req.Participants, stageID)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
