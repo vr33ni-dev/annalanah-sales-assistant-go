@@ -193,33 +193,62 @@ Request-Body (bestehender Client):
 		"attended": false
 	}
 */
+type AddStageParticipantRequest struct {
+	ParticipantName  string  `json:"participant_name"`
+	ParticipantEmail *string `json:"participant_email"`
+	ParticipantPhone *string `json:"participant_phone"`
+
+	LinkedClientID *int `json:"linked_client_id"`
+	LinkedLeadID   *int `json:"linked_lead_id"`
+
+	Attended     bool `json:"attended"`
+	CreateAsLead bool `json:"create_as_lead"`
+}
+
 func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
-	stageID, err := strconv.Atoi(chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "invalid stage id", http.StatusBadRequest)
-		return
-	}
+	stageID, _ := strconv.Atoi(chi.URLParam(r, "id"))
 
-	var req struct {
-		ParticipantName  string  `json:"participant_name"`
-		ParticipantEmail *string `json:"participant_email,omitempty"`
-		ParticipantPhone *string `json:"participant_phone,omitempty"`
-		LinkedClientID   *int    `json:"linked_client_id,omitempty"`
-		LinkedLeadID     *int    `json:"linked_lead_id,omitempty"`
-		Attended         bool    `json:"attended"`
-	}
-
+	var req AddStageParticipantRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if req.ParticipantName == "" {
-		http.Error(w, "participant_name is required", http.StatusBadRequest)
-		return
+	var leadID *int
+
+	if req.CreateAsLead {
+		email := ""
+		phone := ""
+
+		if req.ParticipantEmail != nil {
+			email = *req.ParticipantEmail
+		}
+		if req.ParticipantPhone != nil {
+			phone = *req.ParticipantPhone
+		}
+
+		row := h.DB.QueryRow(`
+		INSERT INTO leads (name, email, phone, source, source_stage_id)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`,
+			req.ParticipantName,
+			email,
+			phone,
+			"paid",
+			stageID,
+		)
+
+		var id int
+		if err := row.Scan(&id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		leadID = &id
 	}
 
-	_, err = h.DB.Exec(`
+	_, err := h.DB.Exec(`
 		INSERT INTO stage_participants (
 			stage_id,
 			participant_name,
@@ -236,7 +265,7 @@ func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 		req.ParticipantEmail,
 		req.ParticipantPhone,
 		req.LinkedClientID,
-		req.LinkedLeadID,
+		leadID,
 		req.Attended,
 	)
 
