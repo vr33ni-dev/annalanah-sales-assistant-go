@@ -403,6 +403,13 @@ func (h *Handler) UpdateStageInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Date != nil && *req.Date == "" {
+		req.Date = nil
+	}
+	if req.Name != nil && *req.Name == "" {
+		req.Name = nil
+	}
+
 	_, err = h.DB.Exec(`
 		UPDATE stages
 		SET 
