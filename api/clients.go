@@ -66,17 +66,37 @@ ORDER BY c.id
 	for rows.Next() {
 		var c ClientResponse
 		var completedAt sql.NullTime
+		var emailNS, phoneNS, sourceNS sql.NullString
+
 		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Email, &c.Phone,
-			&c.Source, &c.SourceStageName, &c.Status, &completedAt,
+			&c.ID, &c.Name, &emailNS,
+			&phoneNS, &sourceNS, &c.SourceStageName, &c.Status, &completedAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if emailNS.Valid {
+			c.Email = emailNS.String
+		} else {
+			c.Email = ""
+		}
+
+		if phoneNS.Valid {
+			c.Phone = phoneNS.String
+		} else {
+			c.Phone = ""
+		}
+
+		if sourceNS.Valid {
+			c.Source = sourceNS.String
+		} else {
+			c.Source = ""
 		}
 		if completedAt.Valid {
 			date := completedAt.Time.Format("2006-01-02")
 			c.CompletedAt = &date
 		}
+
 		clients = append(clients, c)
 	}
 

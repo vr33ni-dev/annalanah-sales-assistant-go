@@ -37,3 +37,11 @@ __debug_*
 db/utils/
 
 .envrc
+*.csv
+
+# csv file importer
+tools/importcashflow/*
+tools/importcsv/*
+tools/mappings/*
+pkg/importer/*
+tools/transform_staging/*
