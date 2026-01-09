@@ -41,7 +41,8 @@ jobs:
       - name: Run unit coverage script
         run: |
           chmod +x ./scripts/coverage-unit.sh
-          ./scripts/coverage-unit.sh
+          # run with execution trace so all script echo/steps are visible in Actions logs
+          bash -x ./scripts/coverage-unit.sh
 
   integration:
     name: Integration tests & coverage
@@ -79,4 +80,5 @@ jobs:
       - name: Run integration coverage script
         run: |
           chmod +x ./scripts/coverage-integration.sh
-          ./scripts/coverage-integration.sh
+          # run with execution trace so all script echo/steps are visible in Actions logs
+          bash -x ./scripts/coverage-integration.sh
