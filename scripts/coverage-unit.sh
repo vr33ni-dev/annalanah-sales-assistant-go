@@ -23,7 +23,7 @@ echo "Running unit tests for packages (excluded integration and tools/importer/t
 cat "$TMP"
 echo
 
-go test $(cat "$TMP") -coverpkg="$coverpkg" -coverprofile=coverage-unit.out
+go test -v $(cat "$TMP") -coverpkg="$coverpkg" -coverprofile=coverage-unit.out
 
 echo
 echo "Unit coverage summary (per-function):"
