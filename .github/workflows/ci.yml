@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Set to true to run integration tests (requires Docker)"
+        required: false
+        default: "false"
+
+jobs:
+  unit:
+    name: Unit tests & coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install test tooling (optional)
+        run: |
+          go env
+
+      - name: Run unit coverage script
+        run: |
+          chmod +x ./scripts/coverage-unit.sh
+          ./scripts/coverage-unit.sh
+
+      - name: Upload unit coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.out
+
+  integration:
+    name: Integration tests & coverage
+    runs-on: ubuntu-latest
+    needs: unit
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_integration == 'true' || github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download unit coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+
+      - name: Ensure Docker is available
+        run: |
+          docker info
+
+      - name: Install gocovmerge (optional, for merging)
+        run: |
+          go install github.com/wadey/gocovmerge@latest
+        env:
+          GOBIN: ${{ runner.tool_cache }}/go/bin
+
+      - name: Run integration coverage script
+        run: |
+          chmod +x ./scripts/coverage-integration.sh
+          ./scripts/coverage-integration.sh
+
+      - name: Upload integration coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage-integration.out
