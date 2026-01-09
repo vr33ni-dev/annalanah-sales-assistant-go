@@ -56,3 +56,6 @@ tools/importcashflow/*
 tools/importcsv/*
 tools/extract_sales_names/*
 tools/importsales/*
+
+# local make overrides (ignored)
+Makefile

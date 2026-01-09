@@ -1,0 +1,36 @@
+include .env
+export
+
+migrate-up:
+	migrate -path db/migrations -database "$(DATABASE_URL)" up
+
+migrate-down:
+	migrate -path db/migrations -database "$(DATABASE_URL)" down -all
+
+migrate-drop:
+	migrate -path db/migrations -database "$(DATABASE_URL)" drop -f
+
+migrate-version:
+	migrate -path db/migrations -database "$(DATABASE_URL)" version
+
+seed:
+	psql "$(DATABASE_URL)" -f db/seeds/dev_seed.sql
+
+reset:
+	make migrate-drop
+	make migrate-up
+	make seed	
+
+# Create a new migration with timestamp-based filenames
+# Usage: make migrate-new name=add_unique_email_to_clients
+migrate-new:
+	@if [ -z "$(name)" ]; then \
+		echo "❌ Please provide a migration name, e.g. make migrate-new name=add_unique_email_to_clients"; \
+		exit 1; \
+	fi; \
+	migrate create \
+		-ext sql \
+		-dir db/migrations \
+		-format "20060102150405" \
+		$(name)
+
