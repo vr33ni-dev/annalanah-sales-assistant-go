@@ -26,31 +26,33 @@ type SalesProcess struct {
 
 // What the API returns (GET /api/sales, PATCH /api/sales/{id})
 type SalesProcessResponse struct {
-	ID             int      `json:"id"`
-	ClientID       int      `json:"client_id"`
-	ClientName     string   `json:"client_name"`
-	ClientEmail    *string  `json:"client_email,omitempty"`
-	ClientPhone    *string  `json:"client_phone,omitempty"`
-	ClientSource   *string  `json:"client_source,omitempty"`
-	Stage          string   `json:"stage"`
-	FollowUpDate   *string  `json:"follow_up_date"`
-	FollowUpResult *bool    `json:"follow_up_result"`
-	Closed         *bool    `json:"closed"`
-	Revenue        *float64 `json:"revenue"`
-	StageID        *int     `json:"stage_id"`
-	LeadID         *int     `json:"lead_id,omitempty"`
+	ID             int               `json:"id"`
+	ClientID       int               `json:"client_id"`
+	ClientName     string            `json:"client_name"`
+	ClientEmail    *string           `json:"client_email,omitempty"`
+	ClientPhone    *string           `json:"client_phone,omitempty"`
+	ClientSource   *string           `json:"client_source,omitempty"`
+	Stage          string            `json:"stage"`
+	FollowUpDate   *string           `json:"follow_up_date"`
+	FollowUpResult *bool             `json:"follow_up_result"`
+	Closed         *bool             `json:"closed"`
+	Revenue        *float64          `json:"revenue"`
+	StageID        *int              `json:"stage_id"`
+	LeadID         *int              `json:"lead_id,omitempty"`
+	Comments       []CommentResponse `json:"comments,omitempty"`
 }
 
 // What the API accepts (PATCH /api/sales/{id})
 type SalesProcessUpdateRequest struct {
-	FollowUpDate           *string  `json:"follow_up_date,omitempty"`
-	FollowUpResult         *bool    `json:"follow_up_result"`
-	Closed                 *bool    `json:"closed"`
-	Revenue                *float64 `json:"revenue"`
-	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
-	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
-	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
-	CompletedAt            *string  `json:"completed_at,omitempty"`
+	FollowUpDate           *string                `json:"follow_up_date,omitempty"`
+	FollowUpResult         *bool                  `json:"follow_up_result"`
+	Closed                 *bool                  `json:"closed"`
+	Revenue                *float64               `json:"revenue"`
+	ContractDurationMonths *int                   `json:"contract_duration_months,omitempty"`
+	ContractStartDate      *string                `json:"contract_start_date,omitempty"`
+	ContractFrequency      *string                `json:"contract_frequency,omitempty"`
+	CompletedAt            *string                `json:"completed_at,omitempty"`
+	Comments               []CommentCreateRequest `json:"comments,omitempty"`
 }
 
 // GET /api/sales
@@ -78,6 +80,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	defer rows.Close()
 
 	var processes []SalesProcessResponse
@@ -101,6 +104,45 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// load comments for this sales process
+		commentRows, err := h.DB.Query(`
+			SELECT id, author, body, metadata, created_at, updated_at
+			FROM comments
+			WHERE entity_type = 'sales_process' AND entity_id = $1
+			ORDER BY created_at DESC
+		`, sp.ID)
+		if err == nil {
+			var comments []CommentResponse
+			for commentRows.Next() {
+				var id int
+				var author sql.NullString
+				var body string
+				var metadata sql.NullString
+				var created, updated time.Time
+				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
+					var meta map[string]interface{}
+					if metadata.Valid && metadata.String != "" {
+						_ = json.Unmarshal([]byte(metadata.String), &meta)
+					}
+					var a *string
+					if author.Valid {
+						s := author.String
+						a = &s
+					}
+					comments = append(comments, CommentResponse{
+						ID: id, EntityType: "sales_process", EntityID: sp.ID, Author: a, Body: body, Metadata: meta,
+						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+					})
+				}
+			}
+			_ = commentRows.Close()
+			if comments == nil {
+				comments = []CommentResponse{}
+			}
+			sp.Comments = comments
+		}
+
 		processes = append(processes, sp)
 	}
 
@@ -336,33 +378,77 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// load comments for this sales process
+	commentRows, err := h.DB.Query(`
+		SELECT id, author, body, metadata, created_at, updated_at
+		FROM comments
+		WHERE entity_type = 'sales_process' AND entity_id = $1
+		ORDER BY created_at DESC
+	`, updated.ID)
+	if err == nil {
+		var comments []CommentResponse
+		for commentRows.Next() {
+			var id int
+			var author sql.NullString
+			var body string
+			var metadata sql.NullString
+			var created, updatedAt time.Time
+			if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updatedAt); err == nil {
+				var meta map[string]interface{}
+				if metadata.Valid && metadata.String != "" {
+					_ = json.Unmarshal([]byte(metadata.String), &meta)
+				}
+				var a *string
+				if author.Valid {
+					s := author.String
+					a = &s
+				}
+				comments = append(comments, CommentResponse{
+					ID: id, EntityType: "sales_process", EntityID: updated.ID, Author: a, Body: body, Metadata: meta,
+					CreatedAt: created.Format(time.RFC3339), UpdatedAt: updatedAt.Format(time.RFC3339),
+				})
+			}
+		}
+		_ = commentRows.Close()
+		if comments == nil {
+			comments = []CommentResponse{}
+		}
+		updated.Comments = comments
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
 }
 
 // POST /api/sales/start
 type StartSalesProcessRequest struct {
-	Name          string  `json:"name"`
-	Email         string  `json:"email"`
-	Phone         string  `json:"phone"`
-	Source        string  `json:"source"`
-	SourceStageID *int    `json:"source_stage_id,omitempty"`
-	FollowUpDate  *string `json:"follow_up_date"`
-	LeadID        *int    `json:"lead_id,omitempty"`
-	MergeStrategy *string `json:"merge_strategy,omitempty"` // overwrite | keep_existing
-	ClientID      *int    `json:"client_id,omitempty"`
+	Name          string                 `json:"name"`
+	Email         string                 `json:"email"`
+	Phone         string                 `json:"phone"`
+	Source        string                 `json:"source"`
+	SourceStageID *int                   `json:"source_stage_id,omitempty"`
+	FollowUpDate  *string                `json:"follow_up_date"`
+	LeadID        *int                   `json:"lead_id,omitempty"`
+	MergeStrategy *string                `json:"merge_strategy,omitempty"` // overwrite | keep_existing
+	ClientID      *int                   `json:"client_id,omitempty"`
+	Comments      []CommentCreateRequest `json:"comments,omitempty"`
 }
 
-type StartSalesProcessClient struct {
-	ID            int    `json:"id"`
-	Name          string `json:"name"`
-	Email         string `json:"email"`
-	Phone         string `json:"phone"`
-	Source        string `json:"source"`
-	SourceStageID *int   `json:"source_stage_id,omitempty"`
+// ClientResponse is the nested client object returned inside StartSalesProcessResponse.
+// It intentionally contains a compact subset of client fields and any comments.
+type ClientResponse struct {
+	ID            int               `json:"id"`
+	Name          string            `json:"name"`
+	Email         string            `json:"email"`
+	Phone         string            `json:"phone"`
+	Source        string            `json:"source"`
+	SourceStageID *int              `json:"source_stage_id,omitempty"`
+	Comments      []CommentResponse `json:"comments,omitempty"`
 }
 
-type StartSalesProcessDTO struct {
+// SalesProcessSummary is the nested sales-process object returned inside StartSalesProcessResponse.
+// It represents a compact summary of the newly created sales process.
+type SalesProcessSummary struct {
 	ID             int     `json:"id"`
 	ClientID       int     `json:"client_id"`
 	Stage          string  `json:"stage"`
@@ -375,9 +461,9 @@ type StartSalesProcessDTO struct {
 }
 
 type StartSalesProcessResponse struct {
-	SalesProcessID int                     `json:"sales_process_id"`
-	Client         StartSalesProcessClient `json:"client"`
-	SalesProcess   StartSalesProcessDTO    `json:"sales_process"`
+	SalesProcessID int                 `json:"sales_process_id"`
+	Client         ClientResponse      `json:"client"`
+	SalesProcess   SalesProcessSummary `json:"sales_process"`
 }
 
 func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
@@ -651,20 +737,65 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// optionally insert comments provided with the create request (post-commit)
+	if len(req.Comments) > 0 {
+		if err := h.insertCommentsForEntity("client", clientID, req.Comments); err != nil {
+			// ignore insertion error for now
+		}
+	}
+
+	// load comments for response
+	var respComments []CommentResponse
+	commentRows, err := h.DB.Query(`
+		SELECT id, author, body, metadata, created_at, updated_at
+		FROM comments
+		WHERE entity_type = 'client' AND entity_id = $1
+		ORDER BY created_at DESC
+	`, clientID)
+	if err == nil {
+		for commentRows.Next() {
+			var id int
+			var author sql.NullString
+			var body string
+			var metadata sql.NullString
+			var created, updated time.Time
+			if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
+				var meta map[string]interface{}
+				if metadata.Valid && metadata.String != "" {
+					_ = json.Unmarshal([]byte(metadata.String), &meta)
+				}
+				var a *string
+				if author.Valid {
+					s := author.String
+					a = &s
+				}
+				respComments = append(respComments, CommentResponse{
+					ID: id, EntityType: "client", EntityID: clientID, Author: a, Body: body, Metadata: meta,
+					CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+				})
+			}
+		}
+		_ = commentRows.Close()
+		if respComments == nil {
+			respComments = []CommentResponse{}
+		}
+	}
+
 	// ------------------------------------------------
 	// 9) Response
 	// ------------------------------------------------
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(StartSalesProcessResponse{
 		SalesProcessID: salesID,
-		Client: StartSalesProcessClient{
-			ID:     clientID,
-			Name:   req.Name,
-			Email:  req.Email,
-			Phone:  req.Phone,
-			Source: req.Source,
+		Client: ClientResponse{
+			ID:       clientID,
+			Name:     req.Name,
+			Email:    req.Email,
+			Phone:    req.Phone,
+			Source:   req.Source,
+			Comments: respComments,
 		},
-		SalesProcess: StartSalesProcessDTO{
+		SalesProcess: SalesProcessSummary{
 			ID:           salesID,
 			ClientID:     clientID,
 			Stage:        "follow_up",

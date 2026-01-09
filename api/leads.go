@@ -35,9 +35,8 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			l.name,
 			l.email,
 			l.phone,
-			l.source,
-			l.source_stage_id,
-			s.name AS source_stage_name,
+		l.source,
+		s.name AS source_stage_name,
 			l.converted,
 			l.created_at
 		FROM leads l
@@ -55,7 +54,6 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 		var lr LeadResponse
 		var createdAt sql.NullTime
 		var emailNS, phoneNS sql.NullString
-		var sourceStageID sql.NullInt64
 		var sourceStageName sql.NullString
 
 		if err := rows.Scan(
@@ -64,7 +62,6 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			&emailNS,
 			&phoneNS,
 			&lr.Source,
-			&sourceStageID,
 			&sourceStageName,
 			&lr.Converted,
 			&createdAt,
@@ -83,11 +80,6 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			lr.Phone = phoneNS.String
 		} else {
 			lr.Phone = ""
-		}
-
-		if sourceStageID.Valid {
-			v := int(sourceStageID.Int64)
-			lr.SourceStageID = &v
 		}
 
 		if sourceStageName.Valid {

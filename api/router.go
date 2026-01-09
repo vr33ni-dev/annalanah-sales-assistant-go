@@ -145,6 +145,12 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		// NLQ (natural language query)
 		pr.Post("/nlq", h.RunNLQ)
 
+		// Comments
+		pr.Get("/comments", h.ListComments)
+		pr.Post("/comments", h.CreateComment)
+		pr.Patch("/comments/{id}", h.UpdateComment)
+		pr.Delete("/comments/{id}", h.DeleteComment)
+
 	})
 
 	return r
