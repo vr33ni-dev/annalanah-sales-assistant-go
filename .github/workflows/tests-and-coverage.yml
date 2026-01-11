@@ -1,9 +1,7 @@
-name: CI
+name: Tests & Coverage
 
 on:
   push:
-    branches: [main, dev]
-  pull_request:
     branches: [main, dev]
   workflow_dispatch:
     inputs:
@@ -22,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.21"
+          go-version: "1.25"
 
       - name: Cache Go modules and build cache
         uses: actions/cache@v4
@@ -44,6 +42,12 @@ jobs:
           chmod +x ./scripts/coverage-unit.sh
           # run with execution trace so all script echo/steps are visible in Actions logs
           bash -x ./scripts/coverage-unit.sh
+
+      - name: Upload unit coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.out
 
   integration:
     name: Integration tests & coverage
@@ -79,8 +83,41 @@ jobs:
         env:
           GOBIN: ${{ runner.tool_cache }}/go/bin
 
+      - name: Download unit coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+          path: ./artifacts
+
       - name: Run integration coverage script
         run: |
           chmod +x ./scripts/coverage-integration.sh
           # run with execution trace so all script echo/steps are visible in Actions logs
           bash -x ./scripts/coverage-integration.sh
+
+      - name: Merge unit + integration coverage
+        run: |
+          # gocovmerge was installed into runner.tool_cache/go/bin per earlier step
+          GOCOVMERGE=${{ runner.tool_cache }}/go/bin/gocovmerge
+          UNIT=./artifacts/coverage-unit.out
+          INTEG=coverage-integration.out
+          if [ -f "$UNIT" ] && [ -f "$INTEG" ]; then
+            echo "Merging $UNIT + $INTEG -> coverage-all.out"
+            $GOCOVMERGE "$UNIT" "$INTEG" > coverage-all.out
+          elif [ -f "$UNIT" ]; then
+            echo "Using unit only -> coverage-all.out"
+            cp "$UNIT" coverage-all.out
+          elif [ -f "$INTEG" ]; then
+            echo "Using integration only -> coverage-all.out"
+            cp "$INTEG" coverage-all.out
+          else
+            echo "No coverage files found"
+            exit 0
+          fi
+
+      - name: Upload merged coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-all.out
+          flags: coverage
+          fail_ci_if_error: false

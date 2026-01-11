@@ -1,6 +1,6 @@
 # Sales Assistant Backend (Go + PostgreSQL)
 
-[![CI](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/ci.yml)
+[![CI](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/vr33ni-dev/sales-assistant-go/branch/dev/graph/badge.svg)](https://codecov.io/gh/vr33ni-dev/sales-assistant-go)
 
 This is the backend service for the **Sales Assistant** application.  
 It powers client management, sales processes, contracts, cashflow tracking, and stage/event organization.
