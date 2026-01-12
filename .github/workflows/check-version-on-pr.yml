@@ -75,7 +75,10 @@ jobs:
 
           echo "Computed candidate version for this PR: $NEW_VERSION"
           # Save the comment body into a temporary file and use the action below to post
-          echo "Computed release version if merged to $BASE_REF: **$NEW_VERSION**\n\nLabels considered: $LABELS_LOWER" > /tmp/pr_version_comment.md
+          # Use printf so the \n sequences become real newlines in the file
+          printf '%s\n\n%s\n' \
+            "Computed release version if merged to $BASE_REF: **$NEW_VERSION**" \
+            "Labels considered: $LABELS_LOWER" > /tmp/pr_version_comment.md
 
       - name: Post PR comment with computed version
         env:
