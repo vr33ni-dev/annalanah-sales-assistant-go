@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   release:
@@ -49,6 +50,33 @@ jobs:
           labels=$(echo "$labels" | tr '[:upper:]' '[:lower:]' || true)
           echo "Labels found on PRs:"
           echo "$labels"
+
+          # Debug: when labels are empty, show a compact summary of PRs JSON to help
+          # diagnose permission or API issues (prints PR number and label names).
+          if [ -z "${labels}" ]; then
+            echo "PRS_JSON summary:"
+            echo "$PRS_JSON" | jq -c '.[] | {number: .number, labels: [.labels[].name]}' 2>/dev/null || true
+          fi
+
+          # If no labels found via the commit->pulls API, try a fallback: parse recent
+          # merge commit messages for PR numbers ("Merge pull request #123") and query
+          # those PRs for labels. This helps for cases where the commit-to-PR link
+          # isn't present for the push's SHA.
+          if [ -z "${labels}" ]; then
+            echo "No labels found on commit-associated PRs; attempting fallback by scanning recent merge commits for PR numbers..."
+            PR_NUMS=$(git log --merges -n 20 --pretty=%B | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)
+            for pr in $PR_NUMS; do
+              echo "Checking PR #${pr} for labels"
+              PR_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${pr}")
+              pr_labels=$(echo "$PR_JSON" | jq -r '.labels[]?.name' 2>/dev/null || true)
+              if [ -n "$pr_labels" ]; then
+                labels="$labels\n$pr_labels"
+              fi
+            done
+            labels=$(echo "$labels" | tr '[:upper:]' '[:lower:]' || true)
+            echo "Labels found via fallback:"
+            echo "$labels"
+          fi
 
           if [ -z "${labels}" ]; then
             echo "ERROR: No release label found on merged PR(s). Add one of: major, minor, patch. The release job requires an explicit label and will fail without it."
