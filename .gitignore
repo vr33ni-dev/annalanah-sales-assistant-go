@@ -37,3 +37,25 @@ __debug_*
 db/utils/
 
 .envrc
+*.csv
+
+# csv file importer
+tools/importcashflow/*
+tools/importcsv/*
+tools/mappings/*
+pkg/importer/*
+tools/transform_staging/*
+
+# documentation
+docs/
+
+# data import
+tools/mappings/salesprocess.json
+pkg/importer/salesprocess.go
+tools/importcashflow/*
+tools/importcsv/*
+tools/extract_sales_names/*
+tools/importsales/*
+
+# local make overrides (ignored)
+Makefile

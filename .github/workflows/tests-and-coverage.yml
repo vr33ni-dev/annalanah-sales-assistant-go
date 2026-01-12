@@ -1,0 +1,123 @@
+name: Tests & Coverage
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Set to true to run integration tests (requires Docker)"
+        required: false
+        default: "false"
+
+jobs:
+  unit:
+    name: Unit tests & coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # bumped cache key to avoid extracting a possibly-corrupted cache
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-v2
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install test tooling (optional)
+        run: |
+          go env
+
+      - name: Run unit coverage script
+        run: |
+          chmod +x ./scripts/coverage-unit.sh
+          # run with execution trace so all script echo/steps are visible in Actions logs
+          bash -x ./scripts/coverage-unit.sh
+
+      - name: Upload unit coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.out
+
+  integration:
+    name: Integration tests & coverage
+    runs-on: ubuntu-latest
+    needs: unit
+    # run integration on main OR dev, or when manually dispatched with run_integration=true
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.run_integration == 'true') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-v2
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Ensure Docker is available
+        run: |
+          docker info
+
+      - name: Install gocovmerge (optional, for merging)
+        run: |
+          go install github.com/wadey/gocovmerge@latest
+        env:
+          GOBIN: ${{ runner.tool_cache }}/go/bin
+
+      - name: Download unit coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+          path: ./artifacts
+
+      - name: Run integration coverage script
+        run: |
+          chmod +x ./scripts/coverage-integration.sh
+          # run with execution trace so all script echo/steps are visible in Actions logs
+          bash -x ./scripts/coverage-integration.sh
+
+      - name: Merge unit + integration coverage
+        run: |
+          # gocovmerge was installed into runner.tool_cache/go/bin per earlier step
+          GOCOVMERGE=${{ runner.tool_cache }}/go/bin/gocovmerge
+          UNIT=./artifacts/coverage-unit.out
+          INTEG=coverage-integration.out
+          if [ -f "$UNIT" ] && [ -f "$INTEG" ]; then
+            echo "Merging $UNIT + $INTEG -> coverage-all.out"
+            $GOCOVMERGE "$UNIT" "$INTEG" > coverage-all.out
+          elif [ -f "$UNIT" ]; then
+            echo "Using unit only -> coverage-all.out"
+            cp "$UNIT" coverage-all.out
+          elif [ -f "$INTEG" ]; then
+            echo "Using integration only -> coverage-all.out"
+            cp "$INTEG" coverage-all.out
+          else
+            echo "No coverage files found"
+            exit 0
+          fi
+
+      - name: Upload merged coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-all.out
+          flags: coverage
+          fail_ci_if_error: false

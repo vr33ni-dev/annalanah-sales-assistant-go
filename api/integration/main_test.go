@@ -18,7 +18,12 @@ func TestMain(m *testing.M) {
 	)
 	_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 
-	testDB = testhelpers.SetupPostgres(nil)
+	tdb, err := testhelpers.SetupPostgres(nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "SKIPPING integration tests (Docker unavailable):", err)
+		os.Exit(0)
+	}
+	testDB = tdb
 
 	code := m.Run()
 

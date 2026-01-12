@@ -14,7 +14,10 @@ type APITestSuite struct {
 func NewSuite(t *testing.T) *APITestSuite {
 	t.Helper()
 
-	db := testhelpers.SetupPostgres(t)
+	db, err := testhelpers.SetupPostgres(t)
+	if err != nil {
+		t.Skipf("skipping integration tests (docker unavailable): %v", err)
+	}
 
 	return &APITestSuite{
 		T:  t,

@@ -89,13 +89,23 @@ func (a *Auth) makeCookie(sess Session, secure bool) *http.Cookie {
 	payload, _ := json.Marshal(sess)
 	enc := base64.RawURLEncoding.EncodeToString(payload)
 	token := enc + "." + a.sign([]byte(enc))
+	// Allow overriding SameSite/secure behavior for local dev where frontend
+	// and backend run on different origins. Set ALLOW_CROSS_SITE_COOKIES=1
+	// in your environment to use SameSite=None and Secure=true.
+	sameSite := http.SameSiteLaxMode
+	useSecure := secure
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_CROSS_SITE_COOKIES")), "1") || strings.EqualFold(strings.TrimSpace(os.Getenv("ALLOW_CROSS_SITE_COOKIES")), "true") {
+		sameSite = http.SameSiteNoneMode
+		useSecure = true
+	}
+
 	return &http.Cookie{
 		Name:     a.CookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   secure,               // ⬅️ no longer hardcoded true
-		SameSite: http.SameSiteLaxMode, // first-party
+		Secure:   useSecure,
+		SameSite: sameSite,
 		Expires:  sess.Exp,
 	}
 }
@@ -112,12 +122,12 @@ func (h *Handler) MountAuthRoutes(r chi.Router) {
 	r.Get("/auth/google", h.handleAuthStart)
 	r.Get("/auth/google/callback", h.handleAuthCallback)
 	r.Get("/api/me", h.meHandler)
+	r.Get("/api/user/me", h.userMeHandler)
+	r.Get("/debug/session", h.debugSession)
 
 	// allow both; same handler
 	r.MethodFunc(http.MethodGet, "/auth/logout", h.handleLogout)
 	r.MethodFunc(http.MethodPost, "/auth/logout", h.handleLogout)
-
-	r.Get("/api/me", h.meHandler)
 
 }
 
@@ -356,6 +366,56 @@ func (h *Handler) meHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(sess)
 }
 
+// debugSession returns the parsed session for the current request (if any).
+// Useful for checking whether the app_session cookie is being sent by the browser.
+func (h *Handler) debugSession(w http.ResponseWriter, r *http.Request) {
+	sess, ok := h.parseSession(r)
+	w.Header().Set("Content-Type", "application/json")
+	if !ok {
+		// Return helpful debug info instead of just 401 so frontend developers
+		// can see why no session is present.
+		var resp = map[string]interface{}{
+			"ok":      false,
+			"message": "no valid session found",
+			"cookies": map[string]string{},
+		}
+		for _, ck := range r.Cookies() {
+			resp["cookies"].(map[string]string)[ck.Name] = ck.Value
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "session": sess})
+}
+
+// userMeHandler returns a simple user object for the frontend. If the request
+// contains a valid session the response will include that user's name/email
+// and authenticated=true. Otherwise the handler returns a fallback user whose
+// name is taken from DEFAULT_COMMENT_AUTHOR (or "local-dev") and
+// authenticated=false. This is convenient for local dev where the frontend
+// can always receive a user-shaped object.
+func (h *Handler) userMeHandler(w http.ResponseWriter, r *http.Request) {
+	sess, ok := h.parseSession(r)
+	w.Header().Set("Content-Type", "application/json")
+	if ok && sess != nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"authenticated": true,
+			"name":          sess.Name,
+			"email":         sess.Email,
+		})
+		return
+	}
+	def := os.Getenv("DEFAULT_COMMENT_AUTHOR")
+	if def == "" {
+		def = "local-dev"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"authenticated": false,
+		"name":          def,
+		"email":         "",
+	})
+}
+
 func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -371,6 +431,9 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 }
 
 func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
+	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
+		return nil, false
+	}
 	if h == nil || h.Auth == nil || h.Auth.CookieName == "" {
 		return nil, false
 	}

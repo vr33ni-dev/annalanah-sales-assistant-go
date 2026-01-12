@@ -18,7 +18,8 @@ type LeadResponse struct {
 	Email           string  `json:"email"`
 	Phone           string  `json:"phone"`
 	Source          string  `json:"source"`
-	SourceStageName string  `json:"source_stage_name"`
+	SourceStageID   *int    `json:"source_stage_id,omitempty"`
+	SourceStageName *string `json:"source_stage_name,omitempty"`
 	Converted       bool    `json:"converted"`
 	CreatedAt       *string `json:"created_at,omitempty"`
 }
@@ -29,19 +30,19 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows, err := h.DB.QueryContext(ctx, `
-        SELECT
-            l.id,
-            l.name,
-            l.email,
-            l.phone,
-            l.source,
-            COALESCE(s.name, '') AS source_stage_name,
-						l.converted,
-            l.created_at
-        FROM leads l
-        LEFT JOIN stages s ON s.id = l.source_stage_id
-        ORDER BY l.id
-    `)
+		SELECT
+			l.id,
+			l.name,
+			l.email,
+			l.phone,
+		l.source,
+		s.name AS source_stage_name,
+			l.converted,
+			l.created_at
+		FROM leads l
+		LEFT JOIN stages s ON s.id = l.source_stage_id
+		ORDER BY l.id;
+`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -52,33 +53,44 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var lr LeadResponse
 		var createdAt sql.NullTime
-		// use sql.NullString for nullable email/phone
 		var emailNS, phoneNS sql.NullString
+		var sourceStageName sql.NullString
+
 		if err := rows.Scan(
-			&lr.ID, &lr.Name, &emailNS, &phoneNS,
-			&lr.Source, &lr.SourceStageName, &lr.Converted, &createdAt,
+			&lr.ID,
+			&lr.Name,
+			&emailNS,
+			&phoneNS,
+			&lr.Source,
+			&sourceStageName,
+			&lr.Converted,
+			&createdAt,
 		); err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "lead not found", http.StatusNotFound)
-				return
-			}
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
+
 		if emailNS.Valid {
 			lr.Email = emailNS.String
 		} else {
 			lr.Email = ""
 		}
+
 		if phoneNS.Valid {
 			lr.Phone = phoneNS.String
 		} else {
 			lr.Phone = ""
 		}
+
+		if sourceStageName.Valid {
+			lr.SourceStageName = &sourceStageName.String
+		}
+
 		if createdAt.Valid {
 			s := createdAt.Time.Format(time.RFC3339)
 			lr.CreatedAt = &s
 		}
+
 		leads = append(leads, lr)
 	}
 

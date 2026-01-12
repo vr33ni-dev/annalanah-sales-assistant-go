@@ -14,14 +14,15 @@ import (
 )
 
 type Client struct {
-	ID            int        `json:"id"`
-	Name          string     `json:"name"`
-	Email         string     `json:"email"`
-	Phone         string     `json:"phone"`
-	Source        string     `json:"source"`
-	SourceStageID *int       `json:"source_stage_id,omitempty"`
-	Status        string     `json:"status"` // "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive"
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	ID            int                    `json:"id"`
+	Name          string                 `json:"name"`
+	Email         string                 `json:"email"`
+	Phone         string                 `json:"phone"`
+	Source        string                 `json:"source"`
+	SourceStageID *int                   `json:"source_stage_id,omitempty"`
+	Status        string                 `json:"status"` // "active", "lost", "follow_up_scheduled", "awaiting_response", "inactive"
+	CompletedAt   *time.Time             `json:"completed_at,omitempty"`
+	Comments      []CommentCreateRequest `json:"comments,omitempty"`
 }
 
 // GET /api/clients
@@ -30,14 +31,15 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	type ClientResponse struct {
-		ID              int64   `json:"id"`
-		Name            string  `json:"name"`
-		Email           string  `json:"email"`
-		Phone           string  `json:"phone"`
-		Source          string  `json:"source"`
-		SourceStageName string  `json:"source_stage_name"`
-		Status          string  `json:"status"`
-		CompletedAt     *string `json:"completed_at,omitempty"`
+		ID              int64             `json:"id"`
+		Name            string            `json:"name"`
+		Email           string            `json:"email"`
+		Phone           string            `json:"phone"`
+		Source          string            `json:"source"`
+		SourceStageName string            `json:"source_stage_name"`
+		Status          string            `json:"status"`
+		CompletedAt     *string           `json:"completed_at,omitempty"`
+		Comments        []CommentResponse `json:"comments,omitempty"`
 	}
 
 	rows, err := h.DB.QueryContext(ctx, `
@@ -66,17 +68,75 @@ ORDER BY c.id
 	for rows.Next() {
 		var c ClientResponse
 		var completedAt sql.NullTime
+		var emailNS, phoneNS, sourceNS sql.NullString
+
 		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Email, &c.Phone,
-			&c.Source, &c.SourceStageName, &c.Status, &completedAt,
+			&c.ID, &c.Name, &emailNS,
+			&phoneNS, &sourceNS, &c.SourceStageName, &c.Status, &completedAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if emailNS.Valid {
+			c.Email = emailNS.String
+		} else {
+			c.Email = ""
+		}
+
+		if phoneNS.Valid {
+			c.Phone = phoneNS.String
+		} else {
+			c.Phone = ""
+		}
+
+		if sourceNS.Valid {
+			c.Source = sourceNS.String
+		} else {
+			c.Source = ""
 		}
 		if completedAt.Valid {
 			date := completedAt.Time.Format("2006-01-02")
 			c.CompletedAt = &date
 		}
+
+		// load comments for this client
+		commentRows, err := h.DB.QueryContext(ctx, `
+			SELECT id, author, body, metadata, created_at, updated_at
+			FROM comments
+			WHERE entity_type = 'client' AND entity_id = $1
+			ORDER BY created_at DESC
+		`, c.ID)
+		if err == nil {
+			var comments []CommentResponse
+			for commentRows.Next() {
+				var id int
+				var author sql.NullString
+				var body string
+				var metadata sql.NullString
+				var created, updated time.Time
+				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
+					var meta map[string]interface{}
+					if metadata.Valid && metadata.String != "" {
+						_ = json.Unmarshal([]byte(metadata.String), &meta)
+					}
+					var a *string
+					if author.Valid {
+						s := author.String
+						a = &s
+					}
+					comments = append(comments, CommentResponse{
+						ID: id, EntityType: "client", EntityID: int(c.ID), Author: a, Body: body, Metadata: meta,
+						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+					})
+				}
+			}
+			_ = commentRows.Close()
+			if comments == nil {
+				comments = []CommentResponse{}
+			}
+			c.Comments = comments
+		}
+
 		clients = append(clients, c)
 	}
 
@@ -120,6 +180,14 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 
 		writeJSONError(w, "Fehler beim Anlegen des Kunden.", http.StatusInternalServerError)
 		return
+	}
+
+	// optionally insert comments submitted with the create request
+	if len(c.Comments) > 0 {
+		if err := h.insertCommentsForEntity("client", c.ID, c.Comments); err != nil {
+			// log but don't fail the whole request
+			log.Printf("failed to insert comments for client %d: %v", c.ID, err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -177,13 +245,14 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 
 	// Unmarshal into an auxiliary struct so completed_at is a string
 	var updated struct {
-		Name          string  `json:"name"`
-		Email         string  `json:"email"`
-		Phone         string  `json:"phone"`
-		Source        string  `json:"source"`
-		SourceStageID *int    `json:"source_stage_id,omitempty"`
-		Status        string  `json:"status"`
-		CompletedAt   *string `json:"completed_at,omitempty"`
+		Name          string                 `json:"name"`
+		Email         string                 `json:"email"`
+		Phone         string                 `json:"phone"`
+		Source        string                 `json:"source"`
+		SourceStageID *int                   `json:"source_stage_id,omitempty"`
+		Status        string                 `json:"status"`
+		CompletedAt   *string                `json:"completed_at,omitempty"`
+		Comments      []CommentCreateRequest `json:"comments,omitempty"`
 	}
 	if err := json.Unmarshal(body, &updated); err != nil {
 		log.Printf("❌ decode error: %v", err)
@@ -228,6 +297,13 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		log.Printf("❌ update failed: %v", err)
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// optionally insert comments provided in the patch
+	if updated.Comments != nil && len(updated.Comments) > 0 {
+		if err := h.insertCommentsForEntity("client", id, updated.Comments); err != nil {
+			log.Printf("failed to insert comments for client %d: %v", id, err)
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,32 +70,57 @@ func loadMigrations(db *sql.DB, t testing.TB) {
 	}
 }
 
-func SetupPostgres(t testing.TB) *TestDB {
+func SetupPostgres(t testing.TB) (*TestDB, error) {
 	if t != nil {
 		t.Helper()
 	}
 
 	ctx := context.Background()
 
+	// Quick Docker availability check: if DOCKER_HOST points to a unix socket ensure it exists.
+	dockerHost := os.Getenv("DOCKER_HOST")
+	if dockerHost == "" {
+		// try default docker socket
+		dockerHost = "unix:///var/run/docker.sock"
+	}
+	if strings.HasPrefix(dockerHost, "unix://") {
+		sock := strings.TrimPrefix(dockerHost, "unix://")
+		if _, err := os.Stat(sock); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("docker socket %s not found: %w", sock, err)
+			}
+			return nil, fmt.Errorf("cannot stat docker socket %s: %w", sock, err)
+		}
+
+		// try connecting to the socket to ensure Docker daemon is listening
+		conn, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+		if err != nil {
+			return nil, fmt.Errorf("docker unix socket exists but not accepting connections %s: %w", sock, err)
+		}
+		_ = conn.Close()
+	}
+
 	container, err := postgres.RunContainer(
 		ctx,
-		tc.WithImage("postgres:14"), // ✅ THIS is the fix
+		tc.WithImage("postgres:14"), // explicit image
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("testuser"),
 		postgres.WithPassword("testpass"),
 	)
 	if err != nil {
-		panic(fmt.Sprintf("failed to start postgres container: %v", err))
+		return nil, fmt.Errorf("failed to start postgres container: %w", err)
 	}
 
 	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		panic(err)
+		_ = container.Terminate(ctx)
+		return nil, err
 	}
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		panic(err)
+		_ = container.Terminate(ctx)
+		return nil, err
 	}
 
 	// Wait until Postgres is ready
@@ -104,7 +130,9 @@ func SetupPostgres(t testing.TB) *TestDB {
 			break
 		}
 		if time.Now().After(deadline) {
-			panic("postgres did not become ready")
+			_ = db.Close()
+			_ = container.Terminate(ctx)
+			return nil, fmt.Errorf("postgres did not become ready")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -114,7 +142,7 @@ func SetupPostgres(t testing.TB) *TestDB {
 	return &TestDB{
 		DB:        db,
 		container: container,
-	}
+	}, nil
 }
 
 func (tdb *TestDB) TearDown(t testing.TB) {

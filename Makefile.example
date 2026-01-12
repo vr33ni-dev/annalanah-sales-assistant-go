@@ -33,3 +33,4 @@ migrate-new:
 		-dir db/migrations \
 		-format "20060102150405" \
 		$(name)
+

@@ -132,27 +132,74 @@ cf_ins AS (
 ),
 
 -- 6) Stage assignments & participants
+
 assign_ins AS (
   INSERT INTO stage_client_assignments (client_id, stage_id)
   SELECT m.id, s.id FROM maxc m, s
   RETURNING 1
 ),
+
+-- Participant that is ALSO a lead (Laura)
 part_lead AS (
-  INSERT INTO stage_participants (stage_id, lead_name, lead_email, attended)
-  SELECT s.id, 'Laura Beispiel', 'laura@example.com', TRUE FROM s
+  INSERT INTO stage_participants (
+    stage_id,
+    participant_name,
+    participant_email,
+    participant_phone,
+    linked_lead_id,
+    attended
+  )
+  SELECT
+    s.id,
+    l.name,
+    l.email,
+    l.phone,
+    l.id,
+    TRUE
+  FROM s
+  JOIN leads l ON l.email = 'laura@example.com'
   RETURNING 1
 ),
+
+-- Participant linked to client Anna
 part_anna AS (
-  INSERT INTO stage_participants (stage_id, linked_client_id, attended)
-  SELECT s.id, a.id, TRUE FROM s, anna a
+  INSERT INTO stage_participants (
+    stage_id,
+    participant_name,
+    participant_email,
+    linked_client_id,
+    attended
+  )
+  SELECT
+    s.id,
+    c.name,
+    c.email,
+    c.id,
+    TRUE
+  FROM s
+  JOIN clients c ON c.email = 'anna@example.com'
   RETURNING 1
 ),
+
+-- Participant linked to client Max
 part_max AS (
-  INSERT INTO stage_participants (stage_id, linked_client_id, attended)
-  SELECT s.id, m.id, TRUE FROM s, maxc m
+  INSERT INTO stage_participants (
+    stage_id,
+    participant_name,
+    participant_email,
+    linked_client_id,
+    attended
+  )
+  SELECT
+    s.id,
+    c.name,
+    c.email,
+    c.id,
+    TRUE
+  FROM s
+  JOIN clients c ON c.email = 'max@example.com'
   RETURNING 1
 )
-
 
 
 -- Final confirmation

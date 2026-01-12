@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -10,37 +11,40 @@ import (
 )
 
 type Contract struct {
-	ID             int     `json:"id"`
-	ClientID       int     `json:"client_id"`
-	SalesProcessID int     `json:"sales_process_id"`
-	StartDate      string  `json:"start_date"`
-	EndDate        *string `json:"end_date_computed,omitempty"`
-	DurationMonths int     `json:"duration_months"`
-	RevenueTotal   float64 `json:"revenue_total"`
-	PaymentFreq    string  `json:"payment_frequency"`
+	ID             int                    `json:"id"`
+	ClientID       int                    `json:"client_id"`
+	SalesProcessID int                    `json:"sales_process_id"`
+	StartDate      string                 `json:"start_date"`
+	EndDate        *string                `json:"end_date_computed,omitempty"`
+	DurationMonths int                    `json:"duration_months"`
+	RevenueTotal   float64                `json:"revenue_total"`
+	PaymentFreq    string                 `json:"payment_frequency"`
+	Comments       []CommentCreateRequest `json:"comments,omitempty"`
 }
 
 type UpdateContractRequest struct {
-	StartDate      string  `json:"start_date"`
-	DurationMonths int     `json:"duration_months"`
-	RevenueTotal   float64 `json:"revenue_total"`
-	PaymentFreq    string  `json:"payment_frequency"`
+	StartDate      string                 `json:"start_date"`
+	DurationMonths int                    `json:"duration_months"`
+	RevenueTotal   float64                `json:"revenue_total"`
+	PaymentFreq    string                 `json:"payment_frequency"`
+	Comments       []CommentCreateRequest `json:"comments,omitempty"`
 }
 
 type ContractResponse struct {
-	ID              int     `json:"id"`
-	ClientID        int     `json:"client_id"`
-	ClientName      string  `json:"client_name"`
-	SalesProcessID  int     `json:"sales_process_id"`
-	StartDate       string  `json:"start_date"`
-	EndDate         *string `json:"end_date_computed,omitempty"`
-	DurationMonths  int     `json:"duration_months"`
-	RevenueTotal    float64 `json:"revenue_total"`
-	PaymentFreq     string  `json:"payment_frequency"`
-	MonthlyAmount   float64 `json:"monthly_amount"`
-	PaidMonths      int     `json:"paid_months"`
-	PaidAmountTotal float64 `json:"paid_amount_total"`
-	NextDueDate     *string `json:"next_due_date,omitempty"`
+	ID              int               `json:"id"`
+	ClientID        int               `json:"client_id"`
+	ClientName      string            `json:"client_name"`
+	SalesProcessID  int               `json:"sales_process_id"`
+	StartDate       string            `json:"start_date"`
+	EndDate         *string           `json:"end_date_computed,omitempty"`
+	DurationMonths  int               `json:"duration_months"`
+	RevenueTotal    float64           `json:"revenue_total"`
+	PaymentFreq     string            `json:"payment_frequency"`
+	MonthlyAmount   float64           `json:"monthly_amount"`
+	PaidMonths      int               `json:"paid_months"`
+	PaidAmountTotal float64           `json:"paid_amount_total"`
+	NextDueDate     *string           `json:"next_due_date,omitempty"`
+	Comments        []CommentResponse `json:"comments,omitempty"`
 }
 
 // GET /api/contracts
@@ -144,6 +148,45 @@ ORDER BY c.id;
 			http.Error(w, err.Error(), 500)
 			return
 		}
+
+		// load comments for this contract
+		commentRows, err := h.DB.Query(`
+			SELECT id, author, body, metadata, created_at, updated_at
+			FROM comments
+			WHERE entity_type = 'contract' AND entity_id = $1
+			ORDER BY created_at DESC
+		`, x.ID)
+		if err == nil {
+			var comments []CommentResponse
+			for commentRows.Next() {
+				var id int
+				var author sql.NullString
+				var body string
+				var metadata sql.NullString
+				var created, updated time.Time
+				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
+					var meta map[string]interface{}
+					if metadata.Valid && metadata.String != "" {
+						_ = json.Unmarshal([]byte(metadata.String), &meta)
+					}
+					var a *string
+					if author.Valid {
+						s := author.String
+						a = &s
+					}
+					comments = append(comments, CommentResponse{
+						ID: id, EntityType: "contract", EntityID: x.ID, Author: a, Body: body, Metadata: meta,
+						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+					})
+				}
+			}
+			_ = commentRows.Close()
+			if comments == nil {
+				comments = []CommentResponse{}
+			}
+			x.Comments = comments
+		}
+
 		out = append(out, x)
 	}
 
@@ -181,6 +224,13 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// optionally insert comments submitted with the create request
+	if len(c.Comments) > 0 {
+		if err := h.insertCommentsForEntity("contract", c.ID, c.Comments); err != nil {
+			// log but do not fail
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -229,6 +279,13 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// optionally insert comments provided in the patch
+	if req.Comments != nil && len(req.Comments) > 0 {
+		if err := h.insertCommentsForEntity("contract", id, req.Comments); err != nil {
+			// ignore failure
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

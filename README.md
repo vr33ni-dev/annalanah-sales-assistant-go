@@ -1,5 +1,7 @@
 # Sales Assistant Backend (Go + PostgreSQL)
 
+[![Tests & Coverage](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml) [![codecov](https://codecov.io/gh/vr33ni-dev/sales-assistant-go/branch/dev/graph/badge.svg)](https://codecov.io/gh/vr33ni-dev/sales-assistant-go)
+
 This is the backend service for the **Sales Assistant** application.  
 It powers client management, sales processes, contracts, cashflow tracking, and stage/event organization.
 
@@ -42,6 +44,8 @@ PORT=8080
 ```bash
 make migrate-up
 make seed
+OR
+make reset
 ```
 
 ### 5. Add new migration
@@ -58,13 +62,24 @@ go run main.go
 
 ### 7. Test (with coverage)
 
-```bash
-go test ./... \
-  -coverpkg=./... \
-  -coverprofile=coverage.out # run tests + create coverage report
+We provide small helper scripts to run unit-only tests and integration-only tests separately.
 
-go tool cover -func=coverage.out # view coverage in command line
-go tool cover -html=coverage.out # line by line coverage view
+```bash
+./scripts/coverage-unit.sh
+go tool cover -func=coverage-unit.out # View unit coverage in the terminal
+go tool cover -html=coverage-unit.out # Or open an HTML report
+
+./scripts/coverage-integration.sh
+go tool cover -func=coverage-integration.out # View unit coverage in the terminal
+go tool cover -html=coverage-integration.out # Or open an HTML report
+```
+
+Note: integration tests may be skipped on machines without Docker/Colima (the test harness detects the Docker socket and will skip if Docker isn't ready). If the integration tests are skipped, no coverage will be recorded for those packages until Docker is available.
+
+You can also run a single test directly:
+
+```bash
+go test ./api -run TestUpdateComment -v
 ```
 
 ---
