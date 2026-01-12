@@ -1,6 +1,6 @@
 # Sales Assistant Backend (Go + PostgreSQL)
 
-[![Tests & Coverage](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml) [![codecov](https://codecov.io/gh/vr33ni-dev/sales-assistant-go/branch/dev/graph/badge.svg)](https://codecov.io/gh/vr33ni-dev/sales-assistant-go)
+[![Tests & Coverage](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml) [![codecov](https://codecov.io/gh/vr33ni-dev/annalanah-sales-assistant-go/branch/dev/graph/badge.svg)](https://codecov.io/gh/vr33ni-dev/annalanah-sales-assistant-go)
 
 ---
 
