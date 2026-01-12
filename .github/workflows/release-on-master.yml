@@ -119,7 +119,8 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p dist
-          go build -ldflags "-X github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/version.Version=${VERSION}" -o dist/app ./...
+          # Build the repository's main package (.) so -o writes a single binary file.
+          go build -ldflags "-X github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/version.Version=${VERSION}" -o dist/app .
 
       - name: Verify VERSION is a semantic version
         run: |
