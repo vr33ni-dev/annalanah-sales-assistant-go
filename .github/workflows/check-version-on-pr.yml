@@ -1,0 +1,90 @@
+name: Check VERSION on pull request
+
+on:
+  pull_request:
+    paths:
+      - "VERSION"
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate VERSION bump
+        run: |
+          set -euo pipefail
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          echo "Base ref: $BASE_REF"
+
+          # Ensure we have the base branch available
+          git fetch origin "$BASE_REF"
+
+          # Determine changed files between base and head
+          CHANGED=$(git diff --name-only origin/"$BASE_REF"...HEAD || true)
+          echo "Changed files:\n$CHANGED"
+
+          if ! echo "$CHANGED" | grep -qx "VERSION"; then
+            echo "VERSION not changed in this PR — nothing to check."
+            exit 0
+          fi
+
+          # Read old VERSION from base (if present)
+          OLD=""
+          if git show origin/"$BASE_REF":VERSION >/dev/null 2>&1; then
+            OLD=$(git show origin/"$BASE_REF":VERSION | tr -d '\r\n')
+          fi
+
+          NEW=$(cat VERSION | tr -d '\r\n')
+          echo "Old VERSION: '$OLD'"
+          echo "New VERSION: '$NEW'"
+
+          semver_regex='^v([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$'
+          if ! echo "$NEW" | grep -Eq "$semver_regex"; then
+            echo "ERROR: New VERSION is not semver: $NEW"
+            exit 1
+          fi
+
+          if [ -n "$OLD" ]; then
+            if ! echo "$OLD" | grep -Eq "$semver_regex"; then
+              echo "ERROR: Old VERSION is not semver: $OLD"
+              exit 1
+            fi
+
+            OLD_M=$(echo "$OLD" | sed -E "s/$semver_regex/\1/")
+            OLD_m=$(echo "$OLD" | sed -E "s/$semver_regex/\2/")
+            OLD_p=$(echo "$OLD" | sed -E "s/$semver_regex/\3/")
+            NEW_M=$(echo "$NEW" | sed -E "s/$semver_regex/\1/")
+            NEW_m=$(echo "$NEW" | sed -E "s/$semver_regex/\2/")
+            NEW_p=$(echo "$NEW" | sed -E "s/$semver_regex/\3/")
+
+            echo "Old semver parts: $OLD_M.$OLD_m.$OLD_p"
+            echo "New semver parts: $NEW_M.$NEW_m.$NEW_p"
+
+            if [ "$NEW_M" -gt "$OLD_M" ]; then
+              echo "Major bumped — OK"
+            elif [ "$NEW_M" -lt "$OLD_M" ]; then
+              echo "ERROR: major decreased ($NEW_M < $OLD_M)"
+              exit 1
+            else
+              if [ "$NEW_m" -gt "$OLD_m" ]; then
+                echo "Minor bumped — OK"
+              elif [ "$NEW_m" -lt "$OLD_m" ]; then
+                echo "ERROR: minor decreased ($NEW_m < $OLD_m)"
+                exit 1
+              else
+                if [ "$NEW_p" -gt "$OLD_p" ]; then
+                  echo "Patch bumped — OK"
+                else
+                  echo "ERROR: VERSION not increased (new patch <= old patch)"
+                  exit 1
+                fi
+              fi
+            fi
+          else
+            echo "No prior VERSION found on base branch — accepting new VERSION $NEW"
+          fi

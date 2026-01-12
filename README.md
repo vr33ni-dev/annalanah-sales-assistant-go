@@ -2,9 +2,6 @@
 
 [![Tests & Coverage](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/tests-and-coverage.yml) [![codecov](https://codecov.io/gh/vr33ni-dev/sales-assistant-go/branch/dev/graph/badge.svg)](https://codecov.io/gh/vr33ni-dev/sales-assistant-go)
 
-This is the backend service for the **Sales Assistant** application.  
-It powers client management, sales processes, contracts, cashflow tracking, and stage/event organization.
-
 ---
 
 ## 🚀 Tech Stack
@@ -81,6 +78,23 @@ You can also run a single test directly:
 ```bash
 go test ./api -run TestUpdateComment -v
 ```
+
+---
+
+## Release labels
+
+The autobump supports label-driven versioning on merged PRs. If a merged PR has one of the labels `major`, `minor`, or `patch` the release workflow will use that label to decide which part of the semver to increment (major > minor > patch precedence). The workflow requires an explicit label; if no label is present the release job will fail and prompt you to add one of `major`, `minor`, or `patch`.
+
+### PR check badge
+
+The project includes a pull-request check that validates `VERSION` changes. The badge below shows the latest status of that check on the `dev` branch (it reflects the workflow run status, not the final release version that will be created on merge to `master`):
+
+[![VERSION check](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/check-version-on-pr.yml/badge.svg?branch=dev)](https://github.com/vr33ni-dev/sales-assistant-go/actions/workflows/check-version-on-pr.yml)
+
+Notes:
+
+- The badge shows the most recent run on the `dev` branch. It does not guarantee what version will be produced on `master` — the final release version is computed by the release workflow on `master` at merge time (which uses PR labels to decide major/minor/patch).
+- The PR check will fail a PR if a `VERSION` change is invalid or is not a numerical bump over the base branch.
 
 ---
 > **Note:** The canonical repository is [**on GitHub**](https://github.com/vr33ni-dev/annalanah-sales-assistant-go) · [Mirror on GitLab →](https://gitlab.com/vr33ni-work/annalanah-sales-assistant-go) [![Mirror Status](https://github.com/vr33ni-dev/annalanah-sales-assistant-go/actions/workflows/gitlab-mirror.yml/badge.svg)](https://github.com/vr33ni-dev/annalanah-sales-assistant-go/actions/workflows/gitlab-mirror.yml)

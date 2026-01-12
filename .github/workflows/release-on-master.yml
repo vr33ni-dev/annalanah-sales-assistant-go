@@ -1,0 +1,163 @@
+name: Release on master
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "VERSION"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.25"
+
+      - name: Auto bump VERSION (label-driven)
+        id: autobump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Fetching tags..."
+          git fetch --tags origin
+
+          # Determine latest tag (if any)
+          if git rev-parse --verify --quiet "refs/tags/$(git describe --tags --abbrev=0 2>/dev/null)" >/dev/null 2>&1; then
+            LATEST_TAG=$(git describe --tags --abbrev=0)
+          else
+            LATEST_TAG=""
+          fi
+          echo "Latest tag: ${LATEST_TAG}"
+
+          # Determine bump type from PR labels associated with this commit. Require an explicit label.
+          PRS_JSON=$(curl -s -H "Accept: application/vnd.github.groot-preview+json" -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")
+          labels=$(echo "$PRS_JSON" | jq -r '.[] .labels[]?.name' 2>/dev/null || true)
+          labels=$(echo "$labels" | tr '[:upper:]' '[:lower:]' || true)
+          echo "Labels found on PRs:"
+          echo "$labels"
+
+          if [ -z "${labels}" ]; then
+            echo "ERROR: No release label found on merged PR(s). Add one of: major, minor, patch. The release job requires an explicit label and will fail without it."
+            exit 1
+          fi
+
+          bump="patch"
+          if echo "$labels" | grep -q "major"; then
+            bump="major"
+          elif echo "$labels" | grep -q "minor"; then
+            bump="minor"
+          elif echo "$labels" | grep -q "patch"; then
+            bump="patch"
+          fi
+          echo "Selected bump: $bump"
+
+          # Compute new version based on latest tag
+          if [ -z "${LATEST_TAG}" ]; then
+            # start at v0.1.0 for first release
+            MAJOR=0
+            MINOR=1
+            PATCH=0
+            if [ "$bump" = "major" ]; then
+              MAJOR=1; MINOR=0; PATCH=0
+            elif [ "$bump" = "minor" ]; then
+              MAJOR=0; MINOR=1; PATCH=0
+            fi
+          else
+            BASE=${LATEST_TAG#v}
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${BASE}"
+            MAJOR=${MAJOR:-0}
+            MINOR=${MINOR:-0}
+            PATCH=${PATCH:-0}
+            if [ "$bump" = "major" ]; then
+              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
+            elif [ "$bump" = "minor" ]; then
+              MINOR=$((MINOR+1)); PATCH=0
+            else
+              PATCH=$((PATCH+1))
+            fi
+          fi
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Computed new version: ${NEW_VERSION}"
+
+          # Only write & push if different from current file
+          if [ -f VERSION ]; then
+            CUR=$(cat VERSION)
+          else
+            CUR=""
+          fi
+          if [ "${CUR}" != "${NEW_VERSION}" ]; then
+            echo "${NEW_VERSION}" > VERSION
+            git add VERSION
+            git commit -m "chore(release): bump VERSION to ${NEW_VERSION} [skip ci]" || true
+            # Push using GITHUB_TOKEN (repo must allow read & write for workflows)
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master
+          else
+            echo "VERSION already up-to-date: ${CUR}"
+          fi
+          echo "VERSION=${NEW_VERSION}" >> $GITHUB_ENV
+
+      - name: Read VERSION
+        id: ver
+        run: |
+          VERSION=$(cat VERSION)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Build binary
+        run: |
+          mkdir -p dist
+          go build -ldflags "-X github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/version.Version=${VERSION}" -o dist/app ./...
+
+      - name: Verify VERSION is a semantic version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "Checking VERSION=$VERSION"
+          # Allow vMAJOR.MINOR.PATCH and optional prerelease/build metadata
+          if echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$'; then
+            echo "VERSION looks like semver: $VERSION"
+          else
+            echo "ERROR: VERSION must be semver (example: v1.2.3). Found: $VERSION"
+            exit 1
+          fi
+
+      - name: Create git tag (ensure repo has a tag object)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # create and push tag only if it doesn't exist
+          if git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "tag ${VERSION} already exists"
+          else
+            git tag -a "${VERSION}" -m "Release ${VERSION}"
+            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"
+          fi
+
+      - name: Create GitHub release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${VERSION}
+          name: ${VERSION}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binary
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/app
+          asset_name: app
+          asset_content_type: application/octet-stream
