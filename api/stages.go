@@ -97,9 +97,9 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 					sp.stage_id,
 					sp.linked_client_id,
 					sp.linked_lead_id,
-					COALESCE(c.name, l.name, sp.lead_name),
-					COALESCE(c.email, l.email, sp.lead_email),
-					COALESCE(c.phone, l.phone, sp.lead_phone),
+					COALESCE(c.name, l.name, sp.participant_name),
+					COALESCE(c.email, l.email, sp.participant_email),
+					COALESCE(c.phone, l.phone, sp.participant_phone),
 					sp.attended,
 					sp.created_at
 				FROM stage_participants sp
@@ -196,11 +196,11 @@ Request-Body (bestehender Client):
 	}
 */
 type AddStageParticipantRequest struct {
-	ParticipantName  string  `json:"lead_name"`
-	ParticipantEmail *string `json:"lead_email"`
-	ParticipantPhone *string `json:"lead_phone"`
+	ParticipantName  string  `json:"participant_name"`
+	ParticipantEmail *string `json:"participant_email"`
+	ParticipantPhone *string `json:"participant_phone"`
 
-	LinkedClientID *int `json:"client_id"`
+	LinkedClientID *int `json:"linked_client_id"`
 	LinkedLeadID   *int `json:"linked_lead_id"`
 
 	Attended     bool `json:"attended"`
@@ -216,10 +216,19 @@ func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// require either a linked client or a lead name
-	if req.LinkedClientID == nil && req.ParticipantName == "" {
-		http.Error(w, "client_id or lead_name required", http.StatusBadRequest)
+	// Require a name for every participant. Email and phone are optional unless
+	// a new lead is created - in that case we require an email so the lead has
+	// contact information.
+	if req.ParticipantName == "" {
+		http.Error(w, "participant_name required", http.StatusBadRequest)
 		return
+	}
+
+	if req.CreateAsLead {
+		if req.ParticipantEmail == nil || *req.ParticipantEmail == "" {
+			http.Error(w, "participant_email required when create_as_lead is true", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// lead creation is optional; we don't link to leads in stage_participants for sqlite tests
@@ -254,31 +263,56 @@ func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// link the newly created lead to the stage participant insert
+		req.LinkedLeadID = &id
 	}
 
-	_, err := h.DB.Exec(`
+	// Prepare arguments converting nil pointers to untyped nil so the driver
+	// writes NULL into the DB when values are absent.
+	var pEmail interface{} = nil
+	var pPhone interface{} = nil
+	var linkedClient interface{} = nil
+	var linkedLead interface{} = nil
+	if req.ParticipantEmail != nil {
+		pEmail = *req.ParticipantEmail
+	}
+	if req.ParticipantPhone != nil {
+		pPhone = *req.ParticipantPhone
+	}
+	if req.LinkedClientID != nil {
+		linkedClient = *req.LinkedClientID
+	}
+	if req.LinkedLeadID != nil {
+		linkedLead = *req.LinkedLeadID
+	}
+
+	args := []interface{}{stageID, req.ParticipantName, pEmail, pPhone, linkedClient, linkedLead, req.Attended}
+
+	// Log the args for debugging in dev — safe because these are non-secret values
+	log.Printf("AddStageParticipant: inserting with args=%v", args)
+
+	res, err := h.DB.Exec(`
 		INSERT INTO stage_participants (
 			stage_id,
-			lead_name,
-			lead_email,
-			lead_phone,
+			participant_name,
+			participant_email,
+			participant_phone,
 			linked_client_id,
+			linked_lead_id,
 			attended
 		)
-		VALUES ($1,$2,$3,$4,$5,$6)
-	`,
-		stageID,
-		req.ParticipantName,
-		req.ParticipantEmail,
-		req.ParticipantPhone,
-		req.LinkedClientID,
-		req.Attended,
-	)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`, args...)
 
 	if err != nil {
 		log.Printf("AddStageParticipant: insert into stage_participants failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Optionally log rows affected when available
+	if ra, err2 := res.RowsAffected(); err2 == nil {
+		log.Printf("AddStageParticipant: rows affected=%d", ra)
 	}
 
 	w.WriteHeader(http.StatusCreated)
