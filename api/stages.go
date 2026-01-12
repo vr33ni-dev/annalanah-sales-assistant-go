@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -218,20 +219,81 @@ type AddStageParticipantRequest struct {
 func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 	stageID, _ := strconv.Atoi(chi.URLParam(r, "id"))
 
-	var req AddStageParticipantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Flexible JSON decoding: accept both legacy keys (lead_name, lead_email,
+	// lead_phone, client_id) and the newer participant_* / linked_* names.
+	var raw map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Require a name for every participant. Email and phone are optional unless
-	// a new lead is created - in that case we require an email so the lead has
-	// contact information.
-	if req.ParticipantName == "" {
-		http.Error(w, "participant_name required", http.StatusBadRequest)
+	var req AddStageParticipantRequest
+
+	// helper to read string
+	getStr := func(keys ...string) *string {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok && v != nil {
+				if s, ok := v.(string); ok {
+					s = strings.TrimSpace(s)
+					return &s
+				}
+			}
+		}
+		return nil
+	}
+
+	// helper to read int
+	getInt := func(keys ...string) *int {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok && v != nil {
+				switch t := v.(type) {
+				case float64:
+					iv := int(t)
+					return &iv
+				case int:
+					iv := t
+					return &iv
+				}
+			}
+		}
+		return nil
+	}
+
+	// helper to read bool pointer
+	getBoolPtr := func(key string) *bool {
+		if v, ok := raw[key]; ok && v != nil {
+			if b, ok := v.(bool); ok {
+				return &b
+			}
+		}
+		return nil
+	}
+
+	req.ParticipantName = func() string {
+		if s := getStr("participant_name", "lead_name"); s != nil {
+			return *s
+		}
+		return ""
+	}()
+	req.ParticipantEmail = getStr("participant_email", "lead_email")
+	req.ParticipantPhone = getStr("participant_phone", "lead_phone")
+
+	req.LinkedClientID = getInt("linked_client_id", "client_id")
+	req.LinkedLeadID = getInt("linked_lead_id")
+
+	// attended/create_as_lead
+	req.Attended = getBoolPtr("attended")
+	if v := getBoolPtr("create_as_lead"); v != nil {
+		req.CreateAsLead = *v
+	}
+
+	// Validation: require a name only if neither client nor lead is linked.
+	if req.LinkedClientID == nil && req.LinkedLeadID == nil && req.ParticipantName == "" {
+		http.Error(w, "client_id or participant_name required", http.StatusBadRequest)
 		return
 	}
 
+	// If creating a lead, require email
 	if req.CreateAsLead {
 		if req.ParticipantEmail == nil || *req.ParticipantEmail == "" {
 			http.Error(w, "participant_email required when create_as_lead is true", http.StatusBadRequest)

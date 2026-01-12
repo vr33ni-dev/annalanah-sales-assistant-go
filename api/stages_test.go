@@ -29,9 +29,10 @@ func createStageSchema(db *sql.DB, t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			stage_id INTEGER,
 			linked_client_id INTEGER,
-			lead_name TEXT,
-			lead_email TEXT,
-			lead_phone TEXT,
+			linked_lead_id INTEGER,
+			participant_name TEXT,
+			participant_email TEXT,
+			participant_phone TEXT,
 			attended BOOLEAN
 		);`,
 		`CREATE TABLE stage_client_assignments (
@@ -121,10 +122,10 @@ func TestAddStageParticipant_NewLead(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "1")
 	reqBody := map[string]any{
-		"lead_name":  "Laura Beispiel",
-		"lead_email": "laura@example.com",
-		"lead_phone": "01234",
-		"attended":   true,
+		"participant_name":  "Laura Beispiel",
+		"participant_email": "laura@example.com",
+		"participant_phone": "01234",
+		"attended":          true,
 	}
 	b, _ := json.Marshal(reqBody)
 
@@ -140,7 +141,7 @@ func TestAddStageParticipant_NewLead(t *testing.T) {
 	}
 
 	var count int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM stage_participants WHERE lead_name='Laura Beispiel'`).Scan(&count)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM stage_participants WHERE participant_name='Laura Beispiel'`).Scan(&count)
 	if count != 1 {
 		t.Fatalf("expected 1 participant, got %d", count)
 	}
@@ -155,8 +156,8 @@ func TestAddStageParticipant_ExistingClient(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "1")
 	reqBody := map[string]any{
-		"client_id": 42,
-		"attended":  false,
+		"linked_client_id": 42,
+		"attended":         false,
 	}
 	b, _ := json.Marshal(reqBody)
 
@@ -312,7 +313,7 @@ func TestAddStageParticipant_MissingLeadAndClient(t *testing.T) {
 	resp := w.Result()
 
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing client_id/lead_name, got %d", resp.StatusCode)
+		t.Fatalf("expected 400 for missing linked_client_id/participant_name, got %d", resp.StatusCode)
 	}
 }
 
