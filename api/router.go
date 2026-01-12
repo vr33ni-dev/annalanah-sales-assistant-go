@@ -54,6 +54,12 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 	r.Get("/health", h.health)
 	h.MountAuthRoutes(r)
 
+	// The auth routes are mounted by `MountAuthRoutes` (see api/auth.go) and
+	// include the following useful endpoints for the frontend and debugging:
+	//   - GET  /api/me         -> returns session or 401
+	//   - GET  /api/user/me    -> convenience: returns user-shaped object even when unauthenticated
+	//   - GET  /debug/session  -> shows cookies received by the server and parsed session (debug only)
+
 	// ✅ Add this: make backend "/" respond 200 so health probes don't 405
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -146,6 +152,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Post("/nlq", h.RunNLQ)
 
 		// Comments
+		// List comments for an entity. Required query parameters:
+		//   - entity_type (string) e.g. "client" or "sales"
+		//   - entity_id   (int)    e.g. 123
+		// Example: GET /api/comments?entity_type=client&entity_id=123
 		pr.Get("/comments", h.ListComments)
 		pr.Post("/comments", h.CreateComment)
 		pr.Patch("/comments/{id}", h.UpdateComment)

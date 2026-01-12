@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +114,29 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	// If the requester is authenticated, prefer server-side session name
+	// as the comment author. If no session exists (local/dev) and no author
+	// was supplied, use a configurable dummy author so comments still show
+	// a sensible author when only the backend is running.
+	if sess, ok := h.parseSession(r); ok {
+		// overwrite any provided author with the logged-in user's name
+		req.Author = &sess.Name
+	} else {
+		if req.Author == nil {
+			def := os.Getenv("DEFAULT_COMMENT_AUTHOR")
+			if def == "" {
+				def = "local-dev"
+			}
+			req.Author = &def
+		}
+	}
+
+	// Debugging: log which author will be stored (helps diagnose missing session cookie)
+	if req.Author != nil {
+		log.Printf("CreateComment: chosen author=%q, entity=%s/%d", *req.Author, req.EntityType, req.EntityID)
+	} else {
+		log.Printf("CreateComment: no author chosen, entity=%s/%d", req.EntityType, req.EntityID)
 	}
 	if req.EntityType == "" || req.EntityID == 0 || req.Body == "" {
 		http.Error(w, "entity_type, entity_id and body are required", http.StatusBadRequest)
