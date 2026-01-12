@@ -1,10 +1,12 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -76,7 +78,7 @@ type StageParticipant struct {
 	ParticipantEmail *string `json:"email,omitempty"`
 	ParticipantPhone *string `json:"phone,omitempty"`
 
-	Attended  bool    `json:"attended"`
+	Attended  *bool   `json:"attended,omitempty"`
 	CreatedAt *string `json:"created_at,omitempty"`
 }
 
@@ -97,9 +99,9 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 					sp.stage_id,
 					sp.linked_client_id,
 					sp.linked_lead_id,
-					COALESCE(c.name, l.name, sp.lead_name),
-					COALESCE(c.email, l.email, sp.lead_email),
-					COALESCE(c.phone, l.phone, sp.lead_phone),
+					COALESCE(c.name, l.name, sp.participant_name),
+					COALESCE(c.email, l.email, sp.participant_email),
+					COALESCE(c.phone, l.phone, sp.participant_phone),
 					sp.attended,
 					sp.created_at
 				FROM stage_participants sp
@@ -118,6 +120,7 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 	var out []StageParticipant
 	for rows.Next() {
 		var p StageParticipant
+		var nb sql.NullBool
 		if err := rows.Scan(
 			&p.ID,
 			&p.StageID,
@@ -126,11 +129,17 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 			&p.ParticipantName,
 			&p.ParticipantEmail,
 			&p.ParticipantPhone,
-			&p.Attended,
+			&nb,
 			&p.CreatedAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if nb.Valid {
+			b := nb.Bool
+			p.Attended = &b
+		} else {
+			p.Attended = nil
 		}
 		out = append(out, p)
 	}
@@ -196,30 +205,100 @@ Request-Body (bestehender Client):
 	}
 */
 type AddStageParticipantRequest struct {
-	ParticipantName  string  `json:"lead_name"`
-	ParticipantEmail *string `json:"lead_email"`
-	ParticipantPhone *string `json:"lead_phone"`
+	ParticipantName  string  `json:"participant_name"`
+	ParticipantEmail *string `json:"participant_email"`
+	ParticipantPhone *string `json:"participant_phone"`
 
-	LinkedClientID *int `json:"client_id"`
+	LinkedClientID *int `json:"linked_client_id"`
 	LinkedLeadID   *int `json:"linked_lead_id"`
 
-	Attended     bool `json:"attended"`
-	CreateAsLead bool `json:"create_as_lead"`
+	Attended     *bool `json:"attended,omitempty"`
+	CreateAsLead bool  `json:"create_as_lead"`
 }
 
 func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 	stageID, _ := strconv.Atoi(chi.URLParam(r, "id"))
 
-	var req AddStageParticipantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Flexible JSON decoding: accept both legacy keys (lead_name, lead_email,
+	// lead_phone, client_id) and the newer participant_* / linked_* names.
+	var raw map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// require either a linked client or a lead name
-	if req.LinkedClientID == nil && req.ParticipantName == "" {
-		http.Error(w, "client_id or lead_name required", http.StatusBadRequest)
+	var req AddStageParticipantRequest
+
+	// helper to read string
+	getStr := func(keys ...string) *string {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok && v != nil {
+				if s, ok := v.(string); ok {
+					s = strings.TrimSpace(s)
+					return &s
+				}
+			}
+		}
+		return nil
+	}
+
+	// helper to read int
+	getInt := func(keys ...string) *int {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok && v != nil {
+				switch t := v.(type) {
+				case float64:
+					iv := int(t)
+					return &iv
+				case int:
+					iv := t
+					return &iv
+				}
+			}
+		}
+		return nil
+	}
+
+	// helper to read bool pointer
+	getBoolPtr := func(key string) *bool {
+		if v, ok := raw[key]; ok && v != nil {
+			if b, ok := v.(bool); ok {
+				return &b
+			}
+		}
+		return nil
+	}
+
+	req.ParticipantName = func() string {
+		if s := getStr("participant_name", "lead_name"); s != nil {
+			return *s
+		}
+		return ""
+	}()
+	req.ParticipantEmail = getStr("participant_email", "lead_email")
+	req.ParticipantPhone = getStr("participant_phone", "lead_phone")
+
+	req.LinkedClientID = getInt("linked_client_id", "client_id")
+	req.LinkedLeadID = getInt("linked_lead_id")
+
+	// attended/create_as_lead
+	req.Attended = getBoolPtr("attended")
+	if v := getBoolPtr("create_as_lead"); v != nil {
+		req.CreateAsLead = *v
+	}
+
+	// Validation: require a name only if neither client nor lead is linked.
+	if req.LinkedClientID == nil && req.LinkedLeadID == nil && req.ParticipantName == "" {
+		http.Error(w, "client_id or participant_name required", http.StatusBadRequest)
 		return
+	}
+
+	// If creating a lead, require email
+	if req.CreateAsLead {
+		if req.ParticipantEmail == nil || *req.ParticipantEmail == "" {
+			http.Error(w, "participant_email required when create_as_lead is true", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// lead creation is optional; we don't link to leads in stage_participants for sqlite tests
@@ -254,31 +333,61 @@ func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// link the newly created lead to the stage participant insert
+		req.LinkedLeadID = &id
 	}
 
-	_, err := h.DB.Exec(`
+	// Prepare arguments converting nil pointers to untyped nil so the driver
+	// writes NULL into the DB when values are absent.
+	var pEmail interface{} = nil
+	var pPhone interface{} = nil
+	var linkedClient interface{} = nil
+	var linkedLead interface{} = nil
+	if req.ParticipantEmail != nil {
+		pEmail = *req.ParticipantEmail
+	}
+	if req.ParticipantPhone != nil {
+		pPhone = *req.ParticipantPhone
+	}
+	if req.LinkedClientID != nil {
+		linkedClient = *req.LinkedClientID
+	}
+	if req.LinkedLeadID != nil {
+		linkedLead = *req.LinkedLeadID
+	}
+
+	var attended interface{} = nil
+	if req.Attended != nil {
+		attended = *req.Attended
+	}
+
+	args := []interface{}{stageID, req.ParticipantName, pEmail, pPhone, linkedClient, linkedLead, attended}
+
+	// Log the args for debugging in dev — safe because these are non-secret values
+	log.Printf("AddStageParticipant: inserting with args=%v", args)
+
+	res, err := h.DB.Exec(`
 		INSERT INTO stage_participants (
 			stage_id,
-			lead_name,
-			lead_email,
-			lead_phone,
+			participant_name,
+			participant_email,
+			participant_phone,
 			linked_client_id,
+			linked_lead_id,
 			attended
 		)
-		VALUES ($1,$2,$3,$4,$5,$6)
-	`,
-		stageID,
-		req.ParticipantName,
-		req.ParticipantEmail,
-		req.ParticipantPhone,
-		req.LinkedClientID,
-		req.Attended,
-	)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+	`, args...)
 
 	if err != nil {
 		log.Printf("AddStageParticipant: insert into stage_participants failed: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Optionally log rows affected when available
+	if ra, err2 := res.RowsAffected(); err2 == nil {
+		log.Printf("AddStageParticipant: rows affected=%d", ra)
 	}
 
 	w.WriteHeader(http.StatusCreated)
