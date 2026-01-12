@@ -162,3 +162,5 @@ jobs:
           asset_path: dist/app
           asset_name: app
           asset_content_type: application/octet-stream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

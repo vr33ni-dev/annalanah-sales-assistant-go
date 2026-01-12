@@ -2,7 +2,7 @@ name: Tests & Coverage
 
 on:
   push:
-    branches: [main, dev]
+    branches: [master, dev]
   workflow_dispatch:
     inputs:
       run_integration:
