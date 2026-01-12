@@ -7,6 +7,7 @@ import (
 
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/db"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/version"
 )
 
 func main() {
@@ -24,6 +25,7 @@ func main() {
 	// router
 	r := api.NewRouterWithConfig(database, cfg)
 
+	log.Printf("version=%s", version.Version)
 	fmt.Printf("🚀 %s server listening on :%s\n", cfg.AppEnv, cfg.Port)
 	log.Fatal(http.ListenAndServe(":"+cfg.Port, r))
 }
