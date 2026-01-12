@@ -131,9 +131,11 @@ jobs:
             echo "listing working dir:" && ls -la || true
           fi
 
-      - name: Upload merged coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }} # required when Codecov requires token
           files: coverage-all.out
           flags: coverage
+          slug: vr33ni-dev/annalanah-sales-assistant-go # optional; forces upload target slug
           fail_ci_if_error: false
