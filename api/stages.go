@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -76,7 +77,7 @@ type StageParticipant struct {
 	ParticipantEmail *string `json:"email,omitempty"`
 	ParticipantPhone *string `json:"phone,omitempty"`
 
-	Attended  bool    `json:"attended"`
+	Attended  *bool   `json:"attended,omitempty"`
 	CreatedAt *string `json:"created_at,omitempty"`
 }
 
@@ -118,6 +119,7 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 	var out []StageParticipant
 	for rows.Next() {
 		var p StageParticipant
+		var nb sql.NullBool
 		if err := rows.Scan(
 			&p.ID,
 			&p.StageID,
@@ -126,11 +128,17 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 			&p.ParticipantName,
 			&p.ParticipantEmail,
 			&p.ParticipantPhone,
-			&p.Attended,
+			&nb,
 			&p.CreatedAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if nb.Valid {
+			b := nb.Bool
+			p.Attended = &b
+		} else {
+			p.Attended = nil
 		}
 		out = append(out, p)
 	}
@@ -203,8 +211,8 @@ type AddStageParticipantRequest struct {
 	LinkedClientID *int `json:"linked_client_id"`
 	LinkedLeadID   *int `json:"linked_lead_id"`
 
-	Attended     bool `json:"attended"`
-	CreateAsLead bool `json:"create_as_lead"`
+	Attended     *bool `json:"attended,omitempty"`
+	CreateAsLead bool  `json:"create_as_lead"`
 }
 
 func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +294,12 @@ func (h *Handler) AddStageParticipant(w http.ResponseWriter, r *http.Request) {
 		linkedLead = *req.LinkedLeadID
 	}
 
-	args := []interface{}{stageID, req.ParticipantName, pEmail, pPhone, linkedClient, linkedLead, req.Attended}
+	var attended interface{} = nil
+	if req.Attended != nil {
+		attended = *req.Attended
+	}
+
+	args := []interface{}{stageID, req.ParticipantName, pEmail, pPhone, linkedClient, linkedLead, attended}
 
 	// Log the args for debugging in dev — safe because these are non-secret values
 	log.Printf("AddStageParticipant: inserting with args=%v", args)
