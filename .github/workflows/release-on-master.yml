@@ -98,21 +98,68 @@ jobs:
           fi
 
       - name: Create git tag (ensure repo has a tag object)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ensure remote VERSION matches local VERSION before creating tag
+          VERSION=$(cat VERSION)
+          echo "Local VERSION=${VERSION}"
+          echo "Checking remote VERSION via Contents API..."
+          REMOTE_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/VERSION?ref=master") || true
+          REMOTE_CONTENT=$(echo "$REMOTE_JSON" | jq -r .content 2>/dev/null || true)
+          if [ -n "$REMOTE_CONTENT" ] && [ "$REMOTE_CONTENT" != "null" ]; then
+            # decode remote content
+            REMOTE_VERSION=$(echo "$REMOTE_CONTENT" | base64 --decode 2>/dev/null || true)
+          else
+            REMOTE_VERSION=""
+          fi
+          echo "Remote VERSION: ${REMOTE_VERSION:-<none>}"
+
+          if [ "${REMOTE_VERSION}" != "${VERSION}" ]; then
+            echo "Remote VERSION differs from local. Attempting to update remote VERSION via Contents API..."
+            # prepare base64 content
+            b64=$(python3 -c "import base64,sys;print(base64.b64encode(sys.stdin.read().encode()).decode())" < VERSION)
+            MSG="chore(release): bump VERSION to ${VERSION} [skip ci]"
+            SHA=$(echo "$REMOTE_JSON" | jq -r .sha 2>/dev/null || true)
+            if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+              DATA=$(jq -n --arg message "$MSG" --arg content "$b64" --arg branch "master" '{message:$message, content:$content, branch:$branch}')
+            else
+              DATA=$(jq -n --arg message "$MSG" --arg content "$b64" --arg branch "master" --arg sha "$SHA" '{message:$message, content:$content, branch:$branch, sha:$sha}')
+            fi
+            UPDATE_RESP=$(curl -s -X PUT -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$DATA" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/VERSION" || true)
+            if echo "$UPDATE_RESP" | jq -e .content >/dev/null 2>&1; then
+              echo "Successfully updated remote VERSION via Contents API"
+            else
+              echo "Contents API update failed; attempting to push commit via PAT fallback if available"
+              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
+                git add VERSION || true
+                git commit -m "chore(release): bump VERSION to ${VERSION} [skip ci]" || true
+                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master || true
+              else
+                echo "No REPO_PUSH_TOKEN configured; remote VERSION remains out-of-sync"
+              fi
+            fi
+          else
+            echo "Remote VERSION already matches local"
+          fi
+
           # create and push tag only if it doesn't exist
           if git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
             echo "tag ${VERSION} already exists"
           else
             git tag -a "${VERSION}" -m "Release ${VERSION}"
             # Try push tag with GITHUB_TOKEN first, else use REPO_PUSH_TOKEN if available
-            if git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"; then
+            if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
               echo "Pushed tag ${VERSION} with GITHUB_TOKEN"
             else
               echo "Push tag with GITHUB_TOKEN failed; attempting REPO_PUSH_TOKEN fallback"
-              if [ -n "${{ secrets.REPO_PUSH_TOKEN }}" ]; then
-                git push "https://x-access-token:${{ secrets.REPO_PUSH_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"
+              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
+                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}" || true
               else
                 echo "No REPO_PUSH_TOKEN available; tag may need to be pushed manually"
               fi
