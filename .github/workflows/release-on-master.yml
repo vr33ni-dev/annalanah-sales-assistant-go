@@ -1,17 +1,13 @@
 name: Release on master
 
 on:
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - "VERSION"
   pull_request:
     types: [closed]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   precheck:
@@ -25,24 +21,34 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const eventName = process.env.GITHUB_EVENT_NAME
-            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/')
-            const sha = process.env.GITHUB_SHA
-            if (eventName === 'push') {
-              core.info("Event is 'push' — checking whether this commit comes from a merged PR...")
-              const resp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha })
-              if (resp && resp.data && resp.data.length > 0) {
-                for (const pr of resp.data) {
-                  const p = await github.rest.pulls.get({ owner, repo, pull_number: pr.number })
-                  if (p && p.data && p.data.merged) {
-                    core.info(`Found merged PR #${pr.number}; skipping release run.`)
-                    core.setOutput('run_release','false')
-                    return
-                  }
-                }
+            const eventName = process.env.GITHUB_EVENT_NAME || ''
+            const eventPath = process.env.GITHUB_EVENT_PATH || ''
+
+            // Trigger release when a PR targeting master was merged.
+            if (eventName === 'pull_request' && eventPath) {
+              const payload = require(eventPath)
+              const pr = payload.pull_request || {}
+              const merged = !!pr.merged
+              const baseRef = pr.base && pr.base.ref ? pr.base.ref : ''
+              if (merged && baseRef === 'master') {
+                core.info('Pull request merged to master — proceeding with release run.')
+                core.setOutput('run_release','true')
+                return
               }
+              core.info('Pull request closed but not a merged to master event — skipping release run.')
+              core.setOutput('run_release','false')
+              return
             }
-            core.setOutput('run_release','true')
+
+            // Allow manual workflow dispatch
+            if (eventName === 'workflow_dispatch') {
+              core.info('Manual dispatch — proceeding with release run.')
+              core.setOutput('run_release','true')
+              return
+            }
+
+            core.info('Event not eligible for release run — skipping')
+            core.setOutput('run_release','false')
 
   release:
     needs: precheck
@@ -50,7 +56,7 @@ jobs:
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: true
-    if: ${{ needs.precheck.outputs.run_release == 'true' && ((github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') || (github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'web-flow')) }}
+    if: ${{ needs.precheck.outputs.run_release == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
