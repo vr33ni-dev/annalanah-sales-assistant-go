@@ -15,6 +15,7 @@ GITHUB_EVENT_PATH=${GITHUB_EVENT_PATH:-}
 GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-}
 GITHUB_TOKEN=${GITHUB_TOKEN:-}
 PR_LABELS=${PR_LABELS:-}
+REQUIRE_LABEL=${REQUIRE_LABEL:-0}
 
 # Write output for GH Actions (new runner behavior uses GITHUB_OUTPUT file path)
 gh_output() {
@@ -53,6 +54,10 @@ if [ "$BUMP_ARG" != "auto" ]; then
 else
   BUMP=$(determine_bump_from_event)
   if [ -z "$BUMP" ]; then
+    if [ "${REQUIRE_LABEL}" = "1" ] || [ "${REQUIRE_LABEL,,}" = "true" ]; then
+      echo "ERROR: no release label (major/minor/patch) found and REQUIRE_LABEL is set; failing" >&2
+      exit 4
+    fi
     BUMP="patch"
   fi
 fi

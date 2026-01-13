@@ -18,67 +18,27 @@ jobs:
         run: |
           git fetch --tags origin
 
-      - name: Compute candidate version and comment
+      - name: Compute candidate version (compute-only)
+        id: compute
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          set -euo pipefail
+          chmod +x .github/scripts/bump-version.sh || true
+          # compute-only: do not apply changes
+          ./.github/scripts/bump-version.sh VERSION auto --dry-run || true
+
+      - name: Prepare PR comment body
+        id: comment
         run: |
           set -euo pipefail
           BASE_REF="${{ github.event.pull_request.base.ref }}"
-          echo "Base ref: $BASE_REF"
-
-          # Collect labels from the PR event payload
-          LABELS=$(jq -r '.pull_request.labels[]?.name' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
-          LABELS_LOWER=$(echo "$LABELS" | tr '[:upper:]' '[:lower:]' || true)
-          echo "PR labels:"
-          echo "$LABELS_LOWER"
-
-          # Determine latest tag on base branch
-          LATEST_TAG=""
-          if git rev-parse --verify --quiet "refs/tags/$(git describe --tags --abbrev=0 origin/$BASE_REF 2>/dev/null)" >/dev/null 2>&1; then
-            LATEST_TAG=$(git describe --tags --abbrev=0 origin/$BASE_REF)
-          fi
-          echo "Latest tag on base: $LATEST_TAG"
-
-          # Determine bump
-          BUMP="patch"
-          if echo "$LABELS_LOWER" | grep -q "major"; then
-            BUMP="major"
-          elif echo "$LABELS_LOWER" | grep -q "minor"; then
-            BUMP="minor"
-          elif echo "$LABELS_LOWER" | grep -q "patch"; then
-            BUMP="patch"
-          fi
-          echo "Selected bump: $BUMP"
-
-          # Compute new version
-          if [ -z "$LATEST_TAG" ]; then
-            if [ "$BUMP" = "major" ]; then
-              NEW_VERSION="v1.0.0"
-            else
-              NEW_VERSION="v0.1.0"
-            fi
-          else
-            BASE=${LATEST_TAG#v}
-            IFS='.' read -r MAJOR MINOR PATCH <<< "${BASE}"
-            MAJOR=${MAJOR:-0}
-            MINOR=${MINOR:-0}
-            PATCH=${PATCH:-0}
-            if [ "$BUMP" = "major" ]; then
-              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-            elif [ "$BUMP" = "minor" ]; then
-              MINOR=$((MINOR+1)); PATCH=0
-            else
-              PATCH=$((PATCH+1))
-            fi
-            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          fi
-
-          echo "Computed candidate version for this PR: $NEW_VERSION"
-          # Save the comment body into a temporary file and use the action below to post
-          # Use printf so the \n sequences become real newlines in the file
+          NEW_VERSION="${{ steps.compute.outputs.NEW_VERSION }}"
+          LABELS_LOWER=$(jq -r '.pull_request.labels[]?.name' "$GITHUB_EVENT_PATH" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
           printf '%s\n\n%s\n' \
-            "Computed release version if merged to $BASE_REF: **$NEW_VERSION**" \
-            "Labels considered: $LABELS_LOWER" > /tmp/pr_version_comment.md
+            "Computed release version if merged to $BASE_REF: **${NEW_VERSION:-<unknown>}**" \
+            "Labels considered: ${LABELS_LOWER:-none}" > /tmp/pr_version_comment.md
 
       - name: Post PR comment with computed version
         env:
