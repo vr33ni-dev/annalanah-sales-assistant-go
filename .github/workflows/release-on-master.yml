@@ -6,6 +6,8 @@ on:
       - master
     paths-ignore:
       - "VERSION"
+  pull_request:
+    types: [closed]
 
 permissions:
   contents: write
@@ -14,6 +16,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -28,115 +31,47 @@ jobs:
       - name: Auto bump VERSION (label-driven)
         id: autobump
         env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          echo "Fetching tags..."
-          git fetch --tags origin
+          # Ensure the script is present and executable
+          chmod +x .github/scripts/bump-version.sh || true
+          # Run the shared bump script to compute and write VERSION
+          ./.github/scripts/bump-version.sh VERSION auto
 
-          # Determine latest tag (if any)
-          if git rev-parse --verify --quiet "refs/tags/$(git describe --tags --abbrev=0 2>/dev/null)" >/dev/null 2>&1; then
-            LATEST_TAG=$(git describe --tags --abbrev=0)
-          else
-            LATEST_TAG=""
-          fi
-          echo "Latest tag: ${LATEST_TAG}"
-
-          # Determine bump type from PR labels associated with this commit. Require an explicit label.
-          PRS_JSON=$(curl -s -H "Accept: application/vnd.github.groot-preview+json" -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")
-          labels=$(echo "$PRS_JSON" | jq -r '.[] .labels[]?.name' 2>/dev/null || true)
-          labels=$(echo "$labels" | tr '[:upper:]' '[:lower:]' || true)
-          echo "Labels found on PRs:"
-          echo "$labels"
-
-          # Debug: when labels are empty, show a compact summary of PRs JSON to help
-          # diagnose permission or API issues (prints PR number and label names).
-          if [ -z "${labels}" ]; then
-            echo "PRS_JSON summary:"
-            echo "$PRS_JSON" | jq -c '.[] | {number: .number, labels: [.labels[].name]}' 2>/dev/null || true
-          fi
-
-          # If no labels found via the commit->pulls API, try a fallback: parse recent
-          # merge commit messages for PR numbers ("Merge pull request #123") and query
-          # those PRs for labels. This helps for cases where the commit-to-PR link
-          # isn't present for the push's SHA.
-          if [ -z "${labels}" ]; then
-            echo "No labels found on commit-associated PRs; attempting fallback by scanning recent merge commits for PR numbers..."
-            PR_NUMS=$(git log --merges -n 20 --pretty=%B | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)
-            for pr in $PR_NUMS; do
-              echo "Checking PR #${pr} for labels"
-              PR_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${pr}")
-              pr_labels=$(echo "$PR_JSON" | jq -r '.labels[]?.name' 2>/dev/null || true)
-              if [ -n "$pr_labels" ]; then
-                labels="$labels\n$pr_labels"
-              fi
-            done
-            labels=$(echo "$labels" | tr '[:upper:]' '[:lower:]' || true)
-            echo "Labels found via fallback:"
-            echo "$labels"
-          fi
-
-          if [ -z "${labels}" ]; then
-            echo "ERROR: No release label found on merged PR(s). Add one of: major, minor, patch. The release job requires an explicit label and will fail without it."
-            exit 1
-          fi
-
-          bump="patch"
-          if echo "$labels" | grep -q "major"; then
-            bump="major"
-          elif echo "$labels" | grep -q "minor"; then
-            bump="minor"
-          elif echo "$labels" | grep -q "patch"; then
-            bump="patch"
-          fi
-          echo "Selected bump: $bump"
-
-          # Compute new version based on latest tag
-          if [ -z "${LATEST_TAG}" ]; then
-            # start at v0.1.0 for first release
-            MAJOR=0
-            MINOR=1
-            PATCH=0
-            if [ "$bump" = "major" ]; then
-              MAJOR=1; MINOR=0; PATCH=0
-            elif [ "$bump" = "minor" ]; then
-              MAJOR=0; MINOR=1; PATCH=0
-            fi
-          else
-            BASE=${LATEST_TAG#v}
-            IFS='.' read -r MAJOR MINOR PATCH <<< "${BASE}"
-            MAJOR=${MAJOR:-0}
-            MINOR=${MINOR:-0}
-            PATCH=${PATCH:-0}
-            if [ "$bump" = "major" ]; then
-              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-            elif [ "$bump" = "minor" ]; then
-              MINOR=$((MINOR+1)); PATCH=0
+      - name: Commit and push VERSION (if changed)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Commit only if there are changes (the bump script writes VERSION)
+          if git status --porcelain | grep -q '^'; then
+            git add VERSION || true
+            git commit -m "chore(release): bump VERSION to $(cat VERSION) [skip ci]" || true
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            # try pushing with GITHUB_TOKEN first, else use REPO_PUSH_TOKEN
+            if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master; then
+              echo "Pushed VERSION with GITHUB_TOKEN"
             else
-              PATCH=$((PATCH+1))
+              echo "Push with GITHUB_TOKEN failed; attempting PAT fallback"
+              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
+                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master
+              else
+                echo "No REPO_PUSH_TOKEN configured; continuing (tag push may still include commit)"
+              fi
             fi
-          fi
-          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
-          echo "Computed new version: ${NEW_VERSION}"
-
-          # Only write & push if different from current file
-          if [ -f VERSION ]; then
-            CUR=$(cat VERSION)
           else
-            CUR=""
+            echo "No changes to commit"
           fi
-          if [ "${CUR}" != "${NEW_VERSION}" ]; then
-            echo "${NEW_VERSION}" > VERSION
-            git add VERSION
-            git commit -m "chore(release): bump VERSION to ${NEW_VERSION} [skip ci]" || true
-            # Push using GITHUB_TOKEN (repo must allow read & write for workflows)
-            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master
-          else
-            echo "VERSION already up-to-date: ${CUR}"
-          fi
-          echo "VERSION=${NEW_VERSION}" >> $GITHUB_ENV
 
       - name: Read VERSION
         id: ver
@@ -171,7 +106,17 @@ jobs:
             echo "tag ${VERSION} already exists"
           else
             git tag -a "${VERSION}" -m "Release ${VERSION}"
-            git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"
+            # Try push tag with GITHUB_TOKEN first, else use REPO_PUSH_TOKEN if available
+            if git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"; then
+              echo "Pushed tag ${VERSION} with GITHUB_TOKEN"
+            else
+              echo "Push tag with GITHUB_TOKEN failed; attempting REPO_PUSH_TOKEN fallback"
+              if [ -n "${{ secrets.REPO_PUSH_TOKEN }}" ]; then
+                git push "https://x-access-token:${{ secrets.REPO_PUSH_TOKEN }}@github.com/${{ github.repository }}" "refs/tags/${VERSION}"
+              else
+                echo "No REPO_PUSH_TOKEN available; tag may need to be pushed manually"
+              fi
+            fi
           fi
 
       - name: Create GitHub release
