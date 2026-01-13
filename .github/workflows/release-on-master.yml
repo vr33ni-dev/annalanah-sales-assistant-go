@@ -14,9 +14,43 @@ permissions:
   pull-requests: read
 
 jobs:
-  release:
+  precheck:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
+    outputs:
+      run_release: ${{ steps.check.outputs.run_release }}
+    steps:
+      - name: Check whether this run should perform the release
+        id: check
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const eventName = process.env.GITHUB_EVENT_NAME
+            const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/')
+            const sha = process.env.GITHUB_SHA
+            if (eventName === 'push') {
+              core.info("Event is 'push' — checking whether this commit comes from a merged PR...")
+              const resp = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha })
+              if (resp && resp.data && resp.data.length > 0) {
+                for (const pr of resp.data) {
+                  const p = await github.rest.pulls.get({ owner, repo, pull_number: pr.number })
+                  if (p && p.data && p.data.merged) {
+                    core.info(`Found merged PR #${pr.number}; skipping release run.`)
+                    core.setOutput('run_release','false')
+                    return
+                  }
+                }
+              }
+            }
+            core.setOutput('run_release','true')
+
+  release:
+    needs: precheck
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: true
+    if: ${{ needs.precheck.outputs.run_release == 'true' && ((github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') || (github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'web-flow')) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +69,6 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
@@ -48,7 +81,6 @@ jobs:
       - name: Commit and push VERSION (if changed)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -58,16 +90,11 @@ jobs:
             git commit -m "chore(release): bump VERSION to $(cat VERSION) [skip ci]" || true
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            # try pushing with GITHUB_TOKEN first, else use REPO_PUSH_TOKEN
+            # try pushing with GITHUB_TOKEN; if it fails (e.g. branch protection), continue and rely on Contents API or PR fallback
             if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master; then
               echo "Pushed VERSION with GITHUB_TOKEN"
             else
-              echo "Push with GITHUB_TOKEN failed; attempting PAT fallback"
-              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
-                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master
-              else
-                echo "No REPO_PUSH_TOKEN configured; continuing (tag push may still include commit)"
-              fi
+              echo "Push with GITHUB_TOKEN failed; continuing (branch protection may require a PR to update master)"
             fi
           else
             echo "No changes to commit"
@@ -78,6 +105,7 @@ jobs:
         run: |
           VERSION=$(cat VERSION)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build binary
         run: |
@@ -100,7 +128,6 @@ jobs:
       - name: Create git tag (ensure repo has a tag object)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO_PUSH_TOKEN: ${{ secrets.REPO_PUSH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -139,23 +166,36 @@ jobs:
               echo "Contents API update failed; dumping response for diagnostics:" >&2
               echo "$UPDATE_RESP" >&2
               UPDATED_REMOTE=0
-              echo "Attempting to push commit via PAT fallback if available"
-              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
-                git add VERSION || true
-                git commit -m "chore(release): bump VERSION to ${VERSION} [skip ci]" || true
-                if git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master; then
-                  echo "Pushed VERSION using REPO_PUSH_TOKEN"
-                  UPDATED_REMOTE=1
-                else
-                  echo "PAT push also failed" >&2
-                fi
-              else
-                echo "No REPO_PUSH_TOKEN configured; remote VERSION remains out-of-sync" >&2
-              fi
+              echo "No PAT fallback configured; will create a branch+PR to update VERSION"
             fi
             if [ "${UPDATED_REMOTE:-0}" != "1" ]; then
-              echo "ERROR: failed to update remote VERSION via Contents API and PAT fallback. Aborting." >&2
-              exit 1
+              echo "Contents API and PAT fallback both failed. Will attempt to create a branch + PR to update VERSION." >&2
+              # Create a branch, commit VERSION, push branch and open a PR so maintainers can merge
+              BRANCH="bump/version-${VERSION//[^a-zA-Z0-9._-]/-}-$(date +%s)"
+              echo "Creating branch $BRANCH and pushing with GITHUB_TOKEN"
+              git checkout -b "$BRANCH"
+              git add VERSION || true
+              git commit -m "chore(release): bump VERSION to ${VERSION} [skip ci]" || true
+              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:$BRANCH; then
+                echo "Pushed branch $BRANCH"
+                PR_TITLE="chore(release): bump VERSION to ${VERSION}"
+                PR_BODY="Automated PR to update VERSION to ${VERSION}. This change was created because direct updates to 'master' are blocked by branch protection."
+                PR_JSON=$(jq -n --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "master" --arg body "$PR_BODY" '{title:$title, head:$head, base:$base, body:$body}')
+                CREATION=$(curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$PR_JSON" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls" || true)
+                PR_URL=$(echo "$CREATION" | jq -r .html_url 2>/dev/null || true)
+                PR_NUM=$(echo "$CREATION" | jq -r .number 2>/dev/null || true)
+                if [ -n "$PR_URL" ] && [ "$PR_URL" != "null" ]; then
+                  echo "Opened PR: $PR_URL"
+                  echo "ERROR: created PR $PR_NUM to update VERSION; please review and merge. Aborting release job until PR is merged." >&2
+                  exit 1
+                else
+                  echo "ERROR: failed to create PR. Response: $CREATION" >&2
+                  exit 1
+                fi
+              else
+                echo "ERROR: failed to push branch $BRANCH with GITHUB_TOKEN" >&2
+                exit 1
+              fi
             fi
           else
             echo "Remote VERSION already matches local"
@@ -166,22 +206,12 @@ jobs:
             echo "tag ${VERSION} already exists"
           else
             git tag -a "${VERSION}" -m "Release ${VERSION}"
-            # Try push tag with GITHUB_TOKEN first, else use REPO_PUSH_TOKEN if available
+            # Try push tag with GITHUB_TOKEN
             if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
               echo "Pushed tag ${VERSION} with GITHUB_TOKEN"
             else
-              echo "Push tag with GITHUB_TOKEN failed; attempting REPO_PUSH_TOKEN fallback" >&2
-              if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
-                if git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
-                  echo "Pushed tag ${VERSION} with REPO_PUSH_TOKEN"
-                else
-                  echo "ERROR: Tag push failed with both GITHUB_TOKEN and REPO_PUSH_TOKEN" >&2
-                  exit 1
-                fi
-              else
-                echo "ERROR: Tag push failed with GITHUB_TOKEN and no REPO_PUSH_TOKEN configured; aborting" >&2
-                exit 1
-              fi
+              echo "ERROR: Tag push failed with GITHUB_TOKEN; tag may need to be pushed manually" >&2
+              exit 1
             fi
           fi
 
@@ -189,8 +219,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.VERSION }}
-          name: ${{ env.VERSION }}
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: ${{ steps.ver.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
