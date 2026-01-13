@@ -134,15 +134,28 @@ jobs:
             UPDATE_RESP=$(curl -s -X PUT -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$DATA" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/VERSION" || true)
             if echo "$UPDATE_RESP" | jq -e .content >/dev/null 2>&1; then
               echo "Successfully updated remote VERSION via Contents API"
+              UPDATED_REMOTE=1
             else
-              echo "Contents API update failed; attempting to push commit via PAT fallback if available"
+              echo "Contents API update failed; dumping response for diagnostics:" >&2
+              echo "$UPDATE_RESP" >&2
+              UPDATED_REMOTE=0
+              echo "Attempting to push commit via PAT fallback if available"
               if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
                 git add VERSION || true
                 git commit -m "chore(release): bump VERSION to ${VERSION} [skip ci]" || true
-                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master || true
+                if git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master; then
+                  echo "Pushed VERSION using REPO_PUSH_TOKEN"
+                  UPDATED_REMOTE=1
+                else
+                  echo "PAT push also failed" >&2
+                fi
               else
-                echo "No REPO_PUSH_TOKEN configured; remote VERSION remains out-of-sync"
+                echo "No REPO_PUSH_TOKEN configured; remote VERSION remains out-of-sync" >&2
               fi
+            fi
+            if [ "${UPDATED_REMOTE:-0}" != "1" ]; then
+              echo "ERROR: failed to update remote VERSION via Contents API and PAT fallback. Aborting." >&2
+              exit 1
             fi
           else
             echo "Remote VERSION already matches local"
@@ -157,11 +170,17 @@ jobs:
             if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
               echo "Pushed tag ${VERSION} with GITHUB_TOKEN"
             else
-              echo "Push tag with GITHUB_TOKEN failed; attempting REPO_PUSH_TOKEN fallback"
+              echo "Push tag with GITHUB_TOKEN failed; attempting REPO_PUSH_TOKEN fallback" >&2
               if [ -n "${REPO_PUSH_TOKEN:-}" ]; then
-                git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}" || true
+                if git push "https://x-access-token:${REPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
+                  echo "Pushed tag ${VERSION} with REPO_PUSH_TOKEN"
+                else
+                  echo "ERROR: Tag push failed with both GITHUB_TOKEN and REPO_PUSH_TOKEN" >&2
+                  exit 1
+                fi
               else
-                echo "No REPO_PUSH_TOKEN available; tag may need to be pushed manually"
+                echo "ERROR: Tag push failed with GITHUB_TOKEN and no REPO_PUSH_TOKEN configured; aborting" >&2
+                exit 1
               fi
             fi
           fi
