@@ -88,41 +88,58 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -m "chore(release): bump VERSION to $(cat VERSION) [skip ci]" || true
 
-            # attempt to sync with remote first (handle fast-forward conflicts)
-            git fetch origin
-            REMOTE_REF="origin/${PR_REF}"
-            if git rev-parse --verify "$REMOTE_REF" >/dev/null 2>&1; then
-              if ! git merge-base --is-ancestor "$REMOTE_REF" HEAD >/dev/null 2>&1; then
-                echo "Remote branch has commits not in local; attempting rebase onto $REMOTE_REF"
-                if git pull --rebase origin "${PR_REF}"; then
-                  echo "Rebase successful"
-                else
-                  echo "Rebase failed; aborting rebase and creating a fallback branch"
-                  git rebase --abort || true
-                  SAFE_BRANCH="bump/${PR_REF}-bump-$(date +%s)"
-                  git checkout -b "$SAFE_BRANCH"
-                  if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:"$SAFE_BRANCH"; then
-                    echo "Pushed fallback branch $SAFE_BRANCH"
-                    MSG="Could not push bump to PR branch due to remote divergence; created fallback branch ${SAFE_BRANCH}. Please open a PR to merge it into ${PR_REF}."
-                    curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$MSG" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
-                    exit 1
+            # attempt to sync with remote first (handle fast-forward conflicts) with retries
+            MAX_RETRIES=3
+            ATTEMPT=0
+            PUSHED=0
+            while [ $ATTEMPT -lt $MAX_RETRIES ]; do
+              echo "Sync attempt $((ATTEMPT+1))/$MAX_RETRIES"
+              git fetch origin
+              REMOTE_REF="origin/${PR_REF}"
+              if git rev-parse --verify "$REMOTE_REF" >/dev/null 2>&1; then
+                if ! git merge-base --is-ancestor "$REMOTE_REF" HEAD >/dev/null 2>&1; then
+                  echo "Remote branch has commits not in local; attempting rebase onto $REMOTE_REF"
+                  if git pull --rebase origin "${PR_REF}"; then
+                    echo "Rebase successful"
                   else
-                    echo "Failed to push fallback branch $SAFE_BRANCH" >&2
-                    exit 1
+                    echo "Rebase failed; aborting rebase and will retry"
+                    git rebase --abort || true
                   fi
+                else
+                  echo "Local HEAD already contains remote commits; attempting push"
                 fi
               else
-                echo "Local HEAD already contains remote commits; continuing to push"
+                echo "Remote branch ${REMOTE_REF} not found; attempting push"
               fi
-            fi
 
-            if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:${PR_REF}; then
-              echo "Pushed bump to PR branch"
-              BODY="Applied automatic version bump to this PR: **$(cat VERSION)**"
-              curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$BODY" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
-            else
-              echo "Failed to push bump to PR branch after sync attempts; this may be a protected branch or disallowed by policy" >&2
-              exit 1
+              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:${PR_REF}; then
+                echo "Pushed bump to PR branch"
+                BODY="Applied automatic version bump to this PR: **$(cat VERSION)**"
+                curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$BODY" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
+                PUSHED=1
+                break
+              else
+                echo "Push failed on attempt $((ATTEMPT+1))"
+                ATTEMPT=$((ATTEMPT+1))
+                SLEEP=$((ATTEMPT*2))
+                echo "Sleeping for ${SLEEP}s before retry"
+                sleep $SLEEP
+              fi
+            done
+
+            if [ "$PUSHED" -ne 1 ]; then
+              echo "All push attempts failed; creating a fallback branch and pushing it"
+              SAFE_BRANCH="bump/${PR_REF}-bump-$(date +%s)"
+              git checkout -b "$SAFE_BRANCH"
+              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:"$SAFE_BRANCH"; then
+                echo "Pushed fallback branch $SAFE_BRANCH"
+                MSG="Could not push bump to PR branch due to remote updates; created fallback branch ${SAFE_BRANCH}. Please open a PR to merge it into ${PR_REF}."
+                curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$MSG" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
+                exit 1
+              else
+                echo "Failed to push fallback branch $SAFE_BRANCH" >&2
+                exit 1
+              fi
             fi
           else
             echo "No changes to commit (PR already contains the bump)"
