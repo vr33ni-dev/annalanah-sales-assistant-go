@@ -109,11 +109,22 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		EntityID   int                    `json:"entity_id"`
 		Author     *string                `json:"author,omitempty"`
 		Body       string                 `json:"body"`
+		Content    *string                `json:"content,omitempty"`
 		Metadata   map[string]interface{} `json:"metadata,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	// log the decoded request to help diagnose missing/incorrect fields
+	if b, err := json.Marshal(req); err == nil {
+		log.Printf("CreateComment: decoded request=%s", string(b))
+	}
+	// normalize body by trimming whitespace
+	req.Body = strings.TrimSpace(req.Body)
+	// accept frontend that sends `content` instead of `body`
+	if req.Body == "" && req.Content != nil {
+		req.Body = strings.TrimSpace(*req.Content)
 	}
 	// If the requester is authenticated, prefer server-side session name
 	// as the comment author. If no session exists (local/dev) and no author
@@ -138,8 +149,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("CreateComment: no author chosen, entity=%s/%d", req.EntityType, req.EntityID)
 	}
-	if req.EntityType == "" || req.EntityID == 0 || req.Body == "" {
-		http.Error(w, "entity_type, entity_id and body are required", http.StatusBadRequest)
+	if req.EntityType == "" {
+		http.Error(w, "entity_type is required", http.StatusBadRequest)
+		return
+	}
+	if req.EntityID == 0 {
+		http.Error(w, "entity_id is required and must be non-zero", http.StatusBadRequest)
+		return
+	}
+	if req.Body == "" {
+		http.Error(w, "body is required", http.StatusBadRequest)
 		return
 	}
 
@@ -207,11 +226,21 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Author   *string                 `json:"author,omitempty"`
 		Body     *string                 `json:"body,omitempty"`
+		Content  *string                 `json:"content,omitempty"`
 		Metadata *map[string]interface{} `json:"metadata,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// normalize body content when frontend uses `content` key
+	if req.Body == nil && req.Content != nil {
+		req.Body = req.Content
+	}
+	if req.Body != nil {
+		s := strings.TrimSpace(*req.Body)
+		req.Body = &s
 	}
 
 	// Build dynamic SET clause only for provided fields
