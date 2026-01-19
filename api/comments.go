@@ -172,6 +172,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		req.EntityType, req.EntityID, req.Author, req.Body, string(metaBytes),
 	).Scan(&id, &created, &updated)
 	if err != nil {
+		log.Printf("CreateComment: insert failed entity=%s id=%d author=%v body=%q metadata=%s err=%v",
+			req.EntityType, req.EntityID, req.Author, req.Body, string(metaBytes), err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
