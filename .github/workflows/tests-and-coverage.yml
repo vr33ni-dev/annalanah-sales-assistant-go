@@ -3,6 +3,9 @@ name: Tests & Coverage
 on:
   push:
     branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       run_integration:
