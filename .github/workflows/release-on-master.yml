@@ -38,9 +38,29 @@ jobs:
         if: "${{ !startsWith(github.ref, 'refs/tags/') }}"
         run: |
           set -euo pipefail
+          # determine bump type from merged PR labels (if available)
+          BUMP_TYPE=auto
+          MERGE_SHA=${GITHUB_SHA}
+          echo "Looking for PR merged by commit ${MERGE_SHA} to infer bump type"
+          PR_NUMBER=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/search/issues?q=repo:${{ github.repository }}+type:pr+is:merged+sha:${MERGE_SHA}" | jq -r '.items[0].number // empty')
+          if [ -n "${PR_NUMBER}" ]; then
+            echo "Found merged PR #${PR_NUMBER}; reading labels"
+            labels=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}" | jq -r '.labels[].name' || true)
+            echo "Labels: $labels"
+            if echo "$labels" | grep -qi '^major$'; then
+              BUMP_TYPE=major
+            elif echo "$labels" | grep -qi '^minor$'; then
+              BUMP_TYPE=minor
+            elif echo "$labels" | grep -qi '^patch$'; then
+              BUMP_TYPE=patch
+            fi
+          else
+            echo "No merged PR found for commit; using auto bump"
+          fi
+          echo "BUMP_TYPE=${BUMP_TYPE}"
           # compute version only (dry-run) and parse the semver from output
           # run via 'bash' to avoid changing tracked file permissions (which can make git dirty)
-          OUT=$(bash .github/scripts/bump-version.sh VERSION auto --dry-run 2>&1 || true)
+          OUT=$(bash .github/scripts/bump-version.sh VERSION "${BUMP_TYPE}" --dry-run 2>&1 || true)
           echo "bump-version output:" >&2
           echo "$OUT" >&2
           NEW_VERSION=$(printf '%s' "$OUT" | grep -E -o 'v?[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)
