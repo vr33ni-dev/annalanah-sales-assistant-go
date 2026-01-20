@@ -39,45 +39,87 @@ jobs:
           set -euo pipefail
           BASE_REF="${{ github.event.pull_request.base.ref }}"
           NEW_VERSION="${{ steps.compute.outputs.NEW_VERSION }}"
-          LABELS_LOWER=$(jq -r '.pull_request.labels[]?.name' "$GITHUB_EVENT_PATH" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
-          printf '%s\n\n%s\n' \
+          # Extract label names (preserve original case) and join with commas
+          LABELS=$(jq -r '.pull_request.labels[]?.name' "$GITHUB_EVENT_PATH" 2>/dev/null | paste -sd ", " - || true)
+          LABELS="${LABELS:-none}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          printf '%s\n\n%s\n\nLast updated: %s\n' \
             "Computed release version if merged to $BASE_REF: **${NEW_VERSION:-<unknown>}**" \
-            "Labels considered: ${LABELS_LOWER:-none}" > /tmp/pr_version_comment.md
+            "Labels considered: ${LABELS}" \
+            "$TIMESTAMP" > /tmp/pr_version_comment.md
+          # Hidden marker for updating the comment later
+          printf '%s\n' "<!-- release-version-check -->" >> /tmp/pr_version_comment.md
 
-      - name: Create or update PR comment with computed version
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const issue_number = context.payload.pull_request.number;
-            const marker = '<!-- release-version-check -->';
-            const baseRef = context.payload.pull_request.base.ref;
-            // compute a comma-separated list of label names (or 'none')
-            const labels = (context.payload.pull_request.labels || []).map(l => l.name).join(', ') || 'none';
-            const newBody = `${marker}\nComputed release version if merged to ${baseRef}: **${process.env.NEW_VERSION || '<unknown>'}**\n\nLabels considered: ${labels}`;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-            });
-
-            const existing = comments.find(c => c.body && c.body.startsWith(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body: newBody,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number,
-                body: newBody,
-              });
-            }
+      - name: Post or update PR comment with computed version
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_VERSION: ${{ steps.compute.outputs.NEW_VERSION }}
-          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          COMMENTS_URL="https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"
+          # Prepare comment body file (created earlier) and marker
+          RAW_COMMENT=$(cat /tmp/pr_version_comment.md)
+          MARKER='<!-- release-version-check -->'
+
+          if [ -z "${GITHUB_TOKEN:-}" ]; then
+            echo "No GITHUB_TOKEN available; skipping comment post (likely a fork PR)." >&2
+            echo "Would have posted:" >&2
+            printf '%s\n' "$RAW_COMMENT" >&2
+            exit 0
+          fi
+
+          # List comments and find an existing bot comment by marker (pick most recent)
+          COMMENTS_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "${COMMENTS_URL}")
+          EXISTING_ID=$(printf '%s' "$COMMENTS_JSON" | jq -r '[.[] | select(.body|contains("<!-- release-version-check -->"))] | sort_by(.created_at) | last | .id' 2>/dev/null || true)
+
+          if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+            echo "Found existing bot comment id=${EXISTING_ID}; evaluating whether update is needed"
+            EXISTING_BODY=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg id "$EXISTING_ID" '.[] | select((.id|tostring)==$id) | .body' || true)
+
+            # Normalize: remove marker and Last updated line for comparison
+            EXISTING_TEXT=$(printf '%s' "$EXISTING_BODY" | sed '/<!-- release-version-check -->/d' | sed '/Last updated:/d' | sed '/^[[:space:]]*$/d' | tr -s ' ' | sed 's/^ //; s/ $//')
+            NEW_TEXT=$(printf '%s' "$RAW_COMMENT" | sed '/<!-- release-version-check -->/d' | sed '/Last updated:/d' | sed '/^[[:space:]]*$/d' | tr -s ' ' | sed 's/^ //; s/ $//')
+
+            if [ "$EXISTING_TEXT" = "$NEW_TEXT" ]; then
+              # Content identical aside from timestamp. Update only if timestamp changed.
+              EXISTING_TS=$(printf '%s' "$EXISTING_BODY" | grep -E '^Last updated:' | sed 's/^Last updated:[[:space:]]*//' || true)
+              NEW_TS=$(printf '%s' "$RAW_COMMENT" | grep -E '^Last updated:' | sed 's/^Last updated:[[:space:]]*//' || true)
+              if [ "$EXISTING_TS" != "$NEW_TS" ]; then
+                echo "Content identical but timestamp changed; updating existing bot comment id=${EXISTING_ID} to refresh timestamp"
+                UPDATE_URL="https://api.github.com/repos/${REPO}/issues/comments/${EXISTING_ID}"
+                PAYLOAD=$(jq -nc --arg body "$RAW_COMMENT" '{body:$body}')
+                HTTP_STATUS=$(curl -s -o /tmp/comment_resp -w "%{http_code}" -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$PAYLOAD" "$UPDATE_URL" || true)
+                echo "HTTP status: $HTTP_STATUS"
+                cat /tmp/comment_resp || true
+                if [ "$HTTP_STATUS" -ge 400 ]; then
+                  echo "Failed to update comment (status=$HTTP_STATUS)" >&2
+                  exit 1
+                fi
+              else
+                echo "Existing comment content is identical and timestamp unchanged; skipping update."
+              fi
+            else
+              echo "Updating existing bot comment id=${EXISTING_ID}"
+              UPDATE_URL="https://api.github.com/repos/${REPO}/issues/comments/${EXISTING_ID}"
+              PAYLOAD=$(jq -nc --arg body "$RAW_COMMENT" '{body:$body}')
+              HTTP_STATUS=$(curl -s -o /tmp/comment_resp -w "%{http_code}" -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$PAYLOAD" "$UPDATE_URL" || true)
+              echo "HTTP status: $HTTP_STATUS"
+              cat /tmp/comment_resp || true
+              if [ "$HTTP_STATUS" -ge 400 ]; then
+                echo "Failed to update comment (status=$HTTP_STATUS)" >&2
+                exit 1
+              fi
+            fi
+          else
+            echo "No existing bot comment found; creating new bot comment"
+            PAYLOAD=$(jq -nc --arg body "$RAW_COMMENT" '{body:$body}')
+            HTTP_STATUS=$(curl -s -o /tmp/comment_resp -w "%{http_code}" -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$PAYLOAD" "$COMMENTS_URL" || true)
+            echo "HTTP status: $HTTP_STATUS"
+            cat /tmp/comment_resp || true
+            if [ "$HTTP_STATUS" -ge 400 ]; then
+              echo "Failed to create comment (status=$HTTP_STATUS)" >&2
+              exit 1
+            fi
+          fi
