@@ -39,13 +39,22 @@ jobs:
           set -euo pipefail
           BASE_REF="${{ github.event.pull_request.base.ref }}"
           NEW_VERSION="${{ steps.compute.outputs.NEW_VERSION }}"
+          # Determine current version on base branch (prefer latest tag, fallback to package.json)
+          git fetch origin +refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF} || true
+          CURRENT_TAG=$(git describe --tags --abbrev=0 origin/${BASE_REF} 2>/dev/null || true)
+          if [ -n "${CURRENT_TAG}" ]; then
+            CURRENT_VERSION="${CURRENT_TAG}"
+          else
+            CURRENT_PKG=$(git show origin/${BASE_REF}:package.json 2>/dev/null || true)
+            CURRENT_VERSION="v$(printf '%s' "$CURRENT_PKG" | jq -r .version 2>/dev/null || echo '0.0.0')"
+          fi
           # Extract label names (preserve original case) and join with commas
           LABELS=$(jq -r '.pull_request.labels[]?.name' "$GITHUB_EVENT_PATH" 2>/dev/null | paste -sd ", " - || true)
           LABELS="${LABELS:-none}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           printf '%s\n\n%s\n\nLast updated: %s\n' \
-            "Computed release version if merged to $BASE_REF: **${NEW_VERSION:-<unknown>}**" \
-            "Labels considered: ${LABELS}" \
+            "Current version on ${BASE_REF}: **${CURRENT_VERSION}**" \
+            "Computed release version if merged to ${BASE_REF}: **${NEW_VERSION:-<unknown>}** (computed by bump-version.sh --dry-run)" \
             "$TIMESTAMP" > /tmp/pr_version_comment.md
           # Hidden marker for updating the comment later
           printf '%s\n' "<!-- release-version-check -->" >> /tmp/pr_version_comment.md
