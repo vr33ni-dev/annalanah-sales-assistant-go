@@ -1,0 +1,47 @@
+name: Release Healthcheck
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # daily at 07:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check recent commits for missing tags/releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SINCE=$(date -u -d '24 hours ago' --iso-8601=seconds)
+          echo "Checking commits on master since $SINCE"
+          commits=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/commits?sha=master&since=${SINCE}&per_page=100")
+          tags=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/tags?per_page=200")
+          missing=""
+          for sha in $(echo "$commits" | jq -r '.[].sha'); do
+            tag_match=$(echo "$tags" | jq -r --arg sha "$sha" '.[] | select(.commit.sha == $sha) | .name' | head -n1 || true)
+            if [ -z "${tag_match}" ]; then
+              info=$(echo "$commits" | jq -r --arg sha "$sha" '.[] | select(.sha == $sha) | "- "+(.sha[0:7])+" : "+(.commit.message|split("\n")[0])')
+              missing="$missing\n$info"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo -e "Found commits merged into master without tags in the last 24h:$missing"
+            title="Release healthcheck: commits on master missing tags"
+            body="The following commits were merged into master in the last 24 hours and have no corresponding tag or release:\n\n$missing\n\nIf these should be released, create a tag or run the rerun-release workflow."
+            # try to find an existing open issue with the same title prefix and update it instead of creating duplicates
+            existing=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/issues?state=open&per_page=100")
+            issue_number=$(echo "$existing" | jq -r --arg prefix "Release healthcheck:" '.[] | select(.title | startswith($prefix)) | .number' | head -n1 || true)
+            payload=$(jq -nc --arg t "$title" --arg b "$body" '{title:$t, body:$b}')
+            if [ -n "$issue_number" ]; then
+              echo "Updating existing issue #$issue_number"
+              curl -s -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/issues/$issue_number" -d "$payload" >/dev/null
+            else
+              echo "Creating new issue"
+              curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/issues" -d "$payload" >/dev/null
+            fi
+          else
+            echo "No untagged commits found"
+          fi
