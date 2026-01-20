@@ -52,7 +52,9 @@ jobs:
             const issue_number = context.payload.pull_request.number;
             const marker = '<!-- release-version-check -->';
             const baseRef = context.payload.pull_request.base.ref;
-            const newBody = `${marker}\nComputed release version if merged to ${baseRef}: **${process.env.NEW_VERSION || '<unknown>'}**\n\nLabels considered: ${process.env.PR_LABELS || '[]'}`;
+            // compute a comma-separated list of label names (or 'none')
+            const labels = (context.payload.pull_request.labels || []).map(l => l.name).join(', ') || 'none';
+            const newBody = `${marker}\nComputed release version if merged to ${baseRef}: **${process.env.NEW_VERSION || '<unknown>'}**\n\nLabels considered: ${labels}`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
