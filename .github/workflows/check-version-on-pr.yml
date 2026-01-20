@@ -84,8 +84,9 @@ jobs:
 
             if [ "$EXISTING_TEXT" = "$NEW_TEXT" ]; then
               # Content identical aside from timestamp. Update only if timestamp changed.
-              EXISTING_TS=$(printf '%s' "$EXISTING_BODY" | grep -E '^Last updated:' | sed 's/^Last updated:[[:space:]]*//' || true)
-              NEW_TS=$(printf '%s' "$RAW_COMMENT" | grep -E '^Last updated:' | sed 's/^Last updated:[[:space:]]*//' || true)
+              # Match 'Last updated:' anywhere on the line (not only at line start)
+              EXISTING_TS=$(printf '%s' "$EXISTING_BODY" | grep -E 'Last updated:' | sed 's/.*Last updated:[[:space:]]*//' || true)
+              NEW_TS=$(printf '%s' "$RAW_COMMENT" | grep -E 'Last updated:' | sed 's/.*Last updated:[[:space:]]*//' || true)
               if [ "$EXISTING_TS" != "$NEW_TS" ]; then
                 echo "Content identical but timestamp changed; updating existing bot comment id=${EXISTING_ID} to refresh timestamp"
                 UPDATE_URL="https://api.github.com/repos/${REPO}/issues/comments/${EXISTING_ID}"
