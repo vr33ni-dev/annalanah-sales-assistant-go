@@ -39,22 +39,73 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x .github/scripts/bump-version.sh
-          # compute and write VERSION (no --dry-run)
-          ./.github/scripts/bump-version.sh VERSION auto
-          NEW_VERSION=$(cat VERSION)
+          # compute version only (dry-run) and parse the semver from output
+          OUT=$(./.github/scripts/bump-version.sh VERSION auto --dry-run 2>&1 || true)
+          echo "bump-version output:" >&2
+          echo "$OUT" >&2
+          NEW_VERSION=$(printf '%s' "$OUT" | grep -E -o 'v?[0-9]+\.[0-9]+\.[0-9]+' | tail -n1 || true)
+          if [ -z "${NEW_VERSION:-}" ]; then
+            echo "Failed to compute NEW_VERSION from bump script output" >&2
+            exit 1
+          fi
+          # normalize leading 'v'
+          case "$NEW_VERSION" in
+            v*) ;;
+            *) NEW_VERSION="v${NEW_VERSION}" ;;
+          esac
+          # persist computed version for later steps
+          printf '%s' "$NEW_VERSION" > /tmp/new_version
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           REPO=${{ github.repository }}
           # configure origin to use token so pushes succeed
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
-          git tag -a "${NEW_VERSION}" -m "Release ${NEW_VERSION}"
-          git push origin "${NEW_VERSION}"
+          # only create tag if it doesn't already exist remotely
+          if git ls-remote --tags origin | grep -q "refs/tags/${NEW_VERSION}"; then
+            echo "Tag ${NEW_VERSION} already exists on remote; skipping tag creation"
+          else
+            git tag -a "${NEW_VERSION}" -m "Release ${NEW_VERSION}"
+            git push origin "${NEW_VERSION}"
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine release tag
+        id: determine_tag
+        run: |
+          set -euo pipefail
+          # If workflow was triggered by a tag push, use that tag; otherwise use computed file
+          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            NEW_VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            NEW_VERSION=$(cat /tmp/new_version || true)
+          fi
+          if [ -z "${NEW_VERSION:-}" ]; then
+            echo "Could not determine NEW_VERSION" >&2
+            exit 1
+          fi
+          echo "Determined NEW_VERSION=${NEW_VERSION}"
+          echo "NEW_VERSION=${NEW_VERSION}" >> $GITHUB_ENV
+      - name: Check existing GitHub release
+        id: check_release
+        run: |
+          set -euo pipefail
+          REPO=${{ github.repository }}
+          TAG=${NEW_VERSION}
+          echo "Checking release for ${TAG}"
+          if curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" | jq -e .id >/dev/null 2>&1; then
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run goreleaser
+        if: ${{ steps.check_release.outputs.release_exists != 'true' }}
         uses: goreleaser/goreleaser-action@v3
         with:
-          version: latest
+          version: 2.13.3
           args: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
