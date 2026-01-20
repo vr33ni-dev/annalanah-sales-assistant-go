@@ -1,0 +1,38 @@
+name: Rerun Release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to re-run the release for (e.g. v0.2.0)"
+        required: true
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (fetch tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag is available and checkout
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          echo "Using tag: $TAG"
+          git fetch --tags origin
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            git checkout "refs/tags/$TAG"
+          else
+            echo "Tag $TAG not found locally or on origin" >&2
+            exit 1
+          fi
+
+      - name: Run goreleaser for tag
+        uses: goreleaser/goreleaser-action@v3
+        with:
+          version: 2.13.3
+          args: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
