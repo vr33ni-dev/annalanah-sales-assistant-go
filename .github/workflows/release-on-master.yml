@@ -1,241 +1,45 @@
-name: Release on master
-
-on:
-  pull_request:
-    types: [closed]
-  workflow_dispatch:
+name: Release (auto)
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
 jobs:
-  precheck:
-    runs-on: ubuntu-latest
-    outputs:
-      run_release: ${{ steps.check.outputs.run_release }}
-    steps:
-      - name: Check whether this run should perform the release
-        id: check
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const eventName = process.env.GITHUB_EVENT_NAME || ''
-            const eventPath = process.env.GITHUB_EVENT_PATH || ''
-
-            // Trigger release when a PR targeting master was merged.
-            if (eventName === 'pull_request' && eventPath) {
-              const payload = require(eventPath)
-              const pr = payload.pull_request || {}
-              const merged = !!pr.merged
-              const baseRef = pr.base && pr.base.ref ? pr.base.ref : ''
-              if (merged && baseRef === 'master') {
-                core.info('Pull request merged to master — proceeding with release run.')
-                core.setOutput('run_release','true')
-                return
-              }
-              core.info('Pull request closed but not a merged to master event — skipping release run.')
-              core.setOutput('run_release','false')
-              return
-            }
-
-            // Allow manual workflow dispatch
-            if (eventName === 'workflow_dispatch') {
-              core.info('Manual dispatch — proceeding with release run.')
-              core.setOutput('run_release','true')
-              return
-            }
-
-            core.info('Event not eligible for release run — skipping')
-            core.setOutput('run_release','false')
-
   release:
-    needs: precheck
     runs-on: ubuntu-latest
     concurrency:
-      group: release-${{ github.ref }}
-      cancel-in-progress: true
-    if: ${{ needs.precheck.outputs.run_release == 'true' }}
-
+      group: release-with-auto-${{ github.ref }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.25"
+          go-version: "1.24"
 
-      - name: Auto bump VERSION (label-driven)
-        id: autobump
-        env:
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
+      - name: Run tests and build
         run: |
           set -euo pipefail
-          # Ensure the script is present and executable
-          chmod +x .github/scripts/bump-version.sh || true
-          # Run the shared bump script to compute and write VERSION
-          ./.github/scripts/bump-version.sh VERSION auto
+          go env
+          go build ./...
 
-      - name: Commit and push VERSION (if changed)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Commit only if there are changes (the bump script writes VERSION)
-          if git status --porcelain | grep -q '^'; then
-            git add VERSION || true
-            git commit -m "chore(release): bump VERSION to $(cat VERSION) [skip ci]" || true
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            # try pushing with GITHUB_TOKEN; if it fails (e.g. branch protection), continue and rely on Contents API or PR fallback
-            if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:master; then
-              echo "Pushed VERSION with GITHUB_TOKEN"
-            else
-              echo "Push with GITHUB_TOKEN failed; continuing (branch protection may require a PR to update master)"
-            fi
-          else
-            echo "No changes to commit"
-          fi
+      # Using the built-in GITHUB_TOKEN for tag/release operations (sufficient for same-repo tags).
+      # If you later need cross-repo or broader scopes, add a GORELEASER_TOKEN secret.
 
-      - name: Read VERSION
-        id: ver
-        run: |
-          VERSION=$(cat VERSION)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Build binary
-        run: |
-          mkdir -p dist
-          # Build the repository's main package (.) so -o writes a single binary file.
-          go build -ldflags "-X github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/version.Version=${VERSION}" -o dist/app .
-
-      - name: Verify VERSION is a semantic version
-        run: |
-          VERSION=$(cat VERSION)
-          echo "Checking VERSION=$VERSION"
-          # Allow vMAJOR.MINOR.PATCH and optional prerelease/build metadata
-          if echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$'; then
-            echo "VERSION looks like semver: $VERSION"
-          else
-            echo "ERROR: VERSION must be semver (example: v1.2.3). Found: $VERSION"
-            exit 1
-          fi
-
-      - name: Create git tag (ensure repo has a tag object)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Ensure remote VERSION matches local VERSION before creating tag
-          VERSION=$(cat VERSION)
-          echo "Local VERSION=${VERSION}"
-          echo "Checking remote VERSION via Contents API..."
-          REMOTE_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/VERSION?ref=master") || true
-          REMOTE_CONTENT=$(echo "$REMOTE_JSON" | jq -r .content 2>/dev/null || true)
-          if [ -n "$REMOTE_CONTENT" ] && [ "$REMOTE_CONTENT" != "null" ]; then
-            # decode remote content
-            REMOTE_VERSION=$(echo "$REMOTE_CONTENT" | base64 --decode 2>/dev/null || true)
-          else
-            REMOTE_VERSION=""
-          fi
-          echo "Remote VERSION: ${REMOTE_VERSION:-<none>}"
-
-          if [ "${REMOTE_VERSION}" != "${VERSION}" ]; then
-            echo "Remote VERSION differs from local. Attempting to update remote VERSION via Contents API..."
-            # prepare base64 content
-            b64=$(python3 -c "import base64,sys;print(base64.b64encode(sys.stdin.read().encode()).decode())" < VERSION)
-            MSG="chore(release): bump VERSION to ${VERSION} [skip ci]"
-            SHA=$(echo "$REMOTE_JSON" | jq -r .sha 2>/dev/null || true)
-            if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
-              DATA=$(jq -n --arg message "$MSG" --arg content "$b64" --arg branch "master" '{message:$message, content:$content, branch:$branch}')
-            else
-              DATA=$(jq -n --arg message "$MSG" --arg content "$b64" --arg branch "master" --arg sha "$SHA" '{message:$message, content:$content, branch:$branch, sha:$sha}')
-            fi
-            UPDATE_RESP=$(curl -s -X PUT -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$DATA" "https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/VERSION" || true)
-            if echo "$UPDATE_RESP" | jq -e .content >/dev/null 2>&1; then
-              echo "Successfully updated remote VERSION via Contents API"
-              UPDATED_REMOTE=1
-            else
-              echo "Contents API update failed; dumping response for diagnostics:" >&2
-              echo "$UPDATE_RESP" >&2
-              UPDATED_REMOTE=0
-              echo "No PAT fallback configured; will create a branch+PR to update VERSION"
-            fi
-            if [ "${UPDATED_REMOTE:-0}" != "1" ]; then
-              echo "Contents API and PAT fallback both failed. Will attempt to create a branch + PR to update VERSION." >&2
-              # Create a branch, commit VERSION, push branch and open a PR so maintainers can merge
-              BRANCH="bump/version-${VERSION//[^a-zA-Z0-9._-]/-}-$(date +%s)"
-              echo "Creating branch $BRANCH and pushing with GITHUB_TOKEN"
-              git checkout -b "$BRANCH"
-              git add VERSION || true
-              git commit -m "chore(release): bump VERSION to ${VERSION} [skip ci]" || true
-              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:$BRANCH; then
-                echo "Pushed branch $BRANCH"
-                PR_TITLE="chore(release): bump VERSION to ${VERSION}"
-                PR_BODY="Automated PR to update VERSION to ${VERSION}. This change was created because direct updates to 'master' are blocked by branch protection."
-                PR_JSON=$(jq -n --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "master" --arg body "$PR_BODY" '{title:$title, head:$head, base:$base, body:$body}')
-                CREATION=$(curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$PR_JSON" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls" || true)
-                PR_URL=$(echo "$CREATION" | jq -r .html_url 2>/dev/null || true)
-                PR_NUM=$(echo "$CREATION" | jq -r .number 2>/dev/null || true)
-                if [ -n "$PR_URL" ] && [ "$PR_URL" != "null" ]; then
-                  echo "Opened PR: $PR_URL"
-                  echo "ERROR: created PR $PR_NUM to update VERSION; please review and merge. Aborting release job until PR is merged." >&2
-                  exit 1
-                else
-                  echo "ERROR: failed to create PR. Response: $CREATION" >&2
-                  exit 1
-                fi
-              else
-                echo "ERROR: failed to push branch $BRANCH with GITHUB_TOKEN" >&2
-                exit 1
-              fi
-            fi
-          else
-            echo "Remote VERSION already matches local"
-          fi
-
-          # create and push tag only if it doesn't exist
-          if git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
-            echo "tag ${VERSION} already exists"
-          else
-            git tag -a "${VERSION}" -m "Release ${VERSION}"
-            # Try push tag with GITHUB_TOKEN
-            if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" "refs/tags/${VERSION}"; then
-              echo "Pushed tag ${VERSION} with GITHUB_TOKEN"
-            else
-              echo "ERROR: Tag push failed with GITHUB_TOKEN; tag may need to be pushed manually" >&2
-              exit 1
-            fi
-          fi
-
-      - name: Create GitHub release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v3
         with:
-          tag_name: ${{ steps.ver.outputs.version }}
-          name: ${{ steps.ver.outputs.version }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload binary
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: dist/app
-          asset_name: app
-          asset_content_type: application/octet-stream
+          version: latest
+          args: release --rm-dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

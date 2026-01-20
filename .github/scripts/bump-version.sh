@@ -11,6 +11,7 @@ set -euo pipefail
 
 TARGET=${1:-VERSION}
 BUMP_ARG=${2:-auto}
+DRY_RUN=${3:-}
 GITHUB_EVENT_PATH=${GITHUB_EVENT_PATH:-}
 GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-}
 GITHUB_TOKEN=${GITHUB_TOKEN:-}
@@ -99,9 +100,14 @@ NEW_TAG="$NEW_VERSION"
 echo "Computed: ${NEW_VERSION}"
 
 if [ "$TARGET" = "VERSION" ]; then
-  # write the v-prefixed value to VERSION to match current repo behaviour
-  echo "${NEW_VERSION}" > VERSION
-  echo "Wrote VERSION -> $(cat VERSION)"
+  # if third arg is --dry-run, do not write to file
+  if [ "${DRY_RUN}" = "--dry-run" ]; then
+    echo "Dry-run: would write VERSION -> ${NEW_VERSION}"
+  else
+    # write the v-prefixed value to VERSION to match current repo behaviour
+    echo "${NEW_VERSION}" > VERSION
+    echo "Wrote VERSION -> $(cat VERSION)"
+  fi
 elif [ "$TARGET" = "package.json" ]; then
   # requires node/npm in runner
   if ! command -v npm >/dev/null 2>&1; then
