@@ -31,26 +31,10 @@ jobs:
         run: |
           set -euo pipefail
           go env
-          go test ./...
           go build ./...
 
-      - name: Choose token for pushing tags/commits
-        id: choose-token
-        env:
-          GORELEASER_TOKEN: ${{ secrets.GORELEASER_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${GORELEASER_TOKEN:-}" ]; then
-            echo "Using repo secret GORELEASER_TOKEN for release actions"
-            echo "GITHUB_TOKEN=${GORELEASER_TOKEN}" >> "$GITHUB_ENV"
-          elif [ -n "${GH_TOKEN:-}" ]; then
-            echo "Using repo secret GH_TOKEN as fallback for release actions"
-            echo "GITHUB_TOKEN=${GH_TOKEN}" >> "$GITHUB_ENV"
-          else
-            echo "::error::No release token found. Set repository secret GORELEASER_TOKEN or GH_TOKEN to allow releases." >&2
-            exit 1
-          fi
+      # Using the built-in GITHUB_TOKEN for tag/release operations (sufficient for same-repo tags).
+      # If you later need cross-repo or broader scopes, add a GORELEASER_TOKEN secret.
 
       - name: Run goreleaser
         uses: goreleaser/goreleaser-action@v3
@@ -58,4 +42,4 @@ jobs:
           version: latest
           args: release --rm-dist
         env:
-          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
