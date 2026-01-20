@@ -1,4 +1,4 @@
-name: Check VERSION on pull request
+name: Check release version on pull request
 
 on:
   pull_request:
@@ -21,8 +21,7 @@ jobs:
         run: |
           git fetch --tags origin
 
-      # (No node/auto required for bump-version.sh based computation)
-
+      # Compute candidate version (no file edits)
       - name: Compute candidate version (compute-only)
         id: compute
         env:
@@ -31,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x .github/scripts/bump-version.sh || true
-          # compute-only: do not apply changes
+          # compute-only: do not apply changes (script emits outputs)
           ./.github/scripts/bump-version.sh VERSION auto --dry-run || true
 
       - name: Prepare PR comment body
@@ -80,94 +79,3 @@ jobs:
         env:
           NEW_VERSION: ${{ steps.compute.outputs.NEW_VERSION }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
-
-      - name: Auto-apply bump to PR branch (same-repo PRs)
-        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          echo "PR is from same repo; attempting to apply bump to PR branch"
-          chmod +x .github/scripts/bump-version.sh || true
-
-          # fetch the PR branch and checkout
-          PR_REF=${{ github.event.pull_request.head.ref }}
-          git fetch --no-tags origin +refs/heads/${PR_REF}:refs/remotes/origin/${PR_REF} || true
-          git checkout -B "${PR_REF}" "origin/${PR_REF}"
-
-          # get live labels for the PR (so re-runs pick up label changes)
-          PR_NUM=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
-          if [ -n "$PR_NUM" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
-            PR_LABELS_JSON=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUM}" | jq -c '.labels // []' 2>/dev/null || echo '[]')
-          else
-            PR_LABELS_JSON=$(jq -c '.pull_request.labels // []' "$GITHUB_EVENT_PATH" 2>/dev/null || echo '[]')
-          fi
-          export PR_LABELS="$PR_LABELS_JSON"
-
-          # run bump in apply mode (will edit VERSION)
-          ./.github/scripts/bump-version.sh VERSION auto --apply
-
-          # commit & push if there are changes
-          if git status --porcelain | grep -q '^'; then
-            git add VERSION || true
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore(release): bump VERSION to $(cat VERSION) [skip ci]" || true
-
-            # attempt to sync with remote first (handle fast-forward conflicts) with retries
-            MAX_RETRIES=3
-            ATTEMPT=0
-            PUSHED=0
-            while [ $ATTEMPT -lt $MAX_RETRIES ]; do
-              echo "Sync attempt $((ATTEMPT+1))/$MAX_RETRIES"
-              git fetch origin
-              REMOTE_REF="origin/${PR_REF}"
-              if git rev-parse --verify "$REMOTE_REF" >/dev/null 2>&1; then
-                if ! git merge-base --is-ancestor "$REMOTE_REF" HEAD >/dev/null 2>&1; then
-                  echo "Remote branch has commits not in local; attempting rebase onto $REMOTE_REF"
-                  if git pull --rebase origin "${PR_REF}"; then
-                    echo "Rebase successful"
-                  else
-                    echo "Rebase failed; aborting rebase and will retry"
-                    git rebase --abort || true
-                  fi
-                else
-                  echo "Local HEAD already contains remote commits; attempting push"
-                fi
-              else
-                echo "Remote branch ${REMOTE_REF} not found; attempting push"
-              fi
-
-              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:${PR_REF}; then
-                echo "Pushed bump to PR branch"
-                BODY="Applied automatic version bump to this PR: **$(cat VERSION)**"
-                curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$BODY" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
-                PUSHED=1
-                break
-              else
-                echo "Push failed on attempt $((ATTEMPT+1))"
-                ATTEMPT=$((ATTEMPT+1))
-                SLEEP=$((ATTEMPT*2))
-                echo "Sleeping for ${SLEEP}s before retry"
-                sleep $SLEEP
-              fi
-            done
-
-            if [ "$PUSHED" -ne 1 ]; then
-              echo "All push attempts failed; creating a fallback branch and pushing it"
-              SAFE_BRANCH="bump/${PR_REF}-bump-$(date +%s)"
-              git checkout -b "$SAFE_BRANCH"
-              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}" HEAD:"$SAFE_BRANCH"; then
-                echo "Pushed fallback branch $SAFE_BRANCH"
-                MSG="Could not push bump to PR branch due to remote updates; created fallback branch ${SAFE_BRANCH}. Please open a PR to merge it into ${PR_REF}."
-                curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" -d "$(jq -nc --arg body "$MSG" '{body:$body}')" "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${PR_NUM}/comments" >/dev/null || true
-                exit 1
-              else
-                echo "Failed to push fallback branch $SAFE_BRANCH" >&2
-                exit 1
-              fi
-            fi
-          else
-            echo "No changes to commit (PR already contains the bump)"
-          fi
