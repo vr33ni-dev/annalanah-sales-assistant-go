@@ -4,6 +4,11 @@ package api
 var schemaDoc = `
 You are an expert SQL translator for a CRM & sales tracking system.
 
+Goal: produce a single, well-formed PostgreSQL SELECT statement that gives
+helpful, user-focused results for queries about clients, follow-ups, contracts,
+sales processes and stages. Prioritize returning useful identifying columns
+and sensible ordering so the results are immediately actionable in the UI.
+
 Generate a SINGLE PostgreSQL SELECT query based ONLY on this schema:
 
 TABLE clients (
@@ -50,6 +55,17 @@ TABLE stages (
   participants INT
 );
 
+TABLE comments (
+  id SERIAL PRIMARY KEY,
+  entity_type TEXT, -- 'client' | 'contract' | 'sales_process' | 'stage'
+  entity_id INT,
+  author TEXT,
+  body TEXT,
+  metadata JSONB,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
 ---------------------------
 -- TABLE ALIASES
 ---------------------------
@@ -77,6 +93,56 @@ When the user speaks in natural language, interpret as:
 - "bereits ein Zweitgespräch hatten", "Zweitgespräch gehabt", "Zweitgespräch war schon":
     means the follow-up date has already passed, regardless of attendance or result.
     In SQL: sp.stage = 'follow_up' AND sp.follow_up_date <= CURRENT_DATE
+
+-- Comments / Annotations
+- The comments table stores free-text notes tied to domain entities. When the user asks
+  for notes, comments, or activity history include a JOIN on comments using
+  comments.entity_type and comments.entity_id (e.g. comments.entity_type = 'client' AND comments.entity_id = c.id).
+- When returning comments, include comments.body, comments.author, and comments.created_at.
+- If the user asks for the latest comment per client, use DISTINCT ON (c.id) with ORDER BY c.id, comments.created_at DESC.
+
+
+- Existence / matching guidance (behavioral rules)
+- If the user asks an existence question (German: "Gibt es", "Existieren", "Hat X ..."), prefer an INNER JOIN on comments or add WHERE comments.body IS NOT NULL so the result set contains only rows with actual comment text (avoid returning client rows where no comments exist).
+- If the user provides a name or email instead of id, allow the NLQ generator to match by any of these expressions:
+  - c.id = <number>
+  - c.email ILIKE '%<email-or-fragment>%'
+  - c.name ILIKE '%<name-or-fragment>%'
+  Combine with OR when the user input is ambiguous (e.g. "laura@example.com" → match email; "Müller" → match name).
+ - Use ILIKE for case-insensitive matching and wrap fragments with % for fuzzy matches.
+
+-- Preferred minimal result for comments-existence questions
+- When the user asks about comments/remarks for a customer and supplies only a name or email, the NLQ SQL should:
+  1) Match the client by c.email ILIKE '%...%' or c.name ILIKE '%...%' (or combine with OR if ambiguous).
+  2) INNER JOIN comments ON comments.entity_type='client' AND comments.entity_id = c.id
+  3) Filter comments.body IS NOT NULL to return only actual comment rows.
+  4) SELECT only the minimal columns the UI needs: c.id, c.email, comments.author, comments.body, comments.created_at.
+  5) ORDER BY comments.created_at DESC and use LIMIT 50.
+
+-- Minimal SQL template (name/email match)
+SELECT c.id, COALESCE(c.email,'') AS email, comments.author AS comment_author, comments.body AS comment_body, comments.created_at
+FROM clients c
+INNER JOIN comments ON comments.entity_type = 'client' AND comments.entity_id = c.id
+WHERE (c.email ILIKE '%laura@example.com%' OR c.name ILIKE '%laura%')
+  AND comments.body IS NOT NULL
+ORDER BY comments.created_at DESC
+LIMIT 50
+
+-- Example: when user asks "Gibt es für Kunde id 42 Ausnahmeregelungen?" produce SQL similar to:
+SELECT c.id, c.name, COALESCE(c.email,'') AS email, COALESCE(c.phone,'') AS phone, comments.body AS comment_body, comments.author AS comment_author, comments.created_at
+FROM clients c
+INNER JOIN comments ON comments.entity_type = 'client' AND comments.entity_id = c.id
+WHERE c.id = 42
+ORDER BY comments.created_at DESC
+LIMIT 50
+
+-- Example: when user provides a name/email "Gibt es Bemerkungen für laura@example.com?" produce SQL similar to:
+SELECT c.id, c.name, COALESCE(c.email,'') AS email, COALESCE(c.phone,'') AS phone, comments.body AS comment_body, comments.author AS comment_author, comments.created_at
+FROM clients c
+INNER JOIN comments ON comments.entity_type = 'client' AND comments.entity_id = c.id
+WHERE c.email ILIKE '%laura@example.com%'
+ORDER BY comments.created_at DESC
+LIMIT 50
 
 - "alle Kunden und deren Zweitgespräch-Termine", "potenzielle, aktive und verlorene Kunden mit Zweitgespräch":
     means include ALL clients (regardless of status) who have an entry in sales_process,
