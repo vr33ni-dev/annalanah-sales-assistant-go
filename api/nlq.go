@@ -202,12 +202,16 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
+		start := time.Now()
+
 		rows, err := h.DB.QueryContext(ctx, sqlText)
 		if err != nil {
+			log.Printf("NLQ query error: %v | SQL=%s", err, sqlText)
 			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
 			sqlCache.Set(sqlText, resp)
 			return resp, nil
 		}
+
 		defer rows.Close()
 
 		cols, err := rows.Columns()
@@ -263,6 +267,8 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 			Rows:    results,
 		}
 		sqlCache.Set(sqlText, resp)
+		duration := time.Since(start)
+		log.Printf("Executed NLQ SQL in %v: %s", duration, sqlText)
 		return resp, nil
 	})
 	if err != nil {
