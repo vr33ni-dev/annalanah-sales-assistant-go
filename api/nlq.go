@@ -216,6 +216,7 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 
 		cols, err := rows.Columns()
 		if err != nil {
+			log.Printf("NLQ columns error: %v | SQL=%s", err, sqlText)
 			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
 			sqlCache.Set(sqlText, resp)
 			return resp, nil
@@ -229,10 +230,12 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 				columnPtrs[i] = &columnVals[i]
 			}
 			if err := rows.Scan(columnPtrs...); err != nil {
+				log.Printf("NLQ scan error: %v | SQL=%s", err, sqlText)
 				resp := nlqResponse{Error: err.Error(), SQL: sqlText}
 				sqlCache.Set(sqlText, resp)
 				return resp, nil
 			}
+
 			rowMap := make(map[string]interface{}, len(cols))
 			for i, col := range cols {
 				val := columnVals[i]
@@ -257,10 +260,12 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 			results = append(results, rowMap)
 		}
 		if err := rows.Err(); err != nil {
+			log.Printf("NLQ rows iteration error: %v | SQL=%s", err, sqlText)
 			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
 			sqlCache.Set(sqlText, resp)
 			return resp, nil
 		}
+
 		resp := nlqResponse{
 			SQL:     sqlText,
 			Columns: cols,
