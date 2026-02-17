@@ -82,5 +82,6 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.10.9
 	github.com/mattn/go-sqlite3 v1.14.32
+	golang.org/x/sync v0.19.0
 	google.golang.org/api v0.252.0
 )
