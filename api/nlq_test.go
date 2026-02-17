@@ -128,3 +128,120 @@ func TestRunNLQ_WithQuestions(t *testing.T) {
 		})
 	}
 }
+
+func TestRunNLQ_UnsafeSQLRejected(t *testing.T) {
+	resetCaches()
+
+	h := &Handler{DB: nil}
+
+	question := "Kunden hack" // must pass isLikelySQLQuestion
+	questionCache.Set(question, "SELECT * FROM clients; DROP TABLE clients")
+
+	body := bytes.NewBufferString(`{"question": "` + question + `"}`)
+	req := httptest.NewRequest("POST", "/api/nlq", body)
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", w.Code)
+	}
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if resp.Error == "" {
+		t.Fatalf("expected unsafe SQL error")
+	}
+}
+
+func TestRunNLQ_AddsLimit(t *testing.T) {
+	resetCaches()
+	os.Setenv("NLQ_MOCK", "1")
+	defer os.Unsetenv("NLQ_MOCK")
+
+	h := &Handler{DB: nil}
+
+	question := "Zeige Kunden"
+	questionCache.Set(question, "SELECT id FROM clients")
+
+	body := bytes.NewBufferString(`{"question": "` + question + `"}`)
+	req := httptest.NewRequest("POST", "/api/nlq", body)
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	var resp nlqResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
+	if !strings.Contains(strings.ToLower(resp.SQL), "limit 100") {
+		t.Fatalf("expected LIMIT injection, got: %s", resp.SQL)
+	}
+}
+
+func TestGenerateSQL_WithKeyAndMock(t *testing.T) {
+	os.Setenv("NLQ_MOCK", "1")
+	os.Setenv("OPENAI_API_KEY", "fake")
+	defer os.Unsetenv("NLQ_MOCK")
+	defer os.Unsetenv("OPENAI_API_KEY")
+
+	sql, err := generateSQL(context.Background(), "Wie viele Kunden?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(strings.ToLower(sql), "select") {
+		t.Fatalf("expected SELECT, got %s", sql)
+	}
+}
+
+func TestRunNLQ_BadJSON_Handler(t *testing.T) {
+	h := &Handler{DB: nil}
+
+	req := httptest.NewRequest("POST", "/api/nlq", bytes.NewBufferString("not-json"))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad json, got %d", w.Code)
+	}
+}
+
+func TestRunNLQ_NonSQLQuestion_Handler(t *testing.T) {
+	h := &Handler{DB: nil}
+
+	body := bytes.NewBufferString(`{"question": "Hallo Welt"}`)
+	req := httptest.NewRequest("POST", "/api/nlq", body)
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if !strings.Contains(w.Body.String(), "Datenabfragen") {
+		t.Fatalf("expected helper message, got: %s", w.Body.String())
+	}
+}
+
+func TestRunNLQ_Aggregate_NoLimit(t *testing.T) {
+	os.Setenv("NLQ_MOCK", "1")
+	defer os.Unsetenv("NLQ_MOCK")
+
+	h := &Handler{DB: nil}
+
+	questionCache.Set("agg", "SELECT COUNT(*) FROM clients")
+
+	body := bytes.NewBufferString(`{"question": "agg"}`)
+	req := httptest.NewRequest("POST", "/api/nlq", body)
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	var resp nlqResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
+	if strings.Contains(strings.ToLower(resp.SQL), "limit") {
+		t.Fatalf("aggregate query should not have LIMIT, got: %s", resp.SQL)
+	}
+}
