@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
+	"golang.org/x/sync/singleflight"
 )
 
 type nlqRequest struct {
@@ -23,6 +26,91 @@ type nlqResponse struct {
 	Rows    []map[string]interface{} `json:"rows"`
 	Error   string                   `json:"error,omitempty"`
 }
+
+// sqlResultCacheEntry holds a cached NLQ response and its expiration
+type sqlResultCacheEntry struct {
+	Response nlqResponse
+	Expires  time.Time
+}
+
+// sqlResultCache is a simple in-memory cache for SQL query results
+type sqlResultCache struct {
+	mu    sync.Mutex
+	data  map[string]sqlResultCacheEntry
+	group singleflight.Group
+	ttl   time.Duration
+}
+
+// questionToSQLCache is a simple in-memory cache for NLQ question to SQL mapping
+type questionToSQLCache struct {
+	mu   sync.Mutex
+	data map[string]struct {
+		SQL     string
+		Expires time.Time
+	}
+	ttl time.Duration
+}
+
+func NewQuestionToSQLCache(ttl time.Duration) *questionToSQLCache {
+	return &questionToSQLCache{
+		data: make(map[string]struct {
+			SQL     string
+			Expires time.Time
+		}),
+		ttl: ttl,
+	}
+}
+
+func (c *questionToSQLCache) Get(question string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.data[question]
+	if !ok || time.Now().After(entry.Expires) {
+		return "", false
+	}
+	return entry.SQL, true
+}
+
+func (c *questionToSQLCache) Set(question, sql string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[question] = struct {
+		SQL     string
+		Expires time.Time
+	}{SQL: sql, Expires: time.Now().Add(c.ttl)}
+}
+
+func NewSQLResultCache(ttl time.Duration) *sqlResultCache {
+	return &sqlResultCache{
+		data: make(map[string]sqlResultCacheEntry),
+		ttl:  ttl,
+	}
+}
+
+// Get by SQL string as key
+func (c *sqlResultCache) Get(sql string) (nlqResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.data[sql]
+	if !ok || time.Now().After(entry.Expires) {
+		return nlqResponse{}, false
+	}
+	return entry.Response, true
+}
+
+// Set by SQL string as key
+func (c *sqlResultCache) Set(sql string, resp nlqResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[sql] = sqlResultCacheEntry{Response: resp, Expires: time.Now().Add(c.ttl)}
+}
+
+// In-memory process-local caches (not persisted).
+// - `sqlCache`: caches SQL query results (keyed by exact SQL string). TTL: 5 minutes.
+// - `questionCache`: caches NLQ question -> SQL mappings to avoid repeated OpenAI calls. TTL: 30 minutes.
+// These are stored per-process and will be lost on restart.
+var sqlCache = NewSQLResultCache(5 * time.Minute)
+var questionCache = NewQuestionToSQLCache(30 * time.Minute)
 
 func isLikelySQLQuestion(q string) bool {
 	q = strings.ToLower(strings.TrimSpace(q))
@@ -54,6 +142,8 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("NLQ question=%q", req.Question)
+
 	if !isLikelySQLQuestion(req.Question) {
 		writeJSON(w, map[string]any{
 			"answer": "🤖 Ich kann dir bei Datenabfragen helfen, z. B. 'Zeige mir Kunden mit geplantem Zweitgespräch'.",
@@ -61,110 +151,136 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlText, err := generateSQL(ctx, req.Question)
-	if err != nil {
-		writeJSON(w, nlqResponse{Error: err.Error()})
-		return
+	// First, try to get SQL from questionToSQLCache
+	sqlText, found := questionCache.Get(req.Question)
+	if !found {
+		// Not cached, call OpenAI/generateSQL
+		var err error
+		sqlText, err = generateSQL(ctx, req.Question)
+		if err != nil {
+			writeJSON(w, nlqResponse{Error: err.Error()})
+			return
+		}
+		sqlText = strings.TrimSpace(sqlText)
+		questionCache.Set(req.Question, sqlText)
 	}
 
-	sqlText = strings.TrimSpace(sqlText)
-
-	if !isSelect(sqlText) {
+	if !isSelect(sqlText) || !isSafeSQL(sqlText) {
 		writeJSON(w, nlqResponse{
-			Error: fmt.Sprintf("only SELECT queries allowed (got: %s)", sqlText),
+			Error: "Unsafe SQL detected",
 			SQL:   sqlText,
 		})
 		return
 	}
 
-	// normalize: strip trailing semicolon
 	sqlText = strings.TrimSuffix(sqlText, ";")
 	sqlText = strings.TrimSpace(sqlText)
 
-	// If it's NOT an aggregate-style query and has no LIMIT, append LIMIT 100
 	if !hasLimit(sqlText) && !isAggregateQuery(sqlText) {
 		sqlText += " LIMIT 100"
 	}
 
-	// In mock mode or without DB: just return the SQL, don't execute it.
-	if os.Getenv("NLQ_MOCK") == "1" || h.DB == nil {
-		writeJSON(w, nlqResponse{
-			SQL:     sqlText,
-			Columns: []string{},
-			Rows:    []map[string]interface{}{},
-			Error:   "",
-		})
+	// Now check cache by SQL string
+	if cached, ok := sqlCache.Get(sqlText); ok {
+		writeJSON(w, cached)
 		return
 	}
 
-	// Real execution path
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	rows, err := h.DB.QueryContext(ctx, sqlText)
-	if err != nil {
-		writeJSON(w, nlqResponse{Error: err.Error(), SQL: sqlText})
-		return
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		writeJSON(w, nlqResponse{Error: err.Error(), SQL: sqlText})
-		return
-	}
-
-	results := make([]map[string]interface{}, 0)
-
-	for rows.Next() {
-		columnVals := make([]interface{}, len(cols))
-		columnPtrs := make([]interface{}, len(cols))
-		for i := range columnVals {
-			columnPtrs[i] = &columnVals[i]
-		}
-
-		if err := rows.Scan(columnPtrs...); err != nil {
-			writeJSON(w, nlqResponse{Error: err.Error(), SQL: sqlText})
-			return
-		}
-
-		rowMap := make(map[string]interface{}, len(cols))
-		for i, col := range cols {
-			val := columnVals[i]
-			switch v := val.(type) {
-			case nil:
-				rowMap[col] = nil
-			case []byte:
-				// Handle booleans stored as bytes ("t"/"f" or 0/1)
-				s := strings.TrimSpace(string(v))
-				if s == "t" || s == "true" || s == "1" {
-					rowMap[col] = true
-				} else if s == "f" || s == "false" || s == "0" {
-					rowMap[col] = false
-				} else {
-					rowMap[col] = s
-				}
-			case bool, int64, float64, string:
-				rowMap[col] = v
-			default:
-				// Fallback safe stringify for unknown types
-				rowMap[col] = fmt.Sprintf("%v", v)
+	// Use singleflight to prevent stampede on SQL execution
+	v, err, _ := sqlCache.group.Do(sqlText, func() (interface{}, error) {
+		if os.Getenv("NLQ_MOCK") == "1" || h.DB == nil {
+			resp := nlqResponse{
+				SQL:     sqlText,
+				Columns: []string{},
+				Rows:    []map[string]interface{}{},
+				Error:   "",
 			}
+			sqlCache.Set(sqlText, resp)
+			return resp, nil
 		}
 
-		results = append(results, rowMap)
-	}
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 
-	if err := rows.Err(); err != nil {
-		writeJSON(w, nlqResponse{Error: err.Error(), SQL: sqlText})
+		start := time.Now()
+
+		rows, err := h.DB.QueryContext(ctx, sqlText)
+		if err != nil {
+			log.Printf("NLQ query error: %v | SQL=%s", err, sqlText)
+			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
+			sqlCache.Set(sqlText, resp)
+			return resp, nil
+		}
+
+		defer rows.Close()
+
+		cols, err := rows.Columns()
+		if err != nil {
+			log.Printf("NLQ columns error: %v | SQL=%s", err, sqlText)
+			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
+			sqlCache.Set(sqlText, resp)
+			return resp, nil
+		}
+
+		results := make([]map[string]interface{}, 0)
+		for rows.Next() {
+			columnVals := make([]interface{}, len(cols))
+			columnPtrs := make([]interface{}, len(cols))
+			for i := range columnVals {
+				columnPtrs[i] = &columnVals[i]
+			}
+			if err := rows.Scan(columnPtrs...); err != nil {
+				log.Printf("NLQ scan error: %v | SQL=%s", err, sqlText)
+				resp := nlqResponse{Error: err.Error(), SQL: sqlText}
+				sqlCache.Set(sqlText, resp)
+				return resp, nil
+			}
+
+			rowMap := make(map[string]interface{}, len(cols))
+			for i, col := range cols {
+				val := columnVals[i]
+				switch v := val.(type) {
+				case nil:
+					rowMap[col] = nil
+				case []byte:
+					s := strings.TrimSpace(string(v))
+					if s == "t" || s == "true" || s == "1" {
+						rowMap[col] = true
+					} else if s == "f" || s == "false" || s == "0" {
+						rowMap[col] = false
+					} else {
+						rowMap[col] = s
+					}
+				case bool, int64, float64, string:
+					rowMap[col] = v
+				default:
+					rowMap[col] = fmt.Sprintf("%v", v)
+				}
+			}
+			results = append(results, rowMap)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("NLQ rows iteration error: %v | SQL=%s", err, sqlText)
+			resp := nlqResponse{Error: err.Error(), SQL: sqlText}
+			sqlCache.Set(sqlText, resp)
+			return resp, nil
+		}
+
+		resp := nlqResponse{
+			SQL:     sqlText,
+			Columns: cols,
+			Rows:    results,
+		}
+		sqlCache.Set(sqlText, resp)
+		duration := time.Since(start)
+		log.Printf("Executed NLQ SQL in %v: %s", duration, sqlText)
+		return resp, nil
+	})
+	if err != nil {
+		writeJSON(w, nlqResponse{Error: err.Error()})
 		return
 	}
-
-	writeJSON(w, nlqResponse{
-		SQL:     sqlText,
-		Columns: cols,
-		Rows:    results,
-	})
+	writeJSON(w, v.(nlqResponse))
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -174,6 +290,25 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 
 func isSelect(sql string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(sql)), "select")
+}
+
+func isSafeSQL(sql string) bool {
+	s := strings.ToLower(sql)
+
+	forbidden := []string{
+		";", "--", "/*", "*/",
+		"insert ", "update ", "delete ",
+		"drop ", "alter ", "truncate ",
+		"create ", "grant ", "revoke ",
+		"pg_sleep", "pg_terminate",
+	}
+
+	for _, f := range forbidden {
+		if strings.Contains(s, f) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasLimit(sql string) bool {
