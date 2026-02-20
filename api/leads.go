@@ -391,7 +391,7 @@ func (h *Handler) ConvertLead(w http.ResponseWriter, r *http.Request) {
 		stagePtr = &v
 	}
 
-	clientID, salesID, err := h.createClientAndSalesProcessTx(ctx, tx, name, emailPtr, phonePtr, source, stagePtr, nil, &leadID)
+	clientID, salesID, err := h.createClientAndSalesProcessTx(ctx, tx, name, emailPtr, phonePtr, source, stagePtr, nil, nil, &leadID)
 	if err != nil {
 		// Better handling: distinguish which unique constraint failed.
 		if pgErr, ok := err.(*pq.Error); ok {

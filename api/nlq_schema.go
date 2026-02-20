@@ -18,14 +18,14 @@ TABLE clients (
   phone TEXT,
   source TEXT CHECK (source IN ('organic','paid')),
   source_stage_id INT REFERENCES stages(id),
-  status TEXT CHECK (status IN ('active','follow_up_scheduled','awaiting_response','lost','inactive')),
+  status TEXT CHECK (status IN ('active','initial_call_scheduled','follow_up_scheduled','awaiting_response','lost','inactive')),
   completed_at TIMESTAMPTZ
 );
 
 TABLE sales_process (
   id SERIAL PRIMARY KEY,
   client_id INT REFERENCES clients(id),
-  stage TEXT CHECK (stage IN ('follow_up','closed','lost')),
+  stage TEXT CHECK (stage IN ('initial_contact','follow_up','closed','lost')),
   follow_up_date DATE,
   follow_up_result BOOLEAN,
   closed BOOLEAN,

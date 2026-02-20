@@ -30,6 +30,7 @@ func createSalesSchema(db *sql.DB, t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			client_id INTEGER NOT NULL UNIQUE,
 			stage TEXT,
+			initial_contact_date TEXT,
 			follow_up_date TEXT,
 			follow_up_result BOOLEAN,
 			closed BOOLEAN,
@@ -57,8 +58,6 @@ func createSalesSchema(db *sql.DB, t *testing.T) {
 			(1, 1, 'follow_up', '2025-01-01')
 	`)
 }
-
-func strPtr(s string) *string { return &s }
 
 func TestListSalesProcesses(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
