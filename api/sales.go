@@ -34,6 +34,8 @@ type SalesProcessResponse struct {
 	ClientPhone        *string           `json:"client_phone,omitempty"`
 	ClientSource       *string           `json:"client_source,omitempty"`
 	Stage              string            `json:"stage"`
+	CreatedAt          *string           `json:"created_at,omitempty"`
+	UpdatedAt          *string           `json:"updated_at,omitempty"`
 	InitialContactDate *string           `json:"initial_contact_date"`
 	FollowUpDate       *string           `json:"follow_up_date"`
 	FollowUpResult     *bool             `json:"follow_up_result"`
@@ -69,6 +71,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		cl.phone AS client_phone,
 		cl.source AS client_source,
 		sp.stage,
+		sp.created_at,
 		sp.initial_contact_date,
 		sp.follow_up_date,
 		sp.follow_up_result,
@@ -98,6 +101,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.ClientPhone,
 			&sp.ClientSource,
 			&sp.Stage,
+			&sp.CreatedAt,
 			&sp.InitialContactDate,
 			&sp.FollowUpDate,
 			&sp.FollowUpResult,
@@ -209,7 +213,8 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		END,
 		stage = CASE
 			WHEN COALESCE($4, closed) IS TRUE  THEN 'closed'
-			WHEN COALESCE($4, closed) IS FALSE THEN 'lost'
+			WHEN $4 IS NOT NULL AND $4 IS FALSE THEN 'lost'
+			WHEN stage = 'lost' AND $4 IS NULL AND $3 IS NULL THEN 'lost'
 			WHEN COALESCE($2, follow_up_date) IS NOT NULL THEN 'follow_up'
 			WHEN COALESCE($1, initial_contact_date) IS NOT NULL THEN 'initial_contact'
 			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
@@ -530,6 +535,22 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			LIMIT 1
 		`, req.Email).Scan(&id); err == nil {
 			foundLeadID = &id
+		}
+	}
+
+	// If we found a lead and the caller didn't provide source_stage_id or source,
+	// copy them from the lead so created client/sales_process inherit the attribution.
+	if foundLeadID != nil {
+		var leadSource sql.NullString
+		var leadSourceStage sql.NullInt64
+		if err := h.DB.QueryRowContext(ctx, `SELECT source, source_stage_id FROM leads WHERE id = $1`, *foundLeadID).Scan(&leadSource, &leadSourceStage); err == nil {
+			if req.SourceStageID == nil && leadSourceStage.Valid {
+				v := int(leadSourceStage.Int64)
+				req.SourceStageID = &v
+			}
+			if strings.TrimSpace(req.Source) == "" && leadSource.Valid {
+				req.Source = leadSource.String
+			}
 		}
 	}
 

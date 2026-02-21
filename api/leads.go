@@ -36,6 +36,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			l.email,
 			l.phone,
 		l.source,
+		l.source_stage_id,
 		s.name AS source_stage_name,
 			l.converted,
 			l.created_at
@@ -55,6 +56,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 		var createdAt sql.NullTime
 		var emailNS, phoneNS sql.NullString
 		var sourceStageName sql.NullString
+		var sourceStageID sql.NullInt64
 
 		if err := rows.Scan(
 			&lr.ID,
@@ -62,6 +64,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			&emailNS,
 			&phoneNS,
 			&lr.Source,
+			&sourceStageID,
 			&sourceStageName,
 			&lr.Converted,
 			&createdAt,
@@ -84,6 +87,11 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 
 		if sourceStageName.Valid {
 			lr.SourceStageName = &sourceStageName.String
+		}
+
+		if sourceStageID.Valid {
+			sid := int(sourceStageID.Int64)
+			lr.SourceStageID = &sid
 		}
 
 		if createdAt.Valid {
@@ -170,6 +178,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 					l.email,
 					l.phone,
 					l.source,
+					l.source_stage_id,
 					COALESCE(s.name, '') AS source_stage_name,
 					l.converted,
 					l.created_at
@@ -177,10 +186,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 				LEFT JOIN stages s ON s.id = l.source_stage_id
 				WHERE LOWER(l.email) = LOWER($1)
 				LIMIT 1
-			`, *payload.Email)
+				`, *payload.Email)
 
 			var emailNS, phoneNS sql.NullString
 			var createdAtNS sql.NullTime
+			var sourceStageID sql.NullInt64
 
 			if err := row.Scan(
 				&lr.ID,
@@ -188,6 +198,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 				&emailNS,
 				&phoneNS,
 				&lr.Source,
+				&sourceStageID,
 				&lr.SourceStageName,
 				&lr.Converted,
 				&createdAtNS,
@@ -205,6 +216,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 			if createdAtNS.Valid {
 				s := createdAtNS.Time.Format(time.RFC3339)
 				lr.CreatedAt = &s
+			}
+
+			if sourceStageID.Valid {
+				sid := int(sourceStageID.Int64)
+				lr.SourceStageID = &sid
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -228,6 +244,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 		lr.Phone = *payload.Phone
 	}
 	lr.Source = payload.Source
+
+	if stageID.Valid {
+		v := int(stageID.Int64)
+		lr.SourceStageID = &v
+	}
 	if createdAt.Valid {
 		s := createdAt.Time.Format(time.RFC3339)
 		lr.CreatedAt = &s

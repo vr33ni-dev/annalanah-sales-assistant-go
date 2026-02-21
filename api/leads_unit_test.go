@@ -24,10 +24,9 @@ func TestListLeads_Success(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"id", "name", "email", "phone", "source",
-		"source_stage_name", "converted", "created_at",
+		"source_stage_id", "source_stage_name", "converted", "created_at",
 	}).AddRow(
-		1, "Alice", "a@test.com", "123", "organic",
-		"Follow Up", false, sql.NullTime{},
+		1, "Alice", "a@test.com", "123", "organic", nil, "Follow Up", false, sql.NullTime{},
 	)
 
 	mock.ExpectQuery(`FROM leads`).
@@ -132,9 +131,9 @@ func TestCreateLead_DuplicateEmail(t *testing.T) {
 		WithArgs("dup@test.com").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "email", "phone", "source",
-			"source_stage_name", "converted", "created_at",
+			"source_stage_id", "source_stage_name", "converted", "created_at",
 		}).AddRow(
-			5, "Dup", "dup@test.com", "", "organic", "", false, sql.NullTime{},
+			5, "Dup", "dup@test.com", "", "organic", nil, "", false, sql.NullTime{},
 		))
 
 	body := map[string]interface{}{
@@ -227,9 +226,9 @@ func TestUpdateLead_Success(t *testing.T) {
 		WillReturnRows(
 			sqlmock.NewRows([]string{
 				"id", "name", "email", "phone", "source",
-				"source_stage_name", "created_at",
+				"source_stage_id", "source_stage_name", "created_at",
 			}).AddRow(
-				1, "Alice", "a@test.com", "123", "organic", "", sql.NullTime{},
+				1, "Alice", "a@test.com", "123", "organic", nil, "", sql.NullTime{},
 			),
 		)
 
