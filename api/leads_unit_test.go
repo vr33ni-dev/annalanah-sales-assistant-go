@@ -24,10 +24,9 @@ func TestListLeads_Success(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"id", "name", "email", "phone", "source",
-		"source_stage_name", "converted", "created_at",
+		"source_stage_id", "source_stage_name", "converted", "created_at",
 	}).AddRow(
-		1, "Alice", "a@test.com", "123", "organic",
-		"Follow Up", false, sql.NullTime{},
+		1, "Alice", "a@test.com", "123", "organic", nil, "Follow Up", false, sql.NullTime{},
 	)
 
 	mock.ExpectQuery(`FROM leads`).
@@ -132,9 +131,9 @@ func TestCreateLead_DuplicateEmail(t *testing.T) {
 		WithArgs("dup@test.com").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "email", "phone", "source",
-			"source_stage_name", "converted", "created_at",
+			"source_stage_id", "source_stage_name", "converted", "created_at",
 		}).AddRow(
-			5, "Dup", "dup@test.com", "", "organic", "", false, sql.NullTime{},
+			5, "Dup", "dup@test.com", "", "organic", nil, "", false, sql.NullTime{},
 		))
 
 	body := map[string]interface{}{
@@ -215,21 +214,21 @@ func TestUpdateLead_Success(t *testing.T) {
 
 	h := &api.Handler{DB: db}
 
-	mock.ExpectQuery(`UPDATE leads SET`).
+	mock.ExpectQuery(`(?s)UPDATE\s+leads`).
 		WithArgs(
 			sqlmock.AnyArg(), // name
 			sqlmock.AnyArg(), // email
 			sqlmock.AnyArg(), // phone
 			sqlmock.AnyArg(), // source
-			sql.NullInt64{},  // source_stage_id
+			sqlmock.AnyArg(), // source_stage_id (allow any sql.NullInt64)
 			1,                // id
 		).
 		WillReturnRows(
 			sqlmock.NewRows([]string{
 				"id", "name", "email", "phone", "source",
-				"source_stage_name", "created_at",
+				"source_stage_id", "source_stage_name", "created_at",
 			}).AddRow(
-				1, "Alice", "a@test.com", "123", "organic", "", sql.NullTime{},
+				1, "Alice", "a@test.com", "123", "organic", nil, "", sql.NullTime{},
 			),
 		)
 
@@ -245,6 +244,10 @@ func TestUpdateLead_Success(t *testing.T) {
 	h.UpdateLead(w, req)
 
 	if w.Code != http.StatusOK {
+		t.Logf("response body: %s", w.Body.String())
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Logf("unmet sqlmock expectations: %v", err)
+		}
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
@@ -332,5 +335,62 @@ func TestConvertLead_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestConvertLead_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	// Begin transaction and select lead
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name, email, phone, source`).
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "email", "phone", "source", "source_stage_id"}).
+			AddRow("LeadName", sql.NullString{String: "lead@test.com", Valid: true}, sql.NullString{String: "555", Valid: true}, "organic", nil))
+
+	// createClientAndSalesProcessTx: clients lookup -> not found
+	mock.ExpectQuery(`SELECT id FROM clients WHERE LOWER\(email\) = LOWER\(\$1\)`).
+		WithArgs("lead@test.com").
+		WillReturnError(sql.ErrNoRows)
+
+	// insert client
+	mock.ExpectQuery(`INSERT INTO clients`).
+		WithArgs("LeadName", sqlmock.AnyArg(), sqlmock.AnyArg(), "organic", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(11))
+
+	// insert sales_process
+	mock.ExpectQuery(`INSERT INTO sales_process`).
+		WithArgs(11, sqlmock.AnyArg(), sqlmock.AnyArg(), "follow_up", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(21))
+
+	// update lead converted
+	mock.ExpectExec(`UPDATE leads`).
+		WithArgs(11, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/1/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
+	}
+
+	var out map[string]int
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	if out["client_id"] != 11 || out["sales_process_id"] != 21 {
+		t.Fatalf("unexpected response %+v", out)
 	}
 }

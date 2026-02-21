@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +16,7 @@ type Contract struct {
 	ClientID       int                    `json:"client_id"`
 	SalesProcessID int                    `json:"sales_process_id"`
 	StartDate      string                 `json:"start_date"`
+	CreatedAt      *string                `json:"created_at,omitempty"`
 	EndDate        *string                `json:"end_date_computed,omitempty"`
 	DurationMonths int                    `json:"duration_months"`
 	RevenueTotal   float64                `json:"revenue_total"`
@@ -35,6 +37,8 @@ type ContractResponse struct {
 	ClientID        int               `json:"client_id"`
 	ClientName      string            `json:"client_name"`
 	SalesProcessID  int               `json:"sales_process_id"`
+	CreatedAt       *string           `json:"created_at,omitempty"`
+	UpdatedAt       *string           `json:"updated_at,omitempty"`
 	StartDate       string            `json:"start_date"`
 	EndDate         *string           `json:"end_date_computed,omitempty"`
 	DurationMonths  int               `json:"duration_months"`
@@ -73,7 +77,8 @@ SELECT
   cl.name AS client_name,
   c.sales_process_id,
   c.start_date,
-  c.end_date_computed,
+	c.end_date_computed,
+	c.created_at,
   c.duration_months,
   c.revenue_total,
   c.payment_frequency,
@@ -88,10 +93,13 @@ SELECT
   (
     COALESCE(p.periods_paid, 0) *
     CASE c.payment_frequency
-      WHEN 'monthly'    THEN 1
-      WHEN 'bi-monthly' THEN 2
-      WHEN 'quarterly'  THEN 3
-    END
+			WHEN 'monthly'    THEN 1
+			WHEN 'bi-monthly' THEN 2
+			WHEN 'quarterly'  THEN 3
+			WHEN 'bi-yearly'  THEN 6
+			WHEN 'one-time'   THEN c.duration_months
+			ELSE 1
+		END
   ) AS paid_months,
 
   COALESCE(p.paid_amount_total, 0)::numeric AS paid_amount_total,
@@ -100,14 +108,17 @@ SELECT
   COALESCE(
     pn.next_due_date_cf,
     CASE
-      WHEN (
-        COALESCE(p.periods_paid, 0) *
-        CASE c.payment_frequency
-          WHEN 'monthly'    THEN 1
-          WHEN 'bi-monthly' THEN 2
-          WHEN 'quarterly'  THEN 3
-        END
-      ) >= c.duration_months
+			WHEN (
+				COALESCE(p.periods_paid, 0) *
+				CASE c.payment_frequency
+					WHEN 'monthly'    THEN 1
+					WHEN 'bi-monthly' THEN 2
+					WHEN 'quarterly'  THEN 3
+					WHEN 'bi-yearly'  THEN 6
+					WHEN 'one-time'   THEN c.duration_months
+					ELSE 1
+				END
+			) >= c.duration_months
         THEN NULL
       ELSE
 			(
@@ -119,6 +130,9 @@ SELECT
 								WHEN 'monthly'    THEN 1
 								WHEN 'bi-monthly' THEN 2
 								WHEN 'quarterly'  THEN 3
+								WHEN 'bi-yearly'  THEN 6
+								WHEN 'one-time'   THEN c.duration_months
+								ELSE 1
 							END)
 					)
 			)::date
@@ -142,7 +156,7 @@ ORDER BY c.id;
 		var x ContractResponse
 		if err := rows.Scan(
 			&x.ID, &x.ClientID, &x.ClientName, &x.SalesProcessID,
-			&x.StartDate, &x.EndDate, &x.DurationMonths, &x.RevenueTotal, &x.PaymentFreq,
+			&x.StartDate, &x.EndDate, &x.CreatedAt, &x.DurationMonths, &x.RevenueTotal, &x.PaymentFreq,
 			&x.MonthlyAmount, &x.PaidMonths, &x.PaidAmountTotal, &x.NextDueDate,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
@@ -206,12 +220,25 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// normalize and validate payment frequency
+	pf := strings.ToLower(strings.TrimSpace(c.PaymentFreq))
+	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
+		http.Error(w, "invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)", http.StatusBadRequest)
+		return
+	}
+	if pf == "bi-yearly" && c.DurationMonths < 12 {
+		http.Error(w, "bi-yearly payment frequency requires duration_months >= 12", http.StatusBadRequest)
+		return
+	}
+	c.PaymentFreq = pf
+
 	/* Insert contract - requires RETURNING id to tell PostgreSQL to output the newly inserted row’s primary key (without it, the result set is missing and Scan(&c.ID) fails because there is nothing to scan => 500 error. */
+	var createdAt sql.NullTime
 	err := h.DB.QueryRow(`
-    INSERT INTO contracts
-        (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-    VALUES ($1, $2, $3::date, $4, $5, $6)
-    RETURNING id
+	INSERT INTO contracts
+		(client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+	VALUES ($1, $2, $3::date, $4, $5, $6)
+	RETURNING id, created_at
 `,
 		c.ClientID,
 		c.SalesProcessID,
@@ -219,7 +246,12 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
-	).Scan(&c.ID)
+	).Scan(&c.ID, &createdAt)
+
+	if createdAt.Valid {
+		s := createdAt.Time.Format(time.RFC3339)
+		c.CreatedAt = &s
+	}
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -252,6 +284,18 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// normalize and validate payment frequency
+	pf := strings.ToLower(strings.TrimSpace(req.PaymentFreq))
+	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
+		http.Error(w, "invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)", http.StatusBadRequest)
+		return
+	}
+	if pf == "bi-yearly" && req.DurationMonths < 12 {
+		http.Error(w, "bi-yearly payment frequency requires duration_months >= 12", http.StatusBadRequest)
+		return
+	}
+	req.PaymentFreq = pf
 
 	// Convert "YYYY-MM-DD" → time.Time
 	t, err := time.Parse("2006-01-02", req.StartDate)

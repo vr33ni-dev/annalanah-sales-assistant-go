@@ -13,37 +13,42 @@ import (
 )
 
 type SalesProcess struct {
-	ID             int      `json:"id"`
-	ClientID       int      `json:"client_id"`
-	Stage          string   `json:"stage"`
-	FollowUpDate   *string  `json:"follow_up_date"`
-	FollowUpResult *bool    `json:"follow_up_result"`
-	Closed         *bool    `json:"closed"`
-	Revenue        *float64 `json:"revenue"`
-	StageID        *int     `json:"stage_id"`
-	LeadID         *int     `json:"lead_id,omitempty"`
+	ID                 int      `json:"id"`
+	ClientID           int      `json:"client_id"`
+	Stage              string   `json:"stage"`
+	InitialContactDate *string  `json:"initial_contact_date"`
+	FollowUpDate       *string  `json:"follow_up_date"`
+	FollowUpResult     *bool    `json:"follow_up_result"`
+	Closed             *bool    `json:"closed"`
+	Revenue            *float64 `json:"revenue"`
+	StageID            *int     `json:"stage_id"`
+	LeadID             *int     `json:"lead_id,omitempty"`
 }
 
 // What the API returns (GET /api/sales, PATCH /api/sales/{id})
 type SalesProcessResponse struct {
-	ID             int               `json:"id"`
-	ClientID       int               `json:"client_id"`
-	ClientName     string            `json:"client_name"`
-	ClientEmail    *string           `json:"client_email,omitempty"`
-	ClientPhone    *string           `json:"client_phone,omitempty"`
-	ClientSource   *string           `json:"client_source,omitempty"`
-	Stage          string            `json:"stage"`
-	FollowUpDate   *string           `json:"follow_up_date"`
-	FollowUpResult *bool             `json:"follow_up_result"`
-	Closed         *bool             `json:"closed"`
-	Revenue        *float64          `json:"revenue"`
-	StageID        *int              `json:"stage_id"`
-	LeadID         *int              `json:"lead_id,omitempty"`
-	Comments       []CommentResponse `json:"comments,omitempty"`
+	ID                 int               `json:"id"`
+	ClientID           int               `json:"client_id"`
+	ClientName         string            `json:"client_name"`
+	ClientEmail        *string           `json:"client_email,omitempty"`
+	ClientPhone        *string           `json:"client_phone,omitempty"`
+	ClientSource       *string           `json:"client_source,omitempty"`
+	Stage              string            `json:"stage"`
+	CreatedAt          *string           `json:"created_at,omitempty"`
+	UpdatedAt          *string           `json:"updated_at,omitempty"`
+	InitialContactDate *string           `json:"initial_contact_date"`
+	FollowUpDate       *string           `json:"follow_up_date"`
+	FollowUpResult     *bool             `json:"follow_up_result"`
+	Closed             *bool             `json:"closed"`
+	Revenue            *float64          `json:"revenue"`
+	StageID            *int              `json:"stage_id"`
+	LeadID             *int              `json:"lead_id,omitempty"`
+	Comments           []CommentResponse `json:"comments,omitempty"`
 }
 
 // What the API accepts (PATCH /api/sales/{id})
 type SalesProcessUpdateRequest struct {
+	InitialContactDate     *string                `json:"initial_contact_date,omitempty"`
 	FollowUpDate           *string                `json:"follow_up_date,omitempty"`
 	FollowUpResult         *bool                  `json:"follow_up_result"`
 	Closed                 *bool                  `json:"closed"`
@@ -66,6 +71,8 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		cl.phone AS client_phone,
 		cl.source AS client_source,
 		sp.stage,
+		sp.created_at,
+		sp.initial_contact_date,
 		sp.follow_up_date,
 		sp.follow_up_result,
 		sp.closed,
@@ -94,6 +101,8 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.ClientPhone,
 			&sp.ClientSource,
 			&sp.Stage,
+			&sp.CreatedAt,
+			&sp.InitialContactDate,
 			&sp.FollowUpDate,
 			&sp.FollowUpResult,
 			&sp.Closed,
@@ -177,7 +186,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			sp.ContractDurationMonths == nil || *sp.ContractDurationMonths <= 0 ||
 			sp.ContractStartDate == nil ||
 			sp.ContractFrequency == nil ||
-			(*sp.ContractFrequency != "monthly" && *sp.ContractFrequency != "bi-monthly" && *sp.ContractFrequency != "quarterly") {
+			(*sp.ContractFrequency != "monthly" && *sp.ContractFrequency != "bi-monthly" && *sp.ContractFrequency != "quarterly" && *sp.ContractFrequency != "one-time" && *sp.ContractFrequency != "bi-yearly") {
 			http.Error(w, "cannot set closed=true without contract details (revenue, duration>0, start date, frequency)", http.StatusBadRequest)
 			return
 		}
@@ -191,25 +200,30 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 	// ---------- UPDATE SALES_PROCESS (fields + normalized stage) ----------
 	_, err = h.DB.Exec(`
-  UPDATE sales_process
-  SET
-    follow_up_date   = COALESCE($1, follow_up_date),
-    follow_up_result = COALESCE($2, follow_up_result),
-    closed           = COALESCE($3, closed),
-    revenue          = CASE
-      WHEN $3 IS TRUE  THEN $4
-      WHEN $3 IS FALSE THEN NULL
-      ELSE revenue
-    END,
-    stage = CASE
-      WHEN COALESCE($3, closed) IS TRUE  THEN 'closed'
-      WHEN COALESCE($3, closed) IS FALSE THEN 'lost'
-      WHEN COALESCE($2, follow_up_result) IS FALSE THEN 'lost'
-      WHEN COALESCE($2, follow_up_result) IS TRUE  THEN 'follow_up'
-      ELSE 'follow_up'
-    END
-  WHERE id = $5
+	UPDATE sales_process
+	SET
+		initial_contact_date = COALESCE($1, initial_contact_date),
+		follow_up_date       = COALESCE($2, follow_up_date),
+		follow_up_result     = COALESCE($3, follow_up_result),
+		closed               = COALESCE($4, closed),
+		revenue              = CASE
+			WHEN $4 IS TRUE  THEN $5
+			WHEN $4 IS FALSE THEN NULL
+			ELSE revenue
+		END,
+		stage = CASE
+			WHEN COALESCE($4, closed) IS TRUE  THEN 'closed'
+			WHEN $4 IS NOT NULL AND $4 IS FALSE THEN 'lost'
+			WHEN stage = 'lost' AND $4 IS NULL AND $3 IS NULL THEN 'lost'
+			WHEN COALESCE($2, follow_up_date) IS NOT NULL THEN 'follow_up'
+			WHEN COALESCE($1, initial_contact_date) IS NOT NULL THEN 'initial_contact'
+			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
+			WHEN COALESCE($3, follow_up_result) IS TRUE  THEN 'follow_up'
+			ELSE 'follow_up'
+		END
+	WHERE id = $6
 `,
+		sp.InitialContactDate,
 		sp.FollowUpDate,
 		sp.FollowUpResult,
 		sp.Closed,
@@ -224,10 +238,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 	// ---------- SYNC CLIENT STATUS ----------
 	_, err = h.DB.Exec(`
-	  WITH s AS (
-	    SELECT client_id, stage, follow_up_result, closed
-	    FROM sales_process WHERE id = $1
-	  )
+	WITH s AS (
+		SELECT client_id, stage, follow_up_result, closed, initial_contact_date
+		FROM sales_process WHERE id = $1
+	)
 	  UPDATE clients c
 	  SET status = CASE
 	    WHEN (SELECT stage FROM s) = 'closed'
@@ -235,9 +249,13 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	      THEN 'active'
 	    WHEN (SELECT stage FROM s) = 'lost'
 	      THEN 'lost'
-	    WHEN (SELECT stage FROM s) = 'follow_up'
-	         AND (SELECT follow_up_result FROM s) IS NULL
-	      THEN 'follow_up_scheduled'
+		WHEN (SELECT stage FROM s) = 'initial_contact'
+			 AND (SELECT initial_contact_date FROM s) IS NOT NULL
+			 AND (SELECT follow_up_result FROM s) IS NULL
+		THEN 'initial_call_scheduled'
+		WHEN (SELECT stage FROM s) = 'follow_up'
+				 AND (SELECT follow_up_result FROM s) IS NULL
+			THEN 'follow_up_scheduled'
 	    WHEN (SELECT stage FROM s) = 'follow_up'
 	         AND (SELECT follow_up_result FROM s) IS TRUE
 	      THEN 'awaiting_response'
@@ -345,6 +363,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	    c.phone AS client_phone,
 	    c.source AS client_source,
 	    sp.stage,
+			sp.initial_contact_date,
 	    sp.follow_up_date,
 	    sp.follow_up_result,
 	    sp.closed,
@@ -364,6 +383,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		&updated.ClientPhone,
 		&updated.ClientSource,
 		&updated.Stage,
+		&updated.InitialContactDate,
 		&updated.FollowUpDate,
 		&updated.FollowUpResult,
 		&updated.Closed,
@@ -422,16 +442,17 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/sales/start
 type StartSalesProcessRequest struct {
-	Name          string                 `json:"name"`
-	Email         string                 `json:"email"`
-	Phone         string                 `json:"phone"`
-	Source        string                 `json:"source"`
-	SourceStageID *int                   `json:"source_stage_id,omitempty"`
-	FollowUpDate  *string                `json:"follow_up_date"`
-	LeadID        *int                   `json:"lead_id,omitempty"`
-	MergeStrategy *string                `json:"merge_strategy,omitempty"` // overwrite | keep_existing
-	ClientID      *int                   `json:"client_id,omitempty"`
-	Comments      []CommentCreateRequest `json:"comments,omitempty"`
+	Name               string                 `json:"name"`
+	Email              string                 `json:"email"`
+	Phone              string                 `json:"phone"`
+	Source             string                 `json:"source"`
+	SourceStageID      *int                   `json:"source_stage_id,omitempty"`
+	InitialContactDate *string                `json:"initial_contact_date,omitempty"`
+	FollowUpDate       *string                `json:"follow_up_date"`
+	LeadID             *int                   `json:"lead_id,omitempty"`
+	MergeStrategy      *string                `json:"merge_strategy,omitempty"` // overwrite | keep_existing
+	ClientID           *int                   `json:"client_id,omitempty"`
+	Comments           []CommentCreateRequest `json:"comments,omitempty"`
 }
 
 // ClientResponse is the nested client object returned inside StartSalesProcessResponse.
@@ -449,15 +470,16 @@ type ClientResponse struct {
 // SalesProcessSummary is the nested sales-process object returned inside StartSalesProcessResponse.
 // It represents a compact summary of the newly created sales process.
 type SalesProcessSummary struct {
-	ID             int     `json:"id"`
-	ClientID       int     `json:"client_id"`
-	Stage          string  `json:"stage"`
-	FollowUpDate   *string `json:"follow_up_date"`
-	FollowUpResult *bool   `json:"follow_up_result"`
-	Closed         *bool   `json:"closed"`
-	Revenue        *int    `json:"revenue"`
-	StageID        *int    `json:"stage_id"`
-	LeadID         *int    `json:"lead_id,omitempty"`
+	ID                 int     `json:"id"`
+	ClientID           int     `json:"client_id"`
+	Stage              string  `json:"stage"`
+	InitialContactDate *string `json:"initial_contact_date"`
+	FollowUpDate       *string `json:"follow_up_date"`
+	FollowUpResult     *bool   `json:"follow_up_result"`
+	Closed             *bool   `json:"closed"`
+	Revenue            *int    `json:"revenue"`
+	StageID            *int    `json:"stage_id"`
+	LeadID             *int    `json:"lead_id,omitempty"`
 }
 
 type StartSalesProcessResponse struct {
@@ -479,8 +501,8 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.FollowUpDate == nil || strings.TrimSpace(*req.FollowUpDate) == "" {
-		http.Error(w, "follow_up_date is required", http.StatusBadRequest)
+	if req.InitialContactDate == nil || strings.TrimSpace(*req.InitialContactDate) == "" {
+		http.Error(w, "initial_contact_date is required", http.StatusBadRequest)
 		return
 	}
 
@@ -516,6 +538,22 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If we found a lead and the caller didn't provide source_stage_id or source,
+	// copy them from the lead so created client/sales_process inherit the attribution.
+	if foundLeadID != nil {
+		var leadSource sql.NullString
+		var leadSourceStage sql.NullInt64
+		if err := h.DB.QueryRowContext(ctx, `SELECT source, source_stage_id FROM leads WHERE id = $1`, *foundLeadID).Scan(&leadSource, &leadSourceStage); err == nil {
+			if req.SourceStageID == nil && leadSourceStage.Valid {
+				v := int(leadSourceStage.Int64)
+				req.SourceStageID = &v
+			}
+			if strings.TrimSpace(req.Source) == "" && leadSource.Valid {
+				req.Source = leadSource.String
+			}
+		}
+	}
+
 	// ------------------------------------------------
 	// 2) Resolve existing client (PIN via client_id if present)
 	// ------------------------------------------------
@@ -534,20 +572,6 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			*req.ClientID,
 		).Scan(&existing.Name, &existing.Phone, &existing.Source)
 		existing.ID = *req.ClientID
-	} else if strings.TrimSpace(req.Email) != "" {
-		err := h.DB.QueryRowContext(ctx,
-			`SELECT id, name, phone, source
-			 FROM clients
-			 WHERE LOWER(email) = LOWER($1)`,
-			strings.TrimSpace(req.Email),
-		).Scan(&existing.ID, &existing.Name, &existing.Phone, &existing.Source)
-
-		if err == nil {
-			existingClientID = &existing.ID
-		} else if err != sql.ErrNoRows {
-			http.Error(w, "client lookup failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 
 	// ------------------------------------------------
@@ -613,6 +637,13 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// ------------------------------------------------
 	// 5) Merge decision required
 	// ------------------------------------------------
+	// If the caller selected an existing lead, prefer allowing the incoming
+	// non-empty fields to update the existing client (merge/overwrite)
+	// so the UI can adjust e.g. `source` while reusing the client.
+	if existingClientID != nil && foundLeadID != nil && req.MergeStrategy == nil {
+		ov := "overwrite"
+		req.MergeStrategy = &ov
+	}
 	if existingClientID != nil &&
 		len(conflicts) > 0 &&
 		req.MergeStrategy == nil {
@@ -706,15 +737,25 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// 8) Create or reuse sales_process
 	// ------------------------------------------------
 	var salesID int
+	// determine stage in Go to avoid ambiguous SQL parameter typing
+	stage := "follow_up"
+	if req.FollowUpDate != nil && strings.TrimSpace(*req.FollowUpDate) != "" {
+		stage = "follow_up"
+	} else if req.InitialContactDate != nil && strings.TrimSpace(*req.InitialContactDate) != "" {
+		stage = "initial_contact"
+	}
+
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO sales_process
-			(client_id, follow_up_date, stage, stage_id, created_at, lead_id)
-		VALUES ($1,$2,'follow_up',$3,now(),$4)
+			(client_id, initial_contact_date, follow_up_date, stage, stage_id, created_at, lead_id)
+		VALUES ($1,$2,$3,$4,$5,now(),$6)
 		ON CONFLICT (client_id) DO NOTHING
 		RETURNING id
 	`,
 		clientID,
+		req.InitialContactDate,
 		req.FollowUpDate,
+		stage,
 		req.SourceStageID,
 		foundLeadID,
 	).Scan(&salesID)
@@ -796,12 +837,13 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 			Comments: respComments,
 		},
 		SalesProcess: SalesProcessSummary{
-			ID:           salesID,
-			ClientID:     clientID,
-			Stage:        "follow_up",
-			FollowUpDate: req.FollowUpDate,
-			StageID:      req.SourceStageID,
-			LeadID:       foundLeadID,
+			ID:                 salesID,
+			ClientID:           clientID,
+			Stage:              "follow_up",
+			InitialContactDate: req.InitialContactDate,
+			FollowUpDate:       req.FollowUpDate,
+			StageID:            req.SourceStageID,
+			LeadID:             foundLeadID,
 		},
 	})
 
@@ -817,6 +859,7 @@ func (h *Handler) createClientAndSalesProcessTx(
 	phone *string,
 	source string,
 	sourceStageID *int,
+	initialContactDate *string,
 	followUpDate *string,
 	leadID *int,
 ) (int, int, error) {
@@ -863,15 +906,25 @@ func (h *Handler) createClientAndSalesProcessTx(
 	// 2) Create OR reuse sales_process (SAFE)
 	// ------------------------------------------
 
+	// determine stage in Go to avoid SQL parameter type ambiguity
+	stage := "follow_up"
+	if followUpDate != nil && strings.TrimSpace(*followUpDate) != "" {
+		stage = "follow_up"
+	} else if initialContactDate != nil && strings.TrimSpace(*initialContactDate) != "" {
+		stage = "initial_contact"
+	}
+
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO sales_process
-			(client_id, follow_up_date, stage, stage_id, created_at, lead_id)
-		 VALUES ($1,$2,'follow_up',$3,now(),$4)
+			(client_id, initial_contact_date, follow_up_date, stage, stage_id, created_at, lead_id)
+		 VALUES ($1,$2,$3,$4,$5,now(),$6)
 		 ON CONFLICT (client_id)
 		 DO NOTHING
 		 RETURNING id`,
 		clientID,
+		initialContactDate,
 		followUpDate,
+		stage,
 		sourceStageID,
 		leadID,
 	).Scan(&salesProcessID)
@@ -1154,10 +1207,20 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			req.ContractFrequency == nil ||
 			(*req.ContractFrequency != "monthly" &&
 				*req.ContractFrequency != "bi-monthly" &&
-				*req.ContractFrequency != "quarterly") {
+				*req.ContractFrequency != "quarterly" &&
+				*req.ContractFrequency != "one-time" &&
+				*req.ContractFrequency != "bi-yearly") {
 
-			http.Error(w, "contract_start_date, contract_duration_months > 0 and contract_frequency (monthly|bi-monthly|quarterly) are required", http.StatusBadRequest)
+			http.Error(w, "contract_start_date, contract_duration_months > 0 and contract_frequency (monthly|bi-monthly|quarterly|one-time|bi-yearly) are required", http.StatusBadRequest)
 			return
+		}
+
+		// If bi-yearly selected, require duration >= 12 months
+		if req.ContractFrequency != nil && *req.ContractFrequency == "bi-yearly" {
+			if req.ContractDurationMonths == nil || *req.ContractDurationMonths < 12 {
+				http.Error(w, "bi-yearly payment frequency requires contract_duration_months >= 12", http.StatusBadRequest)
+				return
+			}
 		}
 
 		// ----- INSERT CONTRACT -----
@@ -1194,6 +1257,17 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			months = 2
 		case "quarterly":
 			months = 3
+		case "bi-yearly":
+			// Use 6-month spacing as an option for contracts >= 12 months, otherwise fallback to monthly spacing
+			if req.ContractDurationMonths != nil && *req.ContractDurationMonths >= 12 {
+				months = 6
+			} else {
+				months = 1
+			}
+		case "one-time":
+			months = 0
+		default:
+			months = 1
 		}
 
 		// compute individual payment amount

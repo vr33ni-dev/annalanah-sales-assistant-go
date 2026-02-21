@@ -24,19 +24,19 @@ settings_avg_rev AS (
 -- 1) Stage (ad campaign)
 s AS (
   INSERT INTO stages (name, date, ad_budget, registrations, participants)
-  VALUES ('Facebook Ads September', '2025-09-01', 2000, 50, 30)
+  VALUES ('Facebook Ads September', (CURRENT_DATE + INTERVAL '30 days')::date, 2000, 50, 30)
   RETURNING id
 ),
 
 -- 2) Clients
 anna AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', '2025-10-20')
+  VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', (CURRENT_DATE + INTERVAL '60 days')::date)
   RETURNING id
 ),
 maxc AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', '2025-10-15'
+  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', (CURRENT_DATE + INTERVAL '45 days')::date
   FROM s
   RETURNING id
 ),
@@ -76,28 +76,28 @@ converted_lead AS (
 -- Anna: closed/won (Abschluss)
 sp_anna AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT a.id, 'closed', '2025-09-10', TRUE, TRUE, 4800, NULL
+  SELECT a.id, 'closed', (CURRENT_DATE + INTERVAL '10 days')::date, TRUE, TRUE, 4800, NULL
   FROM anna a
   RETURNING id, client_id
 ),
 -- Max: closed/won (Abschluss) linked to stage
 sp_max AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT m.id, 'closed', '2025-09-05', TRUE, TRUE, 6000, s.id
+  SELECT m.id, 'closed', (CURRENT_DATE + INTERVAL '5 days')::date, TRUE, TRUE, 6000, s.id
   FROM maxc m, s
   RETURNING id, client_id
 ),
 -- Moritz: follow-up done, not closed (FollowUp)
 sp_moritz AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT mo.id, 'follow_up', '2025-10-02', TRUE, FALSE, 5400, s.id
+  SELECT mo.id, 'follow_up', (CURRENT_DATE + INTERVAL '20 days')::date, TRUE, FALSE, 5400, s.id
   FROM moritz mo, s
   RETURNING id, client_id
 ),
 -- Maria: lost (lost)
 sp_maria AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT ma.id, 'lost', '2025-09-20', FALSE, FALSE, NULL, s.id
+  SELECT ma.id, 'lost', (CURRENT_DATE + INTERVAL '15 days')::date, FALSE, FALSE, NULL, s.id
   FROM maria ma, s
   RETURNING id, client_id
 ),
@@ -106,13 +106,13 @@ sp_maria AS (
 -- ⚠️ end_date_computed is GENERATED ALWAYS, so we do NOT insert into it.
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sa.client_id, sa.id, '2025-09-20', 6, 4800, 'monthly'
+  SELECT sa.client_id, sa.id, (CURRENT_DATE + INTERVAL '15 days')::date, 6, 4800, 'monthly'
   FROM sp_anna sa
   RETURNING id
 ),
 contract_max AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, '2025-09-15', 6, 6000, 'bi-monthly'
+  SELECT sm.client_id, sm.id, (CURRENT_DATE + INTERVAL '30 days')::date, 6, 6000, 'bi-monthly'
   FROM sp_max sm
   RETURNING id
 ),
@@ -122,10 +122,10 @@ cf_ins AS (
   INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
   SELECT c.id, d.due_date, d.amount, d.status
   FROM (
-    SELECT (SELECT id FROM contract_anna) AS contract_id, '2025-11-15'::date AS due_date, 800::numeric AS amount, 'pending'::text AS status
-    UNION ALL SELECT (SELECT id FROM contract_anna), '2025-12-15', 800, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_max),  '2025-11-15', 2000, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_max),  '2026-01-15', 2000, 'pending'
+    SELECT (SELECT id FROM contract_anna) AS contract_id, (CURRENT_DATE + INTERVAL '7 days')::date AS due_date, 800::numeric AS amount, 'pending'::text AS status
+    UNION ALL SELECT (SELECT id FROM contract_anna), (CURRENT_DATE + INTERVAL '37 days')::date, 800, 'pending'
+    UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '7 days')::date, 2000, 'pending'
+    UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '75 days')::date, 2000, 'pending'
   ) d
   JOIN contracts c ON c.id = d.contract_id
   RETURNING 1

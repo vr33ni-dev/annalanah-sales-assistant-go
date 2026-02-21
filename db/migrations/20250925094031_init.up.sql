@@ -64,7 +64,10 @@ CREATE TABLE contracts (
     end_date DATE,
     duration_months INT NOT NULL CHECK (duration_months > 0),
     revenue_total NUMERIC NOT NULL CHECK (revenue_total >= 0),
-    payment_frequency TEXT NOT NULL CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly')),
+    payment_frequency TEXT NOT NULL CHECK (
+        payment_frequency IN ('monthly','bi-monthly','quarterly','one-time','bi-yearly')
+        AND (payment_frequency != 'bi-yearly' OR COALESCE(duration_months, 0) >= 12)
+    ),
     created_at TIMESTAMP DEFAULT now(),
 
     CONSTRAINT fk_contracts_client

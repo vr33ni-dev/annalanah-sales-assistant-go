@@ -21,7 +21,7 @@ import (
 // LIST CONTRACTS (success – real DB)
 // ----------------------------------------------------
 func TestListContracts_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)
@@ -70,7 +70,7 @@ func TestListContracts_Integration(t *testing.T) {
 }
 
 func TestCreateContract_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)
@@ -115,7 +115,7 @@ func TestCreateContract_Integration(t *testing.T) {
 }
 
 func TestUpdateContract_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	// Always reset data at the start of the test
 	testhelpers.TruncateAll(t, suite.DB)
@@ -172,7 +172,7 @@ func TestUpdateContract_Integration(t *testing.T) {
 }
 
 func TestUpdateContract_InvalidDate_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 

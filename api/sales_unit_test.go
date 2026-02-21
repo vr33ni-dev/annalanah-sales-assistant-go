@@ -1,102 +1,75 @@
-package api_test
+package api
 
 import (
 	"bytes"
-	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
-func createSalesSchema(db *sql.DB, t *testing.T) {
-	stmts := []string{
-		`CREATE TABLE clients (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT,
-			email TEXT,
-			phone TEXT,
-			source TEXT,
-			source_stage_id INTEGER,
-			status TEXT,
-			completed_at TEXT
-		);`,
-		`CREATE TABLE sales_process (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			client_id INTEGER NOT NULL UNIQUE,
-			stage TEXT,
-			follow_up_date TEXT,
-			follow_up_result BOOLEAN,
-			closed BOOLEAN,
-			revenue REAL,
-			stage_id INTEGER,
-			lead_id INTEGER,
-			created_at TEXT
-		);`,
+func TestStartSalesProcess_RequiresInitialContactDate(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
 	}
 
-	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("schema create failed: %v\nSQL: %s", err, s)
-		}
+	h := &Handler{DB: db}
+
+	// missing InitialContactDate
+	reqBody := StartSalesProcessRequest{
+		Name:  "Alice",
+		Email: "a@example.com",
 	}
-
-	_, _ = db.Exec(`
-		INSERT INTO clients (id, name, email, phone, source, status)
-		VALUES (1, 'Alice', 'a@example.com', '123', 'organic', 'follow_up_scheduled')
-	`)
-	_, _ = db.Exec(`
-		INSERT INTO sales_process
-			(id, client_id, stage, created_at)
-		VALUES
-			(1, 1, 'follow_up', '2025-01-01')
-	`)
-}
-
-func strPtr(s string) *string { return &s }
-
-func TestListSalesProcesses(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-	createSalesSchema(db, t)
-
-	h := &api.Handler{DB: db}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sales", nil)
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sales/start", bytes.NewReader(b))
 	w := httptest.NewRecorder()
 
-	h.ListSalesProcesses(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
-func TestUpdateSalesProcess_ClosedValidationFails(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-	createSalesSchema(db, t)
-
-	h := &api.Handler{DB: db}
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
-
-	body := map[string]any{"closed": true}
-	b, _ := json.Marshal(body)
-
-	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1", bytes.NewReader(b))
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	h.UpdateSalesProcess(w, req)
+	h.StartSalesProcess(w, req)
 
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestStartSalesProcess_ExistingClientWithActiveContract_ReturnsConflict(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+
+	h := &Handler{DB: db}
+
+	// prepare request with ClientID
+	initial := "2025-10-01"
+	clientID := 42
+	reqBody := StartSalesProcessRequest{
+		Name:               "Bob",
+		Email:              "b@example.com",
+		InitialContactDate: &initial,
+		ClientID:           &clientID,
+	}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sales/start", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	// Expect the lookup of existing client (SELECT name, phone, source)
+	rows := sqlmock.NewRows([]string{"name", "phone", "source"}).AddRow("Bob", nil, nil)
+	mock.ExpectQuery(`SELECT name, phone, source`).WithArgs(clientID).WillReturnRows(rows)
+
+	// Expect the active contract EXISTS query -> return true
+	existRows := sqlmock.NewRows([]string{"exists"}).AddRow(true)
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(clientID).WillReturnRows(existRows)
+
+	h.StartSalesProcess(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
 	}
 }

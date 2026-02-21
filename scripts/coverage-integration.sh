@@ -23,10 +23,9 @@ echo "Integration packages to test:"
 cat "$TMPPKG"
 echo
 
-# Build a targeted coverpkg list from the transitive deps of the integration packages
-# This reduces warnings and instruments only packages that the integration tests can actually exercise.
-coverpkg=$(for p in $(cat "$TMPPKG"); do go list -deps "$p"; done | sort -u \
-  | grep -vE '(/tools|/pkg/importer|/testhelpers)' | tr '\n' ',' | sed 's/,$//')
+# Build a coverpkg list for the application packages (exclude integration/tests/helpers/tools)
+# We want to instrument the app code, not the integration test package itself.
+coverpkg=$(go list ./... | grep -vE '(/tools|/pkg/importer|/testhelpers|/api/integration)' | tr '\n' ',' | sed 's/,$//')
 
 echo "Computed coverpkg for integration run:"
 echo "$coverpkg"

@@ -36,6 +36,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			l.email,
 			l.phone,
 		l.source,
+		l.source_stage_id,
 		s.name AS source_stage_name,
 			l.converted,
 			l.created_at
@@ -55,6 +56,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 		var createdAt sql.NullTime
 		var emailNS, phoneNS sql.NullString
 		var sourceStageName sql.NullString
+		var sourceStageID sql.NullInt64
 
 		if err := rows.Scan(
 			&lr.ID,
@@ -62,6 +64,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			&emailNS,
 			&phoneNS,
 			&lr.Source,
+			&sourceStageID,
 			&sourceStageName,
 			&lr.Converted,
 			&createdAt,
@@ -84,6 +87,11 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 
 		if sourceStageName.Valid {
 			lr.SourceStageName = &sourceStageName.String
+		}
+
+		if sourceStageID.Valid {
+			sid := int(sourceStageID.Int64)
+			lr.SourceStageID = &sid
 		}
 
 		if createdAt.Valid {
@@ -170,6 +178,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 					l.email,
 					l.phone,
 					l.source,
+					l.source_stage_id,
 					COALESCE(s.name, '') AS source_stage_name,
 					l.converted,
 					l.created_at
@@ -177,10 +186,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 				LEFT JOIN stages s ON s.id = l.source_stage_id
 				WHERE LOWER(l.email) = LOWER($1)
 				LIMIT 1
-			`, *payload.Email)
+				`, *payload.Email)
 
 			var emailNS, phoneNS sql.NullString
 			var createdAtNS sql.NullTime
+			var sourceStageID sql.NullInt64
 
 			if err := row.Scan(
 				&lr.ID,
@@ -188,6 +198,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 				&emailNS,
 				&phoneNS,
 				&lr.Source,
+				&sourceStageID,
 				&lr.SourceStageName,
 				&lr.Converted,
 				&createdAtNS,
@@ -205,6 +216,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 			if createdAtNS.Valid {
 				s := createdAtNS.Time.Format(time.RFC3339)
 				lr.CreatedAt = &s
+			}
+
+			if sourceStageID.Valid {
+				sid := int(sourceStageID.Int64)
+				lr.SourceStageID = &sid
 			}
 
 			w.Header().Set("Content-Type", "application/json")
@@ -228,6 +244,11 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 		lr.Phone = *payload.Phone
 	}
 	lr.Source = payload.Source
+
+	if stageID.Valid {
+		v := int(stageID.Int64)
+		lr.SourceStageID = &v
+	}
 	if createdAt.Valid {
 		s := createdAt.Time.Format(time.RFC3339)
 		lr.CreatedAt = &s
@@ -281,23 +302,24 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 
 	// Build update using COALESCE for provided pointers (NULL means no change)
 	row := h.DB.QueryRowContext(ctx, `
-        UPDATE leads SET
-            name = COALESCE($1, name),
-            email = COALESCE($2, email),
-            phone = COALESCE($3, phone),
-            source = COALESCE($4, source),
-            source_stage_id = COALESCE($5, source_stage_id)
-        WHERE id = $6
-        RETURNING id, name, email, phone, source,
-                  COALESCE((SELECT name FROM stages WHERE id = source_stage_id), '') AS source_stage_name,
-                  created_at
-    `, payload.Name, payload.Email, payload.Phone, payload.Source, newStage, leadID)
+		UPDATE leads SET
+			name = COALESCE($1, name),
+			email = COALESCE($2, email),
+			phone = COALESCE($3, phone),
+			source = COALESCE($4, source),
+			source_stage_id = COALESCE($5, source_stage_id)
+		WHERE id = $6
+		RETURNING id, name, email, phone, source, source_stage_id,
+				  COALESCE((SELECT name FROM stages WHERE id = source_stage_id), '') AS source_stage_name,
+				  created_at
+	`, payload.Name, payload.Email, payload.Phone, payload.Source, newStage, leadID)
 
 	var lr LeadResponse
 	var createdAt sql.NullTime
 	var emailNS, phoneNS sql.NullString
+	var sourceStageID sql.NullInt64
 
-	if err := row.Scan(&lr.ID, &lr.Name, &emailNS, &phoneNS, &lr.Source, &lr.SourceStageName, &createdAt); err != nil {
+	if err := row.Scan(&lr.ID, &lr.Name, &emailNS, &phoneNS, &lr.Source, &sourceStageID, &lr.SourceStageName, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "lead not found", http.StatusNotFound)
 			return
@@ -308,6 +330,11 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 	if createdAt.Valid {
 		s := createdAt.Time.Format(time.RFC3339)
 		lr.CreatedAt = &s
+	}
+
+	if sourceStageID.Valid {
+		sid := int(sourceStageID.Int64)
+		lr.SourceStageID = &sid
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -391,7 +418,7 @@ func (h *Handler) ConvertLead(w http.ResponseWriter, r *http.Request) {
 		stagePtr = &v
 	}
 
-	clientID, salesID, err := h.createClientAndSalesProcessTx(ctx, tx, name, emailPtr, phonePtr, source, stagePtr, nil, &leadID)
+	clientID, salesID, err := h.createClientAndSalesProcessTx(ctx, tx, name, emailPtr, phonePtr, source, stagePtr, nil, nil, &leadID)
 	if err != nil {
 		// Better handling: distinguish which unique constraint failed.
 		if pgErr, ok := err.(*pq.Error); ok {

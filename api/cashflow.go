@@ -56,6 +56,8 @@ schedule AS (
         WHEN 'monthly' THEN 1
         WHEN 'bi-monthly' THEN 2
         WHEN 'quarterly' THEN 3
+        WHEN 'bi-yearly' THEN 6
+        WHEN 'one-time' THEN c.duration_months
         ELSE 1
       END
     )::numeric AS amount
@@ -67,6 +69,8 @@ schedule AS (
            WHEN 'monthly' THEN interval '1 month'
            WHEN 'bi-monthly' THEN interval '2 months'
            WHEN 'quarterly' THEN interval '3 months'
+           WHEN 'bi-yearly' THEN interval '6 months'
+           WHEN 'one-time' THEN (c.duration_months * interval '1 month')
            ELSE interval '1 month'
          END
        ) gs ON TRUE
