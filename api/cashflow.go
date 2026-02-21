@@ -118,7 +118,7 @@ potential AS (
   LEFT JOIN contracts c ON c.sales_process_id = sp.id
   WHERE sp.stage = 'follow_up'
     AND COALESCE(sp.closed, false) = false
-    AND sp.follow_up_result = true
+    AND (sp.follow_up_result IS NULL OR sp.follow_up_result = true)
     AND sp.follow_up_date IS NOT NULL
     AND sp.follow_up_date >= $1::date
     AND sp.follow_up_date <  $2::date
