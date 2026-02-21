@@ -24,11 +24,12 @@ func TestStartSalesProcess_NewClient(t *testing.T) {
 	testhelpers.TruncateAll(t, suite.DB)
 
 	body := api.StartSalesProcessRequest{
-		Name:         "Bob",
-		Email:        "b@example.com",
-		Phone:        "999",
-		Source:       "organic",
-		FollowUpDate: strPtr("2025-11-01"),
+		Name:               "Bob",
+		Email:              "b@example.com",
+		Phone:              "999",
+		Source:             "organic",
+		InitialContactDate: strPtr("2025-10-01"),
+		FollowUpDate:       strPtr("2025-11-01"),
 	}
 
 	b, _ := json.Marshal(body)
@@ -38,7 +39,7 @@ func TestStartSalesProcess_NewClient(t *testing.T) {
 	handler.StartSalesProcess(w, req)
 
 	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -51,17 +52,18 @@ func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
 
 	testhelpers.TruncateAll(t, suite.DB)
 
-	// seed client
-	testhelpers.MustExec(t, suite.DB.DB, `
-		INSERT INTO clients (id, name, email, phone, source)
-		VALUES (1, 'Bob', 'b@example.com', '999', 'organic')
-	`)
+	// seed client (let DB assign id)
+	var existingClientID int
+	testhelpers.MustQueryRow(t, suite.DB.DB, `
+		INSERT INTO clients (name, email, phone, source)
+		VALUES ('Bob', 'b@example.com', '999', 'organic') RETURNING id
+	`).Scan(&existingClientID)
 
 	// seed sales_process
 	testhelpers.MustExec(t, suite.DB.DB, `
 		INSERT INTO sales_process (id, client_id, stage)
-		VALUES (100, 1, 'follow_up')
-	`)
+		VALUES (100, $1, 'follow_up')
+	`, existingClientID)
 
 	// seed active contract linked to sales_process
 	testhelpers.MustExec(t, suite.DB.DB, `
@@ -73,15 +75,17 @@ func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
 			revenue_total,
 			payment_frequency
 		)
-		VALUES (1, 100, CURRENT_DATE, 12, 1200, 'monthly')
-	`)
+		VALUES ($1, 100, CURRENT_DATE, 12, 1200, 'monthly')
+	`, existingClientID)
 
 	body := api.StartSalesProcessRequest{
-		Name:         "Bob Changed",
-		Email:        "b@example.com",
-		Phone:        "111",
-		Source:       "paid",
-		FollowUpDate: strPtr("2025-12-01"),
+		Name:               "Bob Changed",
+		Email:              "b@example.com",
+		Phone:              "111",
+		Source:             "paid",
+		InitialContactDate: strPtr("2025-11-01"),
+		FollowUpDate:       strPtr("2025-12-01"),
+		ClientID:           &existingClientID,
 	}
 
 	b, _ := json.Marshal(body)
@@ -91,7 +95,7 @@ func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
 	handler.StartSalesProcess(w, req)
 
 	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", w.Code)
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -104,23 +108,26 @@ func TestStartSalesProcess_OverwriteAlsoUpdatesLead(t *testing.T) {
 
 	testhelpers.TruncateAll(t, suite.DB)
 
-	testhelpers.MustExec(t, suite.DB.DB, `
-		INSERT INTO clients (id, name, email, phone, source)
-		VALUES (10, 'Dana', 'd@example.com', '555', 'organic')
-	`)
+	var existingClientID2 int
+	testhelpers.MustQueryRow(t, suite.DB.DB, `
+		INSERT INTO clients (name, email, phone, source)
+		VALUES ('Dana', 'd@example.com', '555', 'organic') RETURNING id
+	`).Scan(&existingClientID2)
 
 	testhelpers.MustExec(t, suite.DB.DB, `
-		INSERT INTO leads (id, name, email, phone, source, converted)
-		VALUES (20, 'Dana OLD', 'd@example.com', '555', 'organic', FALSE)
+		INSERT INTO leads (name, email, phone, source, converted)
+		VALUES ('Dana OLD', 'd@example.com', '555', 'organic', FALSE)
 	`)
 
 	body := api.StartSalesProcessRequest{
-		Name:          "Dana Updated",
-		Email:         "d@example.com",
-		Phone:         "777",
-		Source:        "paid",
-		FollowUpDate:  strPtr("2025-12-01"),
-		MergeStrategy: strPtr("overwrite"),
+		Name:               "Dana Updated",
+		Email:              "d@example.com",
+		Phone:              "777",
+		Source:             "paid",
+		InitialContactDate: strPtr("2025-11-01"),
+		FollowUpDate:       strPtr("2025-12-01"),
+		MergeStrategy:      strPtr("overwrite"),
+		ClientID:           &existingClientID2,
 	}
 
 	b, _ := json.Marshal(body)
@@ -130,7 +137,7 @@ func TestStartSalesProcess_OverwriteAlsoUpdatesLead(t *testing.T) {
 	handler.StartSalesProcess(w, req)
 
 	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", w.Code)
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var clientName string

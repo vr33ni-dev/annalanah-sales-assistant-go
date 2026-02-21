@@ -302,23 +302,24 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 
 	// Build update using COALESCE for provided pointers (NULL means no change)
 	row := h.DB.QueryRowContext(ctx, `
-        UPDATE leads SET
-            name = COALESCE($1, name),
-            email = COALESCE($2, email),
-            phone = COALESCE($3, phone),
-            source = COALESCE($4, source),
-            source_stage_id = COALESCE($5, source_stage_id)
-        WHERE id = $6
-        RETURNING id, name, email, phone, source,
-                  COALESCE((SELECT name FROM stages WHERE id = source_stage_id), '') AS source_stage_name,
-                  created_at
-    `, payload.Name, payload.Email, payload.Phone, payload.Source, newStage, leadID)
+		UPDATE leads SET
+			name = COALESCE($1, name),
+			email = COALESCE($2, email),
+			phone = COALESCE($3, phone),
+			source = COALESCE($4, source),
+			source_stage_id = COALESCE($5, source_stage_id)
+		WHERE id = $6
+		RETURNING id, name, email, phone, source, source_stage_id,
+				  COALESCE((SELECT name FROM stages WHERE id = source_stage_id), '') AS source_stage_name,
+				  created_at
+	`, payload.Name, payload.Email, payload.Phone, payload.Source, newStage, leadID)
 
 	var lr LeadResponse
 	var createdAt sql.NullTime
 	var emailNS, phoneNS sql.NullString
+	var sourceStageID sql.NullInt64
 
-	if err := row.Scan(&lr.ID, &lr.Name, &emailNS, &phoneNS, &lr.Source, &lr.SourceStageName, &createdAt); err != nil {
+	if err := row.Scan(&lr.ID, &lr.Name, &emailNS, &phoneNS, &lr.Source, &sourceStageID, &lr.SourceStageName, &createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "lead not found", http.StatusNotFound)
 			return
@@ -329,6 +330,11 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 	if createdAt.Valid {
 		s := createdAt.Time.Format(time.RFC3339)
 		lr.CreatedAt = &s
+	}
+
+	if sourceStageID.Valid {
+		sid := int(sourceStageID.Int64)
+		lr.SourceStageID = &sid
 	}
 
 	w.Header().Set("Content-Type", "application/json")

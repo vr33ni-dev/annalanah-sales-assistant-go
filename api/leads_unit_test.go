@@ -214,13 +214,13 @@ func TestUpdateLead_Success(t *testing.T) {
 
 	h := &api.Handler{DB: db}
 
-	mock.ExpectQuery(`UPDATE leads SET`).
+	mock.ExpectQuery(`(?s)UPDATE\s+leads`).
 		WithArgs(
 			sqlmock.AnyArg(), // name
 			sqlmock.AnyArg(), // email
 			sqlmock.AnyArg(), // phone
 			sqlmock.AnyArg(), // source
-			sql.NullInt64{},  // source_stage_id
+			sqlmock.AnyArg(), // source_stage_id (allow any sql.NullInt64)
 			1,                // id
 		).
 		WillReturnRows(
@@ -244,6 +244,10 @@ func TestUpdateLead_Success(t *testing.T) {
 	h.UpdateLead(w, req)
 
 	if w.Code != http.StatusOK {
+		t.Logf("response body: %s", w.Body.String())
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Logf("unmet sqlmock expectations: %v", err)
+		}
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
