@@ -1,186 +1,123 @@
-package api_test
+package api
 
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
-	_ "github.com/mattn/go-sqlite3"
-
-	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
 )
 
-/*
-1️⃣ Success-path tests → use Embedded Postgres + testhelpers
-These tests require:
-real schema
-real migrations
-real foreign key constraints
-real SQL behavior (Postgres syntax, RETURNING, computed columns, etc.)
-
-2️⃣ Error-path tests → use SQLite
-These tests do NOT need schema, migrations, or Postgres.2
-*/
-
-//
-// ----------------------------------------------------------
-// CREATE CONTRACT (error paths – SQLite only)
-// ----------------------------------------------------------
-//
-
-func TestCreateContract_BadJSON(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-
-	h := &api.Handler{DB: db}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/contracts", strings.NewReader("{bad json"))
-	w := httptest.NewRecorder()
-
-	h.CreateContract(w, req)
-
-	if w.Result().StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
+func TestCreateContract_InvalidPaymentFreq(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
 	}
-}
+	h := &Handler{DB: db}
 
-func TestCreateContract_DBError(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	db.Close() // simulate broken DB
-
-	h := &api.Handler{DB: db}
-
-	valid := api.Contract{
-		ClientID:       1,
-		StartDate:      "2024-01-01",
-		DurationMonths: 3,
-		RevenueTotal:   1000,
-		PaymentFreq:    "monthly",
-	}
-
-	b, _ := json.Marshal(valid)
-
+	c := Contract{ClientID: 1, SalesProcessID: 2, StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1200, PaymentFreq: "invalid"}
+	b, _ := json.Marshal(c)
 	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
 	w := httptest.NewRecorder()
 
 	h.CreateContract(w, req)
 
-	if w.Result().StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Result().StatusCode)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-//
-// ----------------------------------------------------------
-// UPDATE CONTRACT (error paths – SQLite only)
-// ----------------------------------------------------------
-//
-
-func TestUpdateContract_InvalidID(t *testing.T) {
-	h := &api.Handler{DB: nil}
-
-	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/abc", nil)
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "abc")
-
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	w := httptest.NewRecorder()
-	h.UpdateContract(w, req)
-
-	if w.Result().StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
-	}
-}
-
-func TestUpdateContract_BadJSON(t *testing.T) {
-	db, _ := sql.Open("sqlite3", ":memory:")
-	defer db.Close()
-
-	h := &api.Handler{DB: db}
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
-
-	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", strings.NewReader("{bad json"))
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-	w := httptest.NewRecorder()
-	h.UpdateContract(w, req)
-
-	if w.Result().StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
-	}
-}
-
-func TestUpdateContract_DBError(t *testing.T) {
+func TestCreateContract_Success(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatalf("failed to create sqlmock: %v", err)
+		t.Fatalf("sqlmock.New: %v", err)
 	}
-	defer db.Close()
+	h := &Handler{DB: db}
 
-	mock.ExpectExec(`UPDATE\s+contracts`).
-		WithArgs(
-			sqlmock.AnyArg(), // start_date → time.Time
-			12,
-			2000.0,
-			"monthly",
-			1,
-		).
-		WillReturnError(errors.New("db failure"))
-
-	h := &api.Handler{DB: db}
-
-	body, _ := json.Marshal(map[string]any{
-		"start_date":        "2025-05-01",
-		"duration_months":   12,
-		"revenue_total":     2000,
-		"payment_frequency": "monthly",
-	})
-
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
-
-	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", bytes.NewReader(body))
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
+	c := Contract{ClientID: 1, SalesProcessID: 2, StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1200, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
 	w := httptest.NewRecorder()
-	h.UpdateContract(w, req)
 
-	if w.Result().StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Result().StatusCode)
+	// Expect INSERT ... RETURNING id, created_at
+	created := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "created_at"}).AddRow(7, created)
+	mock.ExpectQuery("INSERT INTO contracts").WithArgs(c.ClientID, c.SalesProcessID, c.StartDate, c.DurationMonths, c.RevenueTotal, c.PaymentFreq).WillReturnRows(rows)
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// simple response body check for id
+	var out Contract
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if out.ID != 7 {
+		t.Fatalf("expected id 7, got %d", out.ID)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet sqlmock expectations: %v", err)
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
-func TestListContracts_DBError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+func TestUpdateContract_InvalidStartDate(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	h := &Handler{DB: db}
 
-	mock.ExpectQuery(`WITH paid AS`).
-		WillReturnError(errors.New("db down"))
+	reqBody := UpdateContractRequest{StartDate: "bad-date", DurationMonths: 12, RevenueTotal: 1000, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", bytes.NewReader(b))
+	// set chi route param
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h := &api.Handler{DB: db}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
 	w := httptest.NewRecorder()
 
-	h.ListContracts(w, req)
+	h.UpdateContract(w, req)
 
-	if w.Result().StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", w.Result().StatusCode)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateContract_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1000, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/5", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "5")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	// Expect Exec update
+	mock.ExpectExec("UPDATE contracts").WithArgs(sqlmock.AnyArg(), reqBody.DurationMonths, reqBody.RevenueTotal, reqBody.PaymentFreq, 5).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

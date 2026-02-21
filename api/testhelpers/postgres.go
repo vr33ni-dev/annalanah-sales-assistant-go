@@ -86,10 +86,21 @@ func SetupPostgres(t testing.TB) (*TestDB, error) {
 	if strings.HasPrefix(dockerHost, "unix://") {
 		sock := strings.TrimPrefix(dockerHost, "unix://")
 		if _, err := os.Stat(sock); err != nil {
+			// If default socket missing, try Colima's default socket path as a common fallback on macOS.
 			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("docker socket %s not found: %w", sock, err)
+				if homedir, herr := os.UserHomeDir(); herr == nil {
+					colimaSock := filepath.Join(homedir, ".colima", "default", "docker.sock")
+					if _, cerr := os.Stat(colimaSock); cerr == nil {
+						sock = colimaSock
+					} else {
+						return nil, fmt.Errorf("docker socket %s not found: %w", sock, err)
+					}
+				} else {
+					return nil, fmt.Errorf("docker socket %s not found: %w", sock, err)
+				}
+			} else {
+				return nil, fmt.Errorf("cannot stat docker socket %s: %w", sock, err)
 			}
-			return nil, fmt.Errorf("cannot stat docker socket %s: %w", sock, err)
 		}
 
 		// try connecting to the socket to ensure Docker daemon is listening
@@ -123,8 +134,8 @@ func SetupPostgres(t testing.TB) (*TestDB, error) {
 		return nil, err
 	}
 
-	// Wait until Postgres is ready
-	deadline := time.Now().Add(10 * time.Second)
+	// Wait until Postgres is ready (allow longer to avoid flaky CI/macOS container starts)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if err := db.Ping(); err == nil {
 			break

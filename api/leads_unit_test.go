@@ -337,3 +337,60 @@ func TestConvertLead_NotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", w.Code)
 	}
 }
+
+func TestConvertLead_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	// Begin transaction and select lead
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name, email, phone, source`).
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "email", "phone", "source", "source_stage_id"}).
+			AddRow("LeadName", sql.NullString{String: "lead@test.com", Valid: true}, sql.NullString{String: "555", Valid: true}, "organic", nil))
+
+	// createClientAndSalesProcessTx: clients lookup -> not found
+	mock.ExpectQuery(`SELECT id FROM clients WHERE LOWER\(email\) = LOWER\(\$1\)`).
+		WithArgs("lead@test.com").
+		WillReturnError(sql.ErrNoRows)
+
+	// insert client
+	mock.ExpectQuery(`INSERT INTO clients`).
+		WithArgs("LeadName", sqlmock.AnyArg(), sqlmock.AnyArg(), "organic", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(11))
+
+	// insert sales_process
+	mock.ExpectQuery(`INSERT INTO sales_process`).
+		WithArgs(11, sqlmock.AnyArg(), sqlmock.AnyArg(), "follow_up", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(21))
+
+	// update lead converted
+	mock.ExpectExec(`UPDATE leads`).
+		WithArgs(11, 1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/1/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
+	}
+
+	var out map[string]int
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	if out["client_id"] != 11 || out["sales_process_id"] != 21 {
+		t.Fatalf("unexpected response %+v", out)
+	}
+}

@@ -6,8 +6,10 @@ TMP=$(mktemp /tmp/pkgs.XXXX)
 cleanup() { rm -f "$TMP"; }
 trap cleanup EXIT
 
-# packages to exclude from unit tests
-EXCLUDE_RE='(/tools|/pkg/importer|/testhelpers|/api/integration)'
+# determine module path and packages to exclude from unit tests
+MODULE=$(go list -m)
+# exclude the module root, tools, importer, testhelpers, integration and pkg/version
+EXCLUDE_RE="(^${MODULE}$|/tools|/pkg/importer|/testhelpers|/api/integration|/pkg/version)"
 
 # build package list (one per line)
 go list ./... | grep -vE "$EXCLUDE_RE" > "$TMP"

@@ -1,4 +1,4 @@
-package integration
+package integration_test
 
 import (
 	"bytes"
@@ -17,8 +17,7 @@ import (
 )
 
 func TestCreateLead_Integration_Success(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}
@@ -43,8 +42,7 @@ func TestCreateLead_Integration_Success(t *testing.T) {
 }
 
 func TestCreateLead_Integration_DuplicateEmail(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}
@@ -73,8 +71,7 @@ func TestCreateLead_Integration_DuplicateEmail(t *testing.T) {
 }
 
 func TestUpdateLead_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}
@@ -110,8 +107,7 @@ func TestUpdateLead_Integration(t *testing.T) {
 }
 
 func TestDeleteLead_Integration(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}
@@ -136,8 +132,7 @@ func TestDeleteLead_Integration(t *testing.T) {
 
 // successful conversion (new client + sales process)
 func TestConvertLead_Success(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}
@@ -187,8 +182,7 @@ func TestConvertLead_Success(t *testing.T) {
 
 // idempotent conversion (already converted)
 func TestConvertLead_Idempotent(t *testing.T) {
-	suite := factory.NewSuite(t)
-	defer suite.Cleanup()
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 
 	testhelpers.TruncateAll(t, suite.DB)
 	handler := &api.Handler{DB: suite.DB.DB}

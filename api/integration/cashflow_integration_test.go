@@ -13,7 +13,7 @@ import (
 )
 
 func TestCashflowForecast_Success_Postgres(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)

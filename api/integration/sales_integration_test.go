@@ -18,7 +18,7 @@ func strPtr(s string) *string { return &s }
 // New client → allowed
 // ----------------------------------------------------
 func TestStartSalesProcess_NewClient(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)
@@ -47,7 +47,7 @@ func TestStartSalesProcess_NewClient(t *testing.T) {
 // Existing client + ACTIVE contract → BLOCKED
 // ----------------------------------------------------
 func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)
@@ -103,7 +103,7 @@ func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
 // Overwrite → updates BOTH client + lead
 // ----------------------------------------------------
 func TestStartSalesProcess_OverwriteAlsoUpdatesLead(t *testing.T) {
-	suite := factory.NewSuite(t)
+	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
 
 	testhelpers.TruncateAll(t, suite.DB)
