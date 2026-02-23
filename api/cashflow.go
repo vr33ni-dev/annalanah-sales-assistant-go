@@ -18,7 +18,14 @@ type CashflowRow struct {
 func (h *Handler) CashflowForecast(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end := start.AddDate(0, 6, 0) // exclusive
+	// forecast window: default 6 months, but frontend may pass ?months=N to change
+	displayMonths := 6
+	if ms := r.URL.Query().Get("months"); ms != "" {
+		if m, err := strconv.Atoi(ms); err == nil && m > 0 {
+			displayMonths = m
+		}
+	}
+	end := start.AddDate(0, displayMonths, 0) // exclusive
 
 	// optionaler ?contract_id= Parameter
 	var contractID *int
@@ -29,7 +36,9 @@ func (h *Handler) CashflowForecast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tunables aus app_settings (Standardwerte falls nicht vorhanden)
-	potentialMonths := h.getNumericSetting("potential_months", 6)
+	// NOTE: `potential_months` is intentionally NOT used to divide revenue anymore;
+	// it only controls which months are returned (via ?months=). Here we only
+	// read the flat fallback amount.
 	potentialFlatEUR := h.getNumericSetting("potential_flat_eur", 900)
 
 	// 💡 Wichtig: NICHT "sql :=" als Variablenname benutzen → sonst Shadowing!
@@ -47,7 +56,7 @@ entries AS (
     AND cf.due_date >= $1::date
     AND cf.due_date <  $2::date
     -- optionaler Filter
-    AND ($5::int IS NULL OR cf.contract_id = $5)
+    AND ($4::int IS NULL OR cf.contract_id = $4)
 ),
 schedule AS (
   SELECT c.id AS contract_id, gs::date AS due_date,
@@ -74,7 +83,7 @@ schedule AS (
            ELSE interval '1 month'
          END
        ) gs ON TRUE
-  WHERE ($5::int IS NULL OR c.id = $5)
+  WHERE ($4::int IS NULL OR c.id = $4)
 ),
 schedule_no_entry AS (
   SELECT s.contract_id, s.due_date, s.amount
@@ -110,8 +119,8 @@ potential AS (
              WHEN c.id IS NOT NULL AND c.duration_months > 0
                THEN (c.revenue_total / c.duration_months)::numeric
              WHEN sp.revenue IS NOT NULL AND sp.revenue > 0
-               THEN (sp.revenue / $3)::numeric
-             ELSE $4::numeric
+               THEN sp.revenue::numeric
+             ELSE $3::numeric
            END
          ) AS amt
   FROM sales_process sp
@@ -123,7 +132,7 @@ potential AS (
     AND sp.follow_up_date >= $1::date
     AND sp.follow_up_date <  $2::date
     -- Potenzialfilter nur, wenn kein contract_id explizit angegeben ist
-    AND ($5::int IS NULL)
+    AND ($4::int IS NULL)
   GROUP BY 1
 ),
 confirmed_collapsed AS (
@@ -148,11 +157,11 @@ ORDER BY month;
 	var rows *sql.Rows
 	var err error
 
-	// Wenn contractID vorhanden → fünfter Parameter wird gesetzt
+	// Wenn contractID vorhanden → vierter Parameter wird gesetzt (see SQL param ordering)
 	if contractID != nil {
-		rows, err = h.DB.Query(query, start, end, potentialMonths, potentialFlatEUR, *contractID)
+		rows, err = h.DB.Query(query, start, end, potentialFlatEUR, *contractID)
 	} else {
-		rows, err = h.DB.Query(query, start, end, potentialMonths, potentialFlatEUR, nil)
+		rows, err = h.DB.Query(query, start, end, potentialFlatEUR, nil)
 	}
 
 	if err != nil {

@@ -232,9 +232,15 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	}
 	c.PaymentFreq = pf
 
-	/* Insert contract - requires RETURNING id to tell PostgreSQL to output the newly inserted row’s primary key (without it, the result set is missing and Scan(&c.ID) fails because there is nothing to scan => 500 error. */
+	// create contract and its cashflow entries atomically
+	tx, err := h.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	var createdAt sql.NullTime
-	err := h.DB.QueryRow(`
+	err = tx.QueryRowContext(r.Context(), `
 	INSERT INTO contracts
 		(client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
 	VALUES ($1, $2, $3::date, $4, $5, $6)
@@ -248,21 +254,35 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		c.PaymentFreq,
 	).Scan(&c.ID, &createdAt)
 
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	if createdAt.Valid {
 		s := createdAt.Time.Format(time.RFC3339)
 		c.CreatedAt = &s
 	}
 
-	if err != nil {
+	// parse start date and insert scheduled cashflow entries
+	sd, err := time.Parse("2006-01-02", c.StartDate)
+	if err == nil && c.DurationMonths > 0 {
+		if err := insertCashflowEntriesTx(tx, c.ID, sd, c.DurationMonths, c.RevenueTotal, c.PaymentFreq); err != nil {
+			tx.Rollback()
+			http.Error(w, "failed to insert cashflow entries: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// optionally insert comments submitted with the create request
+	// optionally insert comments submitted with the create request (non-fatal)
 	if len(c.Comments) > 0 {
-		if err := h.insertCommentsForEntity("contract", c.ID, c.Comments); err != nil {
-			// log but do not fail
-		}
+		_ = h.insertCommentsForEntity("contract", c.ID, c.Comments)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

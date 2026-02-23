@@ -116,6 +116,18 @@ contract_max AS (
   FROM sp_max sm
   RETURNING id
 ),
+contract_moritz AS (
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+  SELECT sm.client_id, sm.id, (CURRENT_DATE - INTERVAL '11 months')::date, 12, 12000, 'bi-yearly'
+  FROM sp_moritz sm
+  RETURNING id
+),
+contract_moritz_ext AS (
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
+  SELECT sm.client_id, sm.id, (CURRENT_DATE + INTERVAL '1 month')::date, 12, 12000, 'bi-yearly'
+  FROM sp_moritz sm
+  RETURNING id
+),
 
 -- 5) Cashflow entries (pending payments)
 cf_ins AS (
@@ -126,6 +138,8 @@ cf_ins AS (
     UNION ALL SELECT (SELECT id FROM contract_anna), (CURRENT_DATE + INTERVAL '37 days')::date, 800, 'pending'
     UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '7 days')::date, 2000, 'pending'
     UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '75 days')::date, 2000, 'pending'
+    UNION ALL SELECT (SELECT id FROM contract_moritz), (CURRENT_DATE + INTERVAL '14 days')::date, 6000, 'pending'
+    UNION ALL SELECT (SELECT id FROM contract_moritz), (CURRENT_DATE + INTERVAL '194 days')::date, 6000, 'pending'
   ) d
   JOIN contracts c ON c.id = d.contract_id
   RETURNING 1
@@ -204,3 +218,48 @@ part_max AS (
 
 -- Final confirmation
 SELECT 'ok';
+
+-- Ensure unique constraint so seed can be re-run idempotently
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cashflow_contract_due ON cashflow_entries (contract_id, due_date);
+
+-- Generate full cashflow schedules for dev contracts (idempotent)
+-- For the dev clients (Anna, Max, Moritz) derive payment dates from contract.start_date,
+-- contract.duration_months and contract.payment_frequency and insert entries.
+INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
+SELECT c.id,
+       (c.start_date + (gs.n * (c.step || ' months')::interval))::date AS due_date,
+       CASE WHEN c.payment_frequency = 'one-time' THEN c.revenue_total
+            ELSE ROUND((c.revenue_total::numeric / NULLIF(c.duration_months,0)) * c.step, 2)
+       END AS amount,
+       'pending'
+FROM (
+  SELECT id, start_date, duration_months, revenue_total, payment_frequency,
+         CASE payment_frequency
+           WHEN 'monthly' THEN 1
+           WHEN 'bi-monthly' THEN 2
+           WHEN 'quarterly' THEN 3
+           WHEN 'bi-yearly' THEN 6
+           WHEN 'one-time' THEN GREATEST(duration_months,1)
+           ELSE 1
+         END AS step
+  FROM contracts
+  WHERE client_id IN (
+    SELECT id FROM clients WHERE email IN ('anna@example.com','max@example.com','mo@example.com')
+  )
+) c
+CROSS JOIN LATERAL generate_series(0, ((c.duration_months - 1) / c.step)) AS gs(n)
+ON CONFLICT (contract_id, due_date) DO NOTHING;
+
+-- Insert a confirmed upsell for Moritz linking previous and new contract (idempotent)
+INSERT INTO contract_upsells (sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
+SELECT sp.id, sp.client_id, (CURRENT_DATE - INTERVAL '5 days')::date, 'verlaengerung', nc.revenue_total, pc.id, nc.id
+FROM sales_process sp
+JOIN clients cl ON cl.id = sp.client_id
+JOIN contracts pc ON pc.client_id = cl.id AND pc.start_date <= CURRENT_DATE
+JOIN contracts nc ON nc.client_id = cl.id AND nc.start_date > CURRENT_DATE
+WHERE cl.email = 'mo@example.com'
+  AND sp.stage = 'follow_up'
+  AND NOT EXISTS (
+    SELECT 1 FROM contract_upsells cu WHERE cu.sales_process_id = sp.id AND cu.new_contract_id = nc.id
+  );
+

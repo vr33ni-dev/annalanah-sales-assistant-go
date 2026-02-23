@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -118,6 +119,23 @@ func (h *Handler) UpsertSetting(w http.ResponseWriter, r *http.Request) {
 	if in.ValueNumeric == nil && in.ValueText == nil {
 		http.Error(w, "provide value_numeric or value_text", http.StatusBadRequest)
 		return
+	}
+
+	// Strict validation for potential_months: must be a positive integer
+	if key == "potential_months" {
+		if in.ValueNumeric == nil {
+			http.Error(w, "potential_months requires value_numeric", http.StatusBadRequest)
+			return
+		}
+		v := *in.ValueNumeric
+		if v <= 0 {
+			http.Error(w, "potential_months must be > 0", http.StatusBadRequest)
+			return
+		}
+		if v != math.Trunc(v) {
+			http.Error(w, "potential_months must be an integer", http.StatusBadRequest)
+			return
+		}
 	}
 
 	_, err := h.DB.Exec(`
