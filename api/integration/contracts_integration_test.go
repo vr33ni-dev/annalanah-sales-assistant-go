@@ -60,13 +60,6 @@ func TestListContracts_Integration(t *testing.T) {
 		t.Fatalf("expected contract ID %d, got %d", contract.ID, got.ID)
 	}
 
-	if got.PaidAmountTotal != 500 {
-		t.Fatalf("expected paid_amount_total=500, got %v", got.PaidAmountTotal)
-	}
-
-	if got.PaidMonths != 1 {
-		t.Fatalf("expected paid_months=1, got %d", got.PaidMonths)
-	}
 }
 
 func TestCreateContract_Integration(t *testing.T) {

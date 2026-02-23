@@ -124,6 +124,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/contracts", h.ListContracts)
 		pr.Post("/contracts", h.CreateContract)
 		pr.Patch("/contracts/{id}", h.UpdateContract)
+		pr.Get("/contracts/{id}/cashflow", h.ListContractCashflowEntries)
 
 		// Stages
 		pr.Get("/stages", h.ListStages)
@@ -142,6 +143,8 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 
 		// Cashflow
 		pr.Get("/cashflow/forecast", h.CashflowForecast)
+		pr.Get("/cashflow/metrics", h.CashflowMetrics)
+		pr.Get("/cashflow/entries", h.ListCashflowEntries)
 
 		// Settings
 		pr.Get("/settings", h.ListSettings)

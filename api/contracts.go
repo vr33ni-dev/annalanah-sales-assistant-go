@@ -33,22 +33,20 @@ type UpdateContractRequest struct {
 }
 
 type ContractResponse struct {
-	ID              int               `json:"id"`
-	ClientID        int               `json:"client_id"`
-	ClientName      string            `json:"client_name"`
-	SalesProcessID  int               `json:"sales_process_id"`
-	CreatedAt       *string           `json:"created_at,omitempty"`
-	UpdatedAt       *string           `json:"updated_at,omitempty"`
-	StartDate       string            `json:"start_date"`
-	EndDate         *string           `json:"end_date_computed,omitempty"`
-	DurationMonths  int               `json:"duration_months"`
-	RevenueTotal    float64           `json:"revenue_total"`
-	PaymentFreq     string            `json:"payment_frequency"`
-	MonthlyAmount   float64           `json:"monthly_amount"`
-	PaidMonths      int               `json:"paid_months"`
-	PaidAmountTotal float64           `json:"paid_amount_total"`
-	NextDueDate     *string           `json:"next_due_date,omitempty"`
-	Comments        []CommentResponse `json:"comments,omitempty"`
+	ID                int               `json:"id"`
+	ClientID          int               `json:"client_id"`
+	ClientName        string            `json:"client_name"`
+	SalesProcessID    int               `json:"sales_process_id"`
+	CreatedAt         *string           `json:"created_at,omitempty"`
+	UpdatedAt         *string           `json:"updated_at,omitempty"`
+	StartDate         string            `json:"start_date"`
+	EndDate           *string           `json:"end_date_computed,omitempty"`
+	DurationMonths    int               `json:"duration_months"`
+	RevenueTotal      float64           `json:"revenue_total"`
+	PaymentFreq       string            `json:"payment_frequency"`
+	BaseMonthlyAmount float64           `json:"base_monthly_amount"`
+	NextDueDate       *string           `json:"next_due_date,omitempty"`
+	Comments          []CommentResponse `json:"comments,omitempty"`
 }
 
 // GET /api/contracts
@@ -83,26 +81,11 @@ SELECT
   c.revenue_total,
   c.payment_frequency,
 
-  -- monthly_amount
+  -- base_monthly_amount (convenience value)
   CASE WHEN c.duration_months > 0
-       THEN (c.revenue_total / c.duration_months)
-       ELSE 0
-  END AS monthly_amount,
-
-  -- paid_months = periods_paid * period length (1/2/3 months)
-  (
-    COALESCE(p.periods_paid, 0) *
-    CASE c.payment_frequency
-			WHEN 'monthly'    THEN 1
-			WHEN 'bi-monthly' THEN 2
-			WHEN 'quarterly'  THEN 3
-			WHEN 'bi-yearly'  THEN 6
-			WHEN 'one-time'   THEN c.duration_months
-			ELSE 1
-		END
-  ) AS paid_months,
-
-  COALESCE(p.paid_amount_total, 0)::numeric AS paid_amount_total,
+	  THEN (c.revenue_total / c.duration_months)
+	  ELSE 0
+  END AS base_monthly_amount,
 
   -- next_due_date: prefer pending/overdue; else derive the next slot if inside duration
   COALESCE(
@@ -157,7 +140,7 @@ ORDER BY c.id;
 		if err := rows.Scan(
 			&x.ID, &x.ClientID, &x.ClientName, &x.SalesProcessID,
 			&x.StartDate, &x.EndDate, &x.CreatedAt, &x.DurationMonths, &x.RevenueTotal, &x.PaymentFreq,
-			&x.MonthlyAmount, &x.PaidMonths, &x.PaidAmountTotal, &x.NextDueDate,
+			&x.BaseMonthlyAmount, &x.NextDueDate,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -206,6 +189,66 @@ ORDER BY c.id;
 
 	if out == nil {
 		out = []ContractResponse{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// GET /api/contracts/{id}/cashflow
+func (h *Handler) ListContractCashflowEntries(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid contract id", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := h.DB.Query(`
+		SELECT id, contract_id, due_date, amount, status, updated_at
+		FROM cashflow_entries
+		WHERE contract_id = $1
+		ORDER BY due_date
+	`, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type Entry struct {
+		ID         int     `json:"id"`
+		ContractID int     `json:"contract_id"`
+		DueDate    *string `json:"due_date"`
+		Amount     float64 `json:"amount"`
+		Status     string  `json:"status"`
+		UpdatedAt  *string `json:"updated_at,omitempty"`
+	}
+
+	var out []Entry
+	for rows.Next() {
+		var e Entry
+		var due sql.NullTime
+		var updated sql.NullTime
+		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if due.Valid {
+			s := due.Time.Format(time.RFC3339)
+			e.DueDate = &s
+		} else {
+			e.DueDate = nil
+		}
+		if updated.Valid {
+			tu := updated.Time.Format(time.RFC3339)
+			e.UpdatedAt = &tu
+		}
+		out = append(out, e)
+	}
+
+	if out == nil {
+		out = []Entry{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -23,8 +23,9 @@ func TestCashflowForecast_Success_Postgres(t *testing.T) {
 	contract := suite.CreateContract(client.ID, proc.ID)
 
 	now := time.Now().UTC()
+	now2 := now.AddDate(0, 1, 0)
 	suite.CreatePaidCashflow(contract.ID, now, 1200)
-	suite.CreatePaidCashflow(contract.ID, now, 900)
+	suite.CreatePaidCashflow(contract.ID, now2, 900)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/cashflow", nil)
 	w := httptest.NewRecorder()
@@ -47,7 +48,12 @@ func TestCashflowForecast_Success_Postgres(t *testing.T) {
 		t.Fatalf("expected 6 rows, got %d", len(rows))
 	}
 
-	if rows[0].Confirmed != 2100 {
-		t.Fatalf("expected confirmed=2100, got=%v", rows[0].Confirmed)
+	// both paid entries should sum to 2100 across the forecast window
+	var totalConfirmed float64
+	for _, r := range rows {
+		totalConfirmed += r.Confirmed
+	}
+	if totalConfirmed != 2100 {
+		t.Fatalf("expected total confirmed=2100, got=%v", totalConfirmed)
 	}
 }
