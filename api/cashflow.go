@@ -338,7 +338,9 @@ func (h *Handler) CashflowMetrics(w http.ResponseWriter, r *http.Request) {
 	ytdEnd := now
 
 	var ytdPaid float64
-	if err := h.DB.QueryRow(`SELECT COALESCE(SUM(amount) FILTER (WHERE status='paid' AND due_date::date >= $1 AND due_date::date <= $2), 0) FROM cashflow_entries`, ytdStart, ytdEnd).Scan(&ytdPaid); err != nil {
+	// Count all cashflow_entries in the YTD window except those explicitly marked 'not paid'.
+	// This treats statuses like 'paid', 'pending', or NULL as contributing to YTD sums.
+	if err := h.DB.QueryRow(`SELECT COALESCE(SUM(amount) FILTER (WHERE COALESCE(status,'') <> 'not paid' AND due_date::date >= $1 AND due_date::date <= $2), 0) FROM cashflow_entries`, ytdStart, ytdEnd).Scan(&ytdPaid); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

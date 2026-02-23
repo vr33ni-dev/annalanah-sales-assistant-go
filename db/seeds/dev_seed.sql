@@ -106,13 +106,13 @@ sp_maria AS (
 -- ⚠️ end_date_computed is GENERATED ALWAYS, so we do NOT insert into it.
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sa.client_id, sa.id, (CURRENT_DATE + INTERVAL '15 days')::date, 6, 4800, 'monthly'
+  SELECT sa.client_id, sa.id, '2025-10-01'::date, 6, 4800, 'monthly'
   FROM sp_anna sa
   RETURNING id
 ),
 contract_max AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, (CURRENT_DATE + INTERVAL '30 days')::date, 6, 6000, 'bi-monthly'
+  SELECT sm.client_id, sm.id, '2025-09-23'::date, 6, 6000, 'bi-monthly'
   FROM sp_max sm
   RETURNING id
 ),
@@ -262,4 +262,3 @@ WHERE cl.email = 'mo@example.com'
   AND NOT EXISTS (
     SELECT 1 FROM contract_upsells cu WHERE cu.sales_process_id = sp.id AND cu.new_contract_id = nc.id
   );
-
