@@ -39,15 +39,17 @@ func TestCreateContract_Success(t *testing.T) {
 	}
 	h := &Handler{DB: db}
 
-	c := Contract{ClientID: 1, SalesProcessID: 2, StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1200, PaymentFreq: "monthly"}
+	c := Contract{ClientID: 1, SalesProcessID: 2, StartDate: "2025-01-01", DurationMonths: 0, RevenueTotal: 1200, PaymentFreq: "monthly"}
 	b, _ := json.Marshal(c)
 	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
 	w := httptest.NewRecorder()
 
-	// Expect INSERT ... RETURNING id, created_at
+	// Expect transaction begin, INSERT ... RETURNING id, created_at, and commit
+	mock.ExpectBegin()
 	created := time.Now()
 	rows := sqlmock.NewRows([]string{"id", "created_at"}).AddRow(7, created)
 	mock.ExpectQuery("INSERT INTO contracts").WithArgs(c.ClientID, c.SalesProcessID, c.StartDate, c.DurationMonths, c.RevenueTotal, c.PaymentFreq).WillReturnRows(rows)
+	mock.ExpectCommit()
 
 	h.CreateContract(w, req)
 

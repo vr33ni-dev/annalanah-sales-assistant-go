@@ -2,10 +2,12 @@ package api_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
@@ -48,6 +50,56 @@ func TestCashflowForecast_ScanError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
+	}
+
+}
+
+func TestCashflowMetrics_Handler(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	// Expect YTD paid sum query
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(amount\\) FILTER").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"coalesce"}).AddRow(1200.0))
+
+	// Expect next-3-months confirmed query and return 3 months
+	mock.ExpectQuery("SELECT ym AS month, SUM\\(amt\\)::numeric AS confirmed").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"month", "confirmed"}).
+			AddRow("2026-02", 400.0).
+			AddRow("2026-03", 300.0).
+			AddRow("2026-04", 200.0))
+
+	req := httptest.NewRequest("GET", "/api/cashflow/dashboard", nil)
+	w := httptest.NewRecorder()
+
+	h.CashflowMetrics(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode resp: %v", err)
+	}
+
+	// Basic assertions
+	if _, ok := resp["avg_monthly_ytd"]; !ok {
+		t.Fatalf("missing avg_monthly_ytd")
+	}
+	if _, ok := resp["confirmed_next3"]; !ok {
+		t.Fatalf("missing confirmed_next3")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 

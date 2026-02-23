@@ -1,10 +1,16 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
 )
 
@@ -76,5 +82,79 @@ func TestIsUniqueViolation(t *testing.T) {
 	// non-pq error
 	if isUniqueViolation(errors.New("boom"), "unique_client_email") {
 		t.Fatalf("expected false for non-pq error")
+	}
+}
+
+func TestUpsertSetting_ValidPotentialMonths(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	// Expect Exec for upsert
+	mock.ExpectExec(`INSERT INTO app_settings \(key, value_numeric, value_text, updated_at\)`).
+		WithArgs("potential_months", sqlmock.AnyArg(), nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Expect SELECT in GetSetting to return the stored value
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+		WithArgs("potential_months").
+		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "to_char"}).AddRow(12.0, nil, nil))
+
+	body := map[string]float64{"value_numeric": 12}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/potential_months", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "potential_months")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// simple check that response contains the key and numeric value
+	var resp AppSetting
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Key != "potential_months" {
+		t.Fatalf("expected key potential_months, got %s", resp.Key)
+	}
+	if resp.ValueNumeric == nil || *resp.ValueNumeric != 12 {
+		t.Fatalf("expected numeric 12, got %v", resp.ValueNumeric)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestUpsertSetting_InvalidPotentialMonths(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	cases := []map[string]float64{{"value_numeric": 0}, {"value_numeric": -1}, {"value_numeric": 2.5}}
+	for _, c := range cases {
+		b, _ := json.Marshal(c)
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/potential_months", bytes.NewReader(b))
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("key", "potential_months")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		w := httptest.NewRecorder()
+		h.UpsertSetting(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for input %v, got %d", c, w.Code)
+		}
 	}
 }
