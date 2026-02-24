@@ -8,15 +8,9 @@ settings_months AS (
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
-settings_flat AS (
-  INSERT INTO app_settings (key, value_numeric)
-  VALUES ('potential_flat_eur', 600)
-  ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
-  RETURNING 1
-),
 settings_avg_rev AS (
   INSERT INTO app_settings (key, value_numeric)
-  VALUES ('avg_revenue_per_participant', 250)
+  VALUES ('avg_revenue_per_contract', 600)
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
