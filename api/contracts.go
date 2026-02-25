@@ -3,10 +3,14 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/mailer"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -330,6 +334,18 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(c)
+
+	// Send notification email if configured (non-blocking)
+	notifyTo := os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
+	if notifyTo != "" {
+		// run in background; failures are logged inside mailer.SendMail (if any)
+		go func() {
+			if err := mailer.SendNewContractNotification(notifyTo, c.ID, c.ClientID, c.RevenueTotal, c.StartDate); err != nil {
+				// best-effort logging to stdout
+				fmt.Printf("failed to send new contract notification: %v\n", err)
+			}
+		}()
+	}
 }
 
 // PATCH /api/contracts/{id}

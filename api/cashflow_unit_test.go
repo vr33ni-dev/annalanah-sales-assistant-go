@@ -103,6 +103,113 @@ func TestCashflowMetrics_Handler(t *testing.T) {
 	}
 }
 
+func TestCashflowMetrics_ExcludesNotPaid_and_NoNext3(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	// YTD query: return 1000
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(amount\\) FILTER").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"coalesce"}).AddRow(1000.0))
+
+	// Next-3-months confirmed query: return no rows
+	mock.ExpectQuery("SELECT ym AS month, SUM\\(amt\\)::numeric AS confirmed").
+		WillReturnRows(sqlmock.NewRows([]string{"month", "confirmed"}))
+
+	req := httptest.NewRequest("GET", "/api/cashflow/dashboard", nil)
+	w := httptest.NewRecorder()
+
+	h.CashflowMetrics(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode resp: %v", err)
+	}
+
+	// ytd_paid_amount should be 1000
+	if resp["ytd_paid_amount"] == nil {
+		t.Fatalf("missing ytd_paid_amount")
+	}
+	if resp["ytd_paid_amount"].(float64) != 1000.0 {
+		t.Fatalf("expected ytd_paid_amount 1000, got %v", resp["ytd_paid_amount"])
+	}
+
+	// confirmed_next3 may be null or an empty array when there are no months
+	if resp["confirmed_next3"] != nil {
+		if list, ok := resp["confirmed_next3"].([]interface{}); !ok {
+			t.Fatalf("confirmed_next3 present but not an array: %v", resp["confirmed_next3"])
+		} else if len(list) != 0 {
+			t.Fatalf("expected 0 items in confirmed_next3, got %d", len(list))
+		}
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCashflowMetrics_AvgMonthlyYTD_Calculation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	// YTD query: return 1200
+	mock.ExpectQuery("SELECT COALESCE\\(SUM\\(amount\\) FILTER").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"coalesce"}).AddRow(1200.0))
+
+	// Next-3-months confirmed query: return 2 months of amounts
+	mock.ExpectQuery("SELECT ym AS month, SUM\\(amt\\)::numeric AS confirmed").
+		WillReturnRows(sqlmock.NewRows([]string{"month", "confirmed"}).
+			AddRow("2026-02", 400.0).
+			AddRow("2026-03", 300.0))
+
+	req := httptest.NewRequest("GET", "/api/cashflow/dashboard", nil)
+	w := httptest.NewRecorder()
+
+	h.CashflowMetrics(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode resp: %v", err)
+	}
+
+	// months_elapsed_ytd should be > 0 and avg_monthly_ytd == 1200 / months_elapsed
+	monthsElapsed, ok := resp["months_elapsed_ytd"].(float64)
+	if !ok || monthsElapsed <= 0 {
+		t.Fatalf("invalid months_elapsed_ytd: %v", resp["months_elapsed_ytd"])
+	}
+	avg, ok := resp["avg_monthly_ytd"].(float64)
+	if !ok {
+		t.Fatalf("missing avg_monthly_ytd")
+	}
+	expected := 1200.0 / monthsElapsed
+	if avg != expected {
+		t.Fatalf("expected avg_monthly_ytd %v, got %v", expected, avg)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestGetNumericSetting_DefaultAndValue(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()

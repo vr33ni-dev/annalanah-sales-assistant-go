@@ -61,3 +61,6 @@ tools/importsales/*
 
 # local make overrides (ignored)
 Makefile
+
+# logs
+*.log
