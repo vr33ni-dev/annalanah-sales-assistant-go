@@ -172,9 +172,9 @@ func (h *Handler) CashflowForecast(w http.ResponseWriter, r *http.Request) {
 
 	// Tunables aus app_settings (Standardwerte falls nicht vorhanden)
 	// NOTE: `potential_months` is intentionally NOT used to divide revenue anymore;
-	// it only controls which months are returned (via ?months=). Here we only
-	// read the flat fallback amount.
-	potentialFlatEUR := h.getNumericSetting("potential_flat_eur", 900)
+	// it only controls which months are returned (via ?months=). Here we read
+	// the average revenue per contract setting used as the potential fallback.
+	avgRevenuePerContract := h.getNumericSetting("avg_revenue_per_contract", 0)
 
 	// 💡 Wichtig: NICHT "sql :=" als Variablenname benutzen → sonst Shadowing!
 	query := `
@@ -294,9 +294,9 @@ ORDER BY month;
 
 	// Wenn contractID vorhanden → vierter Parameter wird gesetzt (see SQL param ordering)
 	if contractID != nil {
-		rows, err = h.DB.Query(query, start, end, potentialFlatEUR, *contractID)
+		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, *contractID)
 	} else {
-		rows, err = h.DB.Query(query, start, end, potentialFlatEUR, nil)
+		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, nil)
 	}
 
 	if err != nil {

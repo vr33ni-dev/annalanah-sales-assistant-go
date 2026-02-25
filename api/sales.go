@@ -281,6 +281,26 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// If Closed is explicitly true, update clients.completed_at (set to provided date)
+		// If closed is explicitly false, clear the client's completed_at.
+		if sp.Closed != nil && *sp.Closed && sp.CompletedAt != nil {
+			_, err := h.DB.Exec(`
+		UPDATE clients
+		SET completed_at = $1::date
+		WHERE id = $2
+		`, *sp.CompletedAt, clientID)
+			if err != nil {
+				http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if sp.Closed != nil && !*sp.Closed {
+			_, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID)
+			if err != nil {
+				http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
 		tx2, err := h.DB.BeginTx(r.Context(), nil)
 		if err != nil {
 			http.Error(w, "failed to begin tx: "+err.Error(), http.StatusInternalServerError)
@@ -320,19 +340,6 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		if err := insertCashflowEntriesTx(tx2, newContractID, sd, *sp.ContractDurationMonths, *sp.Revenue, *sp.ContractFrequency); err != nil {
 			http.Error(w, "failed to create cashflow entries: "+err.Error(), http.StatusInternalServerError)
 			return
-		}
-
-		// set completed_at on sales_process (provided date or now)
-		if sp.CompletedAt != nil && strings.TrimSpace(*sp.CompletedAt) != "" {
-			if _, err = tx2.ExecContext(r.Context(), `UPDATE sales_process SET completed_at = $1 WHERE id = $2`, *sp.CompletedAt, id); err != nil {
-				http.Error(w, "failed to set completed_at: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			if _, err = tx2.ExecContext(r.Context(), `UPDATE sales_process SET completed_at = now() WHERE id = $1`, id); err != nil {
-				http.Error(w, "failed to set completed_at: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
 		}
 
 		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
