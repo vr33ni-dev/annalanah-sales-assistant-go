@@ -22,7 +22,12 @@ s AS (
   RETURNING id
 ),
 
--- 2) Clients
+-- 2c) Client for explicit end_date test
+explicit_enddate_client AS (
+  INSERT INTO clients (name, email, phone, source, status)
+  VALUES ('Explicit Enddate Client', 'explicit@enddate.com', '555000111', 'organic', 'active')
+  RETURNING id
+),
 anna AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
   VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', (CURRENT_DATE + INTERVAL '60 days')::date)
@@ -66,7 +71,13 @@ converted_lead AS (
 ),
 
 
--- 3) Sales processes
+-- Sales process for explicit end_date client
+sp_explicit_enddate AS (
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue)
+  SELECT eec.id, 'closed', (CURRENT_DATE + INTERVAL '2 days')::date, TRUE, TRUE, 1234
+  FROM explicit_enddate_client eec
+  RETURNING id, client_id
+),
 -- Anna: closed/won (Abschluss)
 sp_anna AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
@@ -96,8 +107,13 @@ sp_maria AS (
   RETURNING id, client_id
 ),
 
--- 4) Contracts for both active clients (Anna + Max)
--- ⚠️ end_date_computed is GENERATED ALWAYS, so we do NOT insert into it.
+-- Contract with explicit end_date (not matching start + duration)
+contract_explicit_enddate AS (
+  INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
+  SELECT se.client_id, se.id, '2026-01-15'::date, '2026-04-30'::date, 2, 1234, 'monthly'
+  FROM sp_explicit_enddate se
+  RETURNING id
+),
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
   SELECT sa.client_id, sa.id, '2025-10-01'::date, 6, 4800, 'monthly'

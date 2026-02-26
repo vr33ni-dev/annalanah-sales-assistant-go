@@ -1,0 +1,262 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sort"
+	"time"
+)
+
+type ContractImport struct {
+	Name          string                 `json:"name"`
+	ContractStart string                 `json:"contract_start"`
+	ContractEnd   string                 `json:"contract_end"`
+	Cashflows     map[string]interface{} `json:"cashflows"`
+	IsFormer      bool                   `json:"is_former"`
+	//CLV           float64                `json:"clv"`
+
+}
+
+func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
+	var payload []ContractImport
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	imported := 0
+	skipped := []string{}
+
+	for _, c := range payload {
+
+		tx, err := h.DB.Begin()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// -------------------------
+		// Parse Dates
+		// -------------------------
+		start, err := parseISO(c.ContractStart)
+		if err != nil {
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (invalid start)", c.Name)
+				tx.Rollback()
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			tx.Rollback()
+			http.Error(w, "invalid contract_start", 400)
+			return
+		}
+
+		end, err := parseISO(c.ContractEnd)
+		if err != nil {
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (invalid end)", c.Name)
+				tx.Rollback()
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			tx.Rollback()
+			http.Error(w, "invalid contract_end", 400)
+			return
+		}
+
+		if end.Before(start) {
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (invalid date range)", c.Name)
+				tx.Rollback()
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			tx.Rollback()
+			http.Error(w, "contract_end before contract_start", 400)
+			return
+		}
+
+		// -------------------------
+		// Insert Client
+		// -------------------------
+		status := "active"
+		if c.IsFormer {
+			status = "inactive"
+		}
+
+		var clientID int
+		err = tx.QueryRow(`
+			INSERT INTO clients (name, status)
+			VALUES ($1, $2)
+			RETURNING id
+		`, c.Name, status).Scan(&clientID)
+
+		if err != nil {
+			tx.Rollback()
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (client insert failed)", c.Name)
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// -------------------------
+		// Derive revenue + due dates
+		// -------------------------
+		var dueDates []time.Time
+		var revenueTotal float64
+
+		for ym, value := range c.Cashflows {
+			date, err := time.Parse("2006-01", ym)
+			if err != nil {
+				continue
+			}
+
+			if v, ok := value.(float64); ok && v > 0 {
+				dueDates = append(dueDates, date)
+				revenueTotal += v
+			}
+		}
+
+		// -------------------------
+		// Compute duration
+		// -------------------------
+		durationMonths := (end.Year()-start.Year())*12 + int(end.Month()-start.Month())
+		if durationMonths <= 0 {
+			durationMonths = 1
+		}
+
+		// -------------------------
+		// Detect payment frequency
+		// -------------------------
+		paymentFreq := "monthly"
+
+		if len(dueDates) == 1 {
+			paymentFreq = "one-time"
+		} else if len(dueDates) >= 2 {
+			sort.Slice(dueDates, func(i, j int) bool {
+				return dueDates[i].Before(dueDates[j])
+			})
+
+			diff := (dueDates[1].Year()-dueDates[0].Year())*12 +
+				int(dueDates[1].Month()-dueDates[0].Month())
+
+			switch {
+			case diff >= 6:
+				paymentFreq = "bi-yearly"
+			case diff >= 3:
+				paymentFreq = "quarterly"
+			case diff >= 2:
+				paymentFreq = "bi-monthly"
+			default:
+				paymentFreq = "monthly"
+			}
+		}
+
+		// -------------------------
+		// Insert Contract
+		// -------------------------
+		var contractID int
+		err = tx.QueryRow(`
+			INSERT INTO contracts 
+				(client_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id
+		`,
+			clientID,
+			start,
+			end,
+			durationMonths,
+			revenueTotal,
+			paymentFreq,
+		).Scan(&contractID)
+
+		if err != nil {
+			tx.Rollback()
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (contract insert failed)", c.Name)
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// -------------------------
+		// Insert Cashflows + Comments
+		// -------------------------
+		for ym, value := range c.Cashflows {
+			date, err := time.Parse("2006-01", ym)
+			if err != nil {
+				continue
+			}
+
+			switch v := value.(type) {
+
+			case float64:
+				if v == 0 {
+					continue
+				}
+				_, err := tx.Exec(`
+					INSERT INTO cashflow_entries 
+						(contract_id, due_date, amount, status)
+					VALUES ($1, $2::date, $3, 'pending')
+				`, contractID, date, v)
+				if err != nil {
+					tx.Rollback()
+					http.Error(w, err.Error(), 500)
+					return
+				}
+
+			case string:
+				if v == "" {
+					continue
+				}
+				_, err := tx.Exec(`
+					INSERT INTO comments (entity_type, entity_id, body)
+					VALUES ('contract', $1, $2)
+				`, contractID, fmt.Sprintf("%s: %s", ym, v))
+				if err != nil {
+					tx.Rollback()
+					http.Error(w, err.Error(), 500)
+					return
+				}
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		imported++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "import completed",
+		"imported": imported,
+		"skipped":  skipped,
+	})
+}
+
+func parseISO(value string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("invalid date: %s", value)
+}

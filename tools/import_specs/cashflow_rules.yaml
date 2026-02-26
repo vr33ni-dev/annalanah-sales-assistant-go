@@ -1,0 +1,51 @@
+# Cashflow Import Rules for Sales Application
+
+input:
+  skip_rows: 1
+  header_row: 1
+  delimiter: ","
+
+# Only map core contract fields directly.
+# Month columns will be handled dynamically after import.
+
+columns:
+  - source: "Name"
+    target: "lastname"
+    transform:
+      - trim
+      - titlecase
+
+  - source: "Vorname"
+    target: "firstname"
+    transform:
+      - trim
+      - titlecase
+
+  - source: "Startzeitpunkt"
+    target: "contract_start"
+    type: "date"
+    format: "%d.%m.%Y"
+
+  - source: "Endzeitpunkt"
+    target: "contract_end"
+    type: "date"
+    formats:
+      - "%d.%m.%Y"
+      - "%d.%m.%y"
+
+  - source: "CLV"
+    target: "clv"
+    transform:
+      - trim
+
+computed_columns:
+  - target: "name"
+    expression: "firstname + ' ' + lastname"
+    drop_sources: true
+
+dynamic_columns:
+  - pattern: "[A-Za-zäöüÄÖÜ]+ '\\d{2}"
+    target: "cashflows"
+    mode: "year_month_map"
+    numeric_clean: true
+
