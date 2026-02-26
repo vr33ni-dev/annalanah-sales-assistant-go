@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 )
@@ -24,6 +25,35 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// -------------------------------------------------
+	// 🚨 MIGRATION MODE: CLEAR DATABASE FIRST
+	// -------------------------------------------------
+
+	// Optional: Block in production
+	if os.Getenv("APP_ENV") == "production" {
+		http.Error(w, "migration import not allowed in production", http.StatusForbidden)
+		return
+	}
+
+	// Require special header to prevent accidents
+	if r.Header.Get("X-Migration-Key") != "ALLOW_MIGRATION" {
+		http.Error(w, "invalid migration key", http.StatusForbidden)
+		return
+	}
+
+	_, err := h.DB.Exec(`
+		TRUNCATE TABLE 
+			cashflow_entries,
+			comments,
+			contracts,
+			clients
+		RESTART IDENTITY CASCADE;
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -218,8 +248,8 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				_, err := tx.Exec(`
-					INSERT INTO comments (entity_type, entity_id, body)
-					VALUES ('contract', $1, $2)
+					INSERT INTO comments (entity_type, entity_id, body, author)
+					VALUES ('contract', $1, $2, 'importer')
 				`, contractID, fmt.Sprintf("%s: %s", ym, v))
 				if err != nil {
 					tx.Rollback()

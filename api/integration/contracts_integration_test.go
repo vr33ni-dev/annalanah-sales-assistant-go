@@ -73,7 +73,7 @@ func TestCreateContract_Integration(t *testing.T) {
 
 	body := api.Contract{
 		ClientID:       client.ID,
-		SalesProcessID: sp.ID,
+		SalesProcessID: &sp.ID,
 		StartDate:      "2025-01-01",
 		DurationMonths: 12,
 		RevenueTotal:   1200,
@@ -259,7 +259,7 @@ func TestProjection_Quarterly(t *testing.T) {
 
 	body := api.Contract{
 		ClientID:       client.ID,
-		SalesProcessID: sp.ID,
+		SalesProcessID: &sp.ID,
 		StartDate:      "2025-01-01",
 		DurationMonths: 12,
 		RevenueTotal:   1200,
@@ -322,7 +322,7 @@ func TestProjection_OneTime(t *testing.T) {
 
 	body := api.Contract{
 		ClientID:       client.ID,
-		SalesProcessID: sp.ID,
+		SalesProcessID: &sp.ID,
 		StartDate:      "2025-01-01",
 		DurationMonths: 12,
 		RevenueTotal:   1200,
@@ -400,7 +400,7 @@ func TestProjection_Extension(t *testing.T) {
 
 	body := api.Contract{
 		ClientID:       client.ID,
-		SalesProcessID: sp.ID,
+		SalesProcessID: &sp.ID,
 		StartDate:      "2025-01-01",
 		DurationMonths: 6,
 		RevenueTotal:   600,
@@ -457,7 +457,7 @@ func TestProjection_StartDate31st(t *testing.T) {
 
 	body := api.Contract{
 		ClientID:       client.ID,
-		SalesProcessID: sp.ID,
+		SalesProcessID: &sp.ID,
 		StartDate:      "2025-01-31",
 		DurationMonths: 2,
 		RevenueTotal:   300,

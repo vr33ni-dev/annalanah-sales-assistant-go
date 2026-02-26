@@ -18,7 +18,7 @@ import (
 type Contract struct {
 	ID             int                    `json:"id"`
 	ClientID       int                    `json:"client_id"`
-	SalesProcessID int                    `json:"sales_process_id"`
+	SalesProcessID *int                   `json:"sales_process_id"`
 	StartDate      string                 `json:"start_date"`
 	CreatedAt      *string                `json:"created_at,omitempty"`
 	EndDate        *string                `json:"end_date,omitempty"`
@@ -40,7 +40,7 @@ type ContractResponse struct {
 	ID                int               `json:"id"`
 	ClientID          int               `json:"client_id"`
 	ClientName        string            `json:"client_name"`
-	SalesProcessID    int               `json:"sales_process_id"`
+	SalesProcessID    *int              `json:"sales_process_id"`
 	CreatedAt         *string           `json:"created_at,omitempty"`
 	UpdatedAt         *string           `json:"updated_at,omitempty"`
 	StartDate         string            `json:"start_date"`
@@ -56,21 +56,21 @@ type ContractResponse struct {
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
-WITH paid AS (
+
+WITH overdue AS (
   SELECT
     contract_id,
-    COUNT(*)                           AS periods_paid,
-    COALESCE(SUM(amount), 0)::numeric  AS paid_amount_total
+    MIN(due_date)::date AS overdue_due_date
   FROM cashflow_entries
-  WHERE status = 'paid'
+  WHERE status = 'overdue'
   GROUP BY contract_id
 ),
-pending AS (
+upcoming AS (
   SELECT
     contract_id,
-    MIN(due_date)::date AS next_due_date_cf
+    MIN(due_date)::date AS upcoming_due_date
   FROM cashflow_entries
-  WHERE status IN ('pending','overdue')
+  WHERE due_date >= CURRENT_DATE
   GROUP BY contract_id
 )
 SELECT
@@ -79,57 +79,31 @@ SELECT
   cl.name AS client_name,
   c.sales_process_id,
   c.start_date,
-	c.end_date,
-	c.created_at,
+  c.end_date,
+  c.created_at,
   c.duration_months,
   c.revenue_total,
   c.payment_frequency,
 
-  -- base_monthly_amount (convenience value)
-  CASE WHEN c.duration_months > 0
-	  THEN (c.revenue_total / c.duration_months)
-	  ELSE 0
+  -- base_monthly_amount
+  CASE 
+    WHEN c.duration_months > 0
+      THEN (c.revenue_total / c.duration_months)
+    ELSE 0
   END AS base_monthly_amount,
 
-  -- next_due_date: prefer pending/overdue; else derive the next slot if inside duration
+  -- next_due_date logic:
+  -- 1) overdue dominates
+  -- 2) otherwise closest upcoming
   COALESCE(
-    pn.next_due_date_cf,
-    CASE
-			WHEN (
-				COALESCE(p.periods_paid, 0) *
-				CASE c.payment_frequency
-					WHEN 'monthly'    THEN 1
-					WHEN 'bi-monthly' THEN 2
-					WHEN 'quarterly'  THEN 3
-					WHEN 'bi-yearly'  THEN 6
-					WHEN 'one-time'   THEN c.duration_months
-					ELSE 1
-				END
-			) >= c.duration_months
-        THEN NULL
-      ELSE
-			(
-				c.start_date
-				+ make_interval(
-						months =>
-							(COALESCE(p.periods_paid, 0)::int *
-							CASE c.payment_frequency
-								WHEN 'monthly'    THEN 1
-								WHEN 'bi-monthly' THEN 2
-								WHEN 'quarterly'  THEN 3
-								WHEN 'bi-yearly'  THEN 6
-								WHEN 'one-time'   THEN c.duration_months
-								ELSE 1
-							END)
-					)
-			)::date
-
-    END
+    o.overdue_due_date,
+    u.upcoming_due_date
   ) AS next_due_date
+
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
-LEFT JOIN paid    p  ON p.contract_id  = c.id
-LEFT JOIN pending pn ON pn.contract_id = c.id
+LEFT JOIN overdue  o ON o.contract_id = c.id
+LEFT JOIN upcoming u ON u.contract_id = c.id
 ORDER BY c.id;
 `)
 	if err != nil {

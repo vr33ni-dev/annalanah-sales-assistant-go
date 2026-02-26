@@ -20,7 +20,7 @@ func TestCreateContract_InvalidPaymentFreq(t *testing.T) {
 	}
 	h := &Handler{DB: db}
 
-	c := Contract{ClientID: 1, SalesProcessID: 2, StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1200, PaymentFreq: "invalid"}
+	c := Contract{ClientID: 1, SalesProcessID: intPtr(2), StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1200, PaymentFreq: "invalid"}
 	b, _ := json.Marshal(c)
 	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
 	w := httptest.NewRecorder()
@@ -43,7 +43,7 @@ func TestCreateContract_Success(t *testing.T) {
 
 	c := Contract{
 		ClientID:       1,
-		SalesProcessID: 2,
+		SalesProcessID: intPtr(2),
 		StartDate:      "2025-01-01",
 		DurationMonths: 0, // allow 0 duration for testing, test cashflow entires generation in integration test
 		RevenueTotal:   1200,
@@ -164,4 +164,9 @@ func TestUpdateContract_Success(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
 	}
+}
+
+// Helper function to get pointer to int
+func intPtr(i int) *int {
+	return &i
 }
