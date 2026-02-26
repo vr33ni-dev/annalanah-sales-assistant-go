@@ -164,6 +164,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Patch("/comments/{id}", h.UpdateComment)
 		pr.Delete("/comments/{id}", h.DeleteComment)
 
+		// ---- Import routes (admin/internal only) ----
+		pr.Route("/import", func(ir chi.Router) {
+			ir.Post("/contracts", h.ImportContracts)
+		})
 	})
 
 	return r

@@ -21,7 +21,7 @@ type Contract struct {
 	SalesProcessID int                    `json:"sales_process_id"`
 	StartDate      string                 `json:"start_date"`
 	CreatedAt      *string                `json:"created_at,omitempty"`
-	EndDate        *string                `json:"end_date_computed,omitempty"`
+	EndDate        *string                `json:"end_date,omitempty"`
 	DurationMonths int                    `json:"duration_months"`
 	RevenueTotal   float64                `json:"revenue_total"`
 	PaymentFreq    string                 `json:"payment_frequency"`
@@ -44,7 +44,7 @@ type ContractResponse struct {
 	CreatedAt         *string           `json:"created_at,omitempty"`
 	UpdatedAt         *string           `json:"updated_at,omitempty"`
 	StartDate         string            `json:"start_date"`
-	EndDate           *string           `json:"end_date_computed,omitempty"`
+	EndDate           *string           `json:"end_date,omitempty"`
 	DurationMonths    int               `json:"duration_months"`
 	RevenueTotal      float64           `json:"revenue_total"`
 	PaymentFreq       string            `json:"payment_frequency"`
@@ -79,7 +79,7 @@ SELECT
   cl.name AS client_name,
   c.sales_process_id,
   c.start_date,
-	c.end_date_computed,
+	c.end_date,
 	c.created_at,
   c.duration_months,
   c.revenue_total,
@@ -262,12 +262,13 @@ func (h *Handler) ListContractCashflowEntries(w http.ResponseWriter, r *http.Req
 // POST /api/contracts
 func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	var c Contract
+
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// normalize and validate payment frequency
+	// Normalize and validate payment frequency
 	pf := strings.ToLower(strings.TrimSpace(c.PaymentFreq))
 	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
 		http.Error(w, "invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)", http.StatusBadRequest)
@@ -279,7 +280,32 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	}
 	c.PaymentFreq = pf
 
-	// create contract and its cashflow entries atomically
+	// Parse start date
+	sd, err := time.Parse("2006-01-02", c.StartDate)
+	if err != nil {
+		http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
+	// Determine end date
+	var ed time.Time
+
+	if c.EndDate != nil && *c.EndDate != "" {
+		parsedEnd, err := time.Parse("2006-01-02", *c.EndDate)
+		if err != nil {
+			http.Error(w, "invalid end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		if parsedEnd.Before(sd) {
+			http.Error(w, "end_date cannot be before start_date", http.StatusBadRequest)
+			return
+		}
+		ed = parsedEnd
+	} else {
+		ed = sd.AddDate(0, c.DurationMonths, 0)
+	}
+
+	// Begin transaction
 	tx, err := h.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -287,15 +313,18 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var createdAt sql.NullTime
+
+	// Insert contract (NOW including end_date)
 	err = tx.QueryRowContext(r.Context(), `
 	INSERT INTO contracts
-		(client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-	VALUES ($1, $2, $3::date, $4, $5, $6)
+		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
+	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7)
 	RETURNING id, created_at
-`,
+	`,
 		c.ClientID,
 		c.SalesProcessID,
-		c.StartDate,
+		sd,
+		ed,
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
@@ -312,43 +341,41 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		c.CreatedAt = &s
 	}
 
-	// parse start date and insert scheduled cashflow entries
-	sd, err := time.Parse("2006-01-02", c.StartDate)
-	if err == nil && c.DurationMonths > 0 {
-		if err := insertCashflowEntriesTx(tx, c.ID, sd, c.DurationMonths, c.RevenueTotal, c.PaymentFreq); err != nil {
+	// Insert scheduled cashflow entries
+	if c.DurationMonths > 0 {
+		if err := insertCashflowEntriesTx(tx, c.ID, sd, ed, c.RevenueTotal, c.PaymentFreq); err != nil {
 			tx.Rollback()
 			http.Error(w, "failed to insert cashflow entries: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
+	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// optionally insert comments submitted with the create request (non-fatal)
+	// Optionally insert comments (non-fatal)
 	if len(c.Comments) > 0 {
 		_ = h.insertCommentsForEntity("contract", c.ID, c.Comments)
 	}
 
+	// Return response
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(c)
 
-	// Send notification email if configured (non-blocking)
+	// Send notification email asynchronously
 	notifyTo := os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
 	if notifyTo != "" {
-		// run in background; failures are logged inside mailer.SendMail (if any)
 		go func() {
 			if err := mailer.SendNewContractNotification(notifyTo, c.ID, c.ClientID, c.RevenueTotal, c.StartDate); err != nil {
-				// best-effort logging to stdout
 				fmt.Printf("failed to send new contract notification: %v\n", err)
 			}
 		}()
 	}
 }
 
-// PATCH /api/contracts/{id}
 // PATCH /api/contracts/{id}
 func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -364,51 +391,82 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// normalize and validate payment frequency
+	// Normalize and validate payment frequency
 	pf := strings.ToLower(strings.TrimSpace(req.PaymentFreq))
 	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
-		http.Error(w, "invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)", http.StatusBadRequest)
-		return
-	}
-	if pf == "bi-yearly" && req.DurationMonths < 12 {
-		http.Error(w, "bi-yearly payment frequency requires duration_months >= 12", http.StatusBadRequest)
+		http.Error(w, "invalid payment_frequency", http.StatusBadRequest)
 		return
 	}
 	req.PaymentFreq = pf
 
-	// Convert "YYYY-MM-DD" → time.Time
-	t, err := time.Parse("2006-01-02", req.StartDate)
+	// Parse start date
+	sd, err := time.Parse("2006-01-02", req.StartDate)
 	if err != nil {
 		http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
 		return
 	}
 
-	_, err = h.DB.Exec(`
-        UPDATE contracts
-        SET 
-            start_date = $1,
-            duration_months = $2,
-            revenue_total = $3,
-            payment_frequency = $4
-        WHERE id = $5
-    `,
-		t,
-		req.DurationMonths,
-		req.RevenueTotal,
-		req.PaymentFreq,
-		id,
-	)
+	// Compute end date explicitly
+	ed := sd.AddDate(0, req.DurationMonths, 0)
 
+	tx, err := h.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// optionally insert comments provided in the patch
+	// 1️⃣ Update contract fields
+	_, err = tx.Exec(`
+		UPDATE contracts
+		SET 
+			start_date = $1,
+			end_date = $2,
+			duration_months = $3,
+			revenue_total = $4,
+			payment_frequency = $5,
+			updated_at = NOW()
+		WHERE id = $6
+	`,
+		sd,
+		ed,
+		req.DurationMonths,
+		req.RevenueTotal,
+		req.PaymentFreq,
+		id,
+	)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 2️⃣ Delete ALL projection entries (derived data)
+	_, err = tx.Exec(`
+		DELETE FROM cashflow_entries
+		WHERE contract_id = $1
+	`, id)
+	if err != nil {
+		tx.Rollback()
+		http.Error(w, "failed to clear projection schedule: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 3️⃣ Recreate projection schedule
+	if err := insertCashflowEntriesTx(tx, id, sd, ed, req.RevenueTotal, req.PaymentFreq); err != nil {
+		tx.Rollback()
+		http.Error(w, "failed to regenerate schedule: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 4️⃣ Commit transaction
+	if err := tx.Commit(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Optional comments (same behavior as before)
 	if req.Comments != nil && len(req.Comments) > 0 {
-		if err := h.insertCommentsForEntity("contract", id, req.Comments); err != nil {
-			// ignore failure
-		}
+		_ = h.insertCommentsForEntity("contract", id, req.Comments)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

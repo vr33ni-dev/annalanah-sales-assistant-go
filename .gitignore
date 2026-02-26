@@ -58,9 +58,11 @@ tools/importcashflow/*
 tools/importcsv/*
 tools/extract_sales_names/*
 tools/importsales/*
+*.csv
 
 # local make overrides (ignored)
 Makefile
 
 # logs
 *.log
+*_import.json

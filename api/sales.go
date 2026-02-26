@@ -337,7 +337,16 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid contract_start_date", http.StatusBadRequest)
 			return
 		}
-		if err := insertCashflowEntriesTx(tx2, newContractID, sd, *sp.ContractDurationMonths, *sp.Revenue, *sp.ContractFrequency); err != nil {
+		endDate := sd.AddDate(0, *sp.ContractDurationMonths, 0)
+
+		if err := insertCashflowEntriesTx(
+			tx2,
+			newContractID,
+			sd,
+			endDate,
+			*sp.Revenue,
+			*sp.ContractFrequency,
+		); err != nil {
 			http.Error(w, "failed to create cashflow entries: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -599,7 +608,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
         SELECT 1
         FROM contracts
         WHERE client_id = $1
-          AND end_date_computed >= CURRENT_DATE
+          AND end_date >= CURRENT_DATE
     )
 `, *existingClientID).Scan(&hasActiveContract)
 
@@ -1204,7 +1213,7 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var prevContractID *int
 	_ = tx.QueryRow(`
         SELECT id FROM contracts
-        WHERE client_id = $1 AND end_date_computed IS NULL
+        WHERE client_id = $1 AND end_date IS NULL
         ORDER BY id DESC LIMIT 1
     `, clientID).Scan(&prevContractID)
 
@@ -1268,10 +1277,20 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid contract_start_date", 400)
 			return
 		}
-		if err := insertCashflowEntriesTx(tx, *newContractID, sd, *req.ContractDurationMonths, *req.UpsellRevenue, *req.ContractFrequency); err != nil {
+		endDate := sd.AddDate(0, *req.ContractDurationMonths, 0)
+
+		if err := insertCashflowEntriesTx(
+			tx,
+			*newContractID,
+			sd,
+			endDate,
+			*req.UpsellRevenue,
+			*req.ContractFrequency,
+		); err != nil {
 			http.Error(w, "failed to create cashflow entries: "+err.Error(), 500)
 			return
 		}
+
 	}
 
 	// -----------------------

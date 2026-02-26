@@ -40,7 +40,7 @@ TABLE contracts (
   client_id INT,
   sales_process_id INT,
   start_date DATE,
-  end_date_computed DATE,
+  end_date DATE,
   duration_months INT,
   revenue_total NUMERIC,
   payment_frequency TEXT CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly'))
@@ -264,15 +264,15 @@ LIMIT 50
 
 - "aktive Verträge", "laufende Verträge"
   → ct.start_date <= CURRENT_DATE
-    AND (ct.end_date_computed IS NULL OR ct.end_date_computed >= CURRENT_DATE)
+    AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
 
 - "läuft bald aus", "endet in den nächsten 30 Tagen"
-  → ct.end_date_computed IS NOT NULL
-    AND ct.end_date_computed > CURRENT_DATE
-    AND ct.end_date_computed <= CURRENT_DATE + INTERVAL '30 days'
+  → ct.end_date IS NOT NULL
+    AND ct.end_date > CURRENT_DATE
+    AND ct.end_date <= CURRENT_DATE + INTERVAL '30 days'
 
 - "bereits beendet", "abgelaufen"
-  → ct.end_date_computed IS NOT NULL AND ct.end_date_computed < CURRENT_DATE
+  → ct.end_date IS NOT NULL AND ct.end_date < CURRENT_DATE
 
 - "monatlicher Betrag", "monatlicher Umsatz"
   → If monthly amount is requested conceptually, but not stored, return revenue_total
@@ -333,7 +333,7 @@ LIMIT 50
 - "letzte 7 Tage" → <col> >= CURRENT_DATE - INTERVAL '7 days'
 - "letzte 30 Tage" → <col> >= CURRENT_DATE - INTERVAL '30 days'
 (Choose the correct date column based on context:
- follow-ups → sp.follow_up_date; contracts → ct.start_date/ct.end_date_computed; stages → st.date; clients → c.completed_at.)
+ follow-ups → sp.follow_up_date; contracts → ct.start_date/ct.end_date; stages → st.date; clients → c.completed_at.)
 
 ---------------------------
 -- ADDITIONAL INSTRUCTIONS

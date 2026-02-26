@@ -68,7 +68,6 @@ func TestCreateContract_Integration(t *testing.T) {
 
 	testhelpers.TruncateAll(t, suite.DB)
 
-	// Arrange: client + sales process
 	client := suite.CreateClient()
 	sp := suite.CreateSalesProcessForClient(client.ID)
 
@@ -85,12 +84,10 @@ func TestCreateContract_Integration(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
 	w := httptest.NewRecorder()
 
-	// Act
 	handler.CreateContract(w, req)
 
-	// Assert HTTP
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
 	}
 
 	var out api.Contract
@@ -102,8 +99,56 @@ func TestCreateContract_Integration(t *testing.T) {
 		t.Fatalf("expected generated contract ID")
 	}
 
-	if out.ClientID != client.ID {
-		t.Fatalf("expected client_id=%d, got %d", client.ID, out.ClientID)
+	// 🔎 Verify projection rows
+	rows, err := suite.DB.DB.Query(`
+		SELECT due_date, amount
+		FROM cashflow_entries
+		WHERE contract_id = $1
+		ORDER BY due_date
+	`, out.ID)
+	if err != nil {
+		t.Fatalf("query projection rows failed: %v", err)
+	}
+	defer rows.Close()
+
+	var count int
+	var firstDue time.Time
+	var lastDue time.Time
+	var amount float64
+
+	for rows.Next() {
+		var due time.Time
+		if err := rows.Scan(&due, &amount); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		if count == 0 {
+			firstDue = due
+		}
+		lastDue = due
+		count++
+	}
+
+	// Expect 13 rows (inclusive start → end)
+	if count != 13 {
+		t.Fatalf("expected 13 projection rows, got %d", count)
+	}
+
+	expectedStart, _ := time.Parse("2006-01-02", "2025-01-01")
+	expectedEnd := expectedStart.AddDate(0, 12, 0)
+
+	if !firstDue.Equal(expectedStart) {
+		t.Fatalf("expected first due_date %v, got %v", expectedStart, firstDue)
+	}
+
+	if !lastDue.Equal(expectedEnd) {
+		t.Fatalf("expected last due_date %v, got %v", expectedEnd, lastDue)
+	}
+
+	// 1200 / 13 periods
+	expectedAmount := 1200.0 / 13.0
+
+	if amount != expectedAmount {
+		t.Fatalf("expected per-period amount %v, got %v", expectedAmount, amount)
 	}
 }
 
@@ -200,5 +245,254 @@ func TestUpdateContract_InvalidDate_Integration(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestProjection_Quarterly(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	testhelpers.TruncateAll(t, suite.DB)
+
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	client := suite.CreateClient()
+	sp := suite.CreateSalesProcessForClient(client.ID)
+
+	body := api.Contract{
+		ClientID:       client.ID,
+		SalesProcessID: sp.ID,
+		StartDate:      "2025-01-01",
+		DurationMonths: 12,
+		RevenueTotal:   1200,
+		PaymentFreq:    "quarterly",
+	}
+
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	handler.CreateContract(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var out api.Contract
+	_ = json.NewDecoder(w.Body).Decode(&out)
+
+	rows, _ := suite.DB.DB.Query(`
+		SELECT due_date, amount
+		FROM cashflow_entries
+		WHERE contract_id = $1
+		ORDER BY due_date
+	`, out.ID)
+	defer rows.Close()
+
+	var count int
+	var last time.Time
+	for rows.Next() {
+		var due time.Time
+		var amount float64
+		rows.Scan(&due, &amount)
+
+		if count > 0 {
+			expected := last.AddDate(0, 3, 0)
+			if !due.Equal(expected) {
+				t.Fatalf("expected quarterly spacing, got %v after %v", due, last)
+			}
+		}
+
+		last = due
+		count++
+	}
+
+	// Jan 2025 → Jan 2026 inclusive = 5 rows (0,3,6,9,12)
+	if count != 5 {
+		t.Fatalf("expected 5 quarterly rows, got %d", count)
+	}
+}
+
+func TestProjection_OneTime(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	testhelpers.TruncateAll(t, suite.DB)
+
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	client := suite.CreateClient()
+	sp := suite.CreateSalesProcessForClient(client.ID)
+
+	body := api.Contract{
+		ClientID:       client.ID,
+		SalesProcessID: sp.ID,
+		StartDate:      "2025-01-01",
+		DurationMonths: 12,
+		RevenueTotal:   1200,
+		PaymentFreq:    "one-time",
+	}
+
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	handler.CreateContract(w, req)
+
+	var out api.Contract
+	_ = json.NewDecoder(w.Body).Decode(&out)
+
+	var count int
+	_ = suite.DB.DB.QueryRow(`
+		SELECT COUNT(*) FROM cashflow_entries WHERE contract_id=$1
+	`, out.ID).Scan(&count)
+
+	if count != 1 {
+		t.Fatalf("expected 1 one-time projection row, got %d", count)
+	}
+}
+
+func TestProjection_Shortening(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	testhelpers.TruncateAll(t, suite.DB)
+
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	client := suite.CreateClient()
+	sp := suite.CreateSalesProcessForClient(client.ID)
+	contract := suite.CreateContract(client.ID, sp.ID)
+
+	update := api.UpdateContractRequest{
+		StartDate:      "2025-01-01",
+		DurationMonths: 6,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	}
+
+	b, _ := json.Marshal(update)
+	req := httptest.NewRequest(http.MethodPatch,
+		fmt.Sprintf("/api/contracts/%d", contract.ID),
+		bytes.NewReader(b),
+	)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(contract.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	handler.UpdateContract(w, req)
+
+	var count int
+	_ = suite.DB.DB.QueryRow(`
+		SELECT COUNT(*) FROM cashflow_entries WHERE contract_id=$1
+	`, contract.ID).Scan(&count)
+
+	// Jan → July inclusive = 7 rows
+	if count != 7 {
+		t.Fatalf("expected 7 rows after shortening, got %d", count)
+	}
+}
+
+func TestProjection_Extension(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	testhelpers.TruncateAll(t, suite.DB)
+
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	client := suite.CreateClient()
+	sp := suite.CreateSalesProcessForClient(client.ID)
+
+	body := api.Contract{
+		ClientID:       client.ID,
+		SalesProcessID: sp.ID,
+		StartDate:      "2025-01-01",
+		DurationMonths: 6,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	}
+
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	handler.CreateContract(w, req)
+
+	var out api.Contract
+	_ = json.NewDecoder(w.Body).Decode(&out)
+
+	update := api.UpdateContractRequest{
+		StartDate:      "2025-01-01",
+		DurationMonths: 12,
+		RevenueTotal:   1200,
+		PaymentFreq:    "monthly",
+	}
+
+	b2, _ := json.Marshal(update)
+	req2 := httptest.NewRequest(http.MethodPatch,
+		fmt.Sprintf("/api/contracts/%d", out.ID),
+		bytes.NewReader(b2),
+	)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(out.ID))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), chi.RouteCtxKey, rctx))
+
+	w2 := httptest.NewRecorder()
+	handler.UpdateContract(w2, req2)
+
+	var count int
+	_ = suite.DB.DB.QueryRow(`
+		SELECT COUNT(*) FROM cashflow_entries WHERE contract_id=$1
+	`, out.ID).Scan(&count)
+
+	// Jan 2025 → Jan 2026 inclusive = 13
+	if count != 13 {
+		t.Fatalf("expected 13 rows after extension, got %d", count)
+	}
+}
+
+func TestProjection_StartDate31st(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	testhelpers.TruncateAll(t, suite.DB)
+
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	client := suite.CreateClient()
+	sp := suite.CreateSalesProcessForClient(client.ID)
+
+	body := api.Contract{
+		ClientID:       client.ID,
+		SalesProcessID: sp.ID,
+		StartDate:      "2025-01-31",
+		DurationMonths: 2,
+		RevenueTotal:   300,
+		PaymentFreq:    "monthly",
+	}
+
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	handler.CreateContract(w, req)
+
+	var out api.Contract
+	_ = json.NewDecoder(w.Body).Decode(&out)
+
+	rows, _ := suite.DB.DB.Query(`
+		SELECT due_date FROM cashflow_entries
+		WHERE contract_id=$1
+		ORDER BY due_date
+	`, out.ID)
+	defer rows.Close()
+
+	var dates []time.Time
+	for rows.Next() {
+		var d time.Time
+		rows.Scan(&d)
+		dates = append(dates, d)
+	}
+
+	// Go normalizes Feb 31 → Feb 28/29
+	if len(dates) < 2 {
+		t.Fatalf("expected at least 2 rows")
+	}
+
+	if dates[1].Month() != time.February {
+		t.Fatalf("expected February rollover, got %v", dates[1])
 	}
 }
