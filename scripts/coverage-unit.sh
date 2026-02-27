@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure EXCLUDE_FILES is defined (may be empty). Prevents unbound variable with `set -u`.
+EXCLUDE_FILES=()
+
 # Run unit tests (exclude integration and other excluded packages) and produce coverage
 TMP=$(mktemp /tmp/pkgs.XXXX)
 cleanup() { rm -f "$TMP"; }

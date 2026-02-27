@@ -479,3 +479,147 @@ func TestUpdateContract_RecreateSchedule_BiMonthly(t *testing.T) {
 func intPtr(i int) *int {
 	return &i
 }
+
+func TestInsertCashflowEntriesTx_BiMonthly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	periods := 0
+	cur := start
+	for !cur.After(end) {
+		periods++
+		cur = addMonthClamped(cur, 2)
+	}
+
+	for i := 0; i < periods; i++ {
+		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+
+	if err := insertCashflowEntriesTx(tx, 99, start, end, 500.0, "bi-monthly"); err != nil {
+		t.Fatalf("insertCashflowEntriesTx failed: %v", err)
+	}
+
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInsertCashflowEntriesTx_Quarterly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
+
+	periods := 0
+	cur := start
+	for !cur.After(end) {
+		periods++
+		cur = addMonthClamped(cur, 3)
+	}
+
+	for i := 0; i < periods; i++ {
+		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+
+	if err := insertCashflowEntriesTx(tx, 100, start, end, 1500.0, "quarterly"); err != nil {
+		t.Fatalf("insertCashflowEntriesTx failed: %v", err)
+	}
+
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInsertCashflowEntriesTx_OneTime(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+
+	start := time.Date(2025, 6, 15, 0, 0, 0, 0, time.UTC)
+	end := start
+
+	mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := insertCashflowEntriesTx(tx, 101, start, end, 999.0, "one-time"); err != nil {
+		t.Fatalf("insertCashflowEntriesTx failed: %v", err)
+	}
+
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestUpdateContract_UpdateExecFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{StartDate: "2025-01-01", DurationMonths: 12, RevenueTotal: 1000, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/5", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "5")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE contracts").WillReturnError(errors.New("update failed"))
+	mock.ExpectRollback()
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
