@@ -51,5 +51,9 @@ func SendMail(to, subject, body string) error {
 func SendNewContractNotification(to string, contractID int, clientID int, revenue float64, startDate string) error {
 	subject := fmt.Sprintf("New contract confirmed: #%d", contractID)
 	body := fmt.Sprintf("A new contract was created.\n\nContract ID: %d\nClient ID: %d\nStart Date: %s\nRevenue: %.2f\n", contractID, clientID, startDate, revenue)
-	return SendMail(to, subject, body)
+	return SendMailFunc(to, subject, body)
 }
+
+// SendMailFunc is a package-level variable used to send mail. Tests may replace
+// this with a stub to avoid sending real email and to assert parameters.
+var SendMailFunc = SendMail
