@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,6 +158,144 @@ func TestCreateContract_TriggersMailer(t *testing.T) {
 	select {
 	case <-ch:
 		// success
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for mailer to be called")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateContract_NoNotifyEnv_NoMailerCalled(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	c := Contract{
+		ClientID:       1,
+		SalesProcessID: intPtr(2),
+		StartDate:      "2025-01-01",
+		DurationMonths: 0,
+		RevenueTotal:   1200,
+		PaymentFreq:    "monthly",
+	}
+
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+
+	created := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "created_at"}).AddRow(7, created)
+
+	expectedStart, _ := time.Parse("2006-01-02", c.StartDate)
+	expectedEnd := expectedStart.AddDate(0, c.DurationMonths, 0)
+
+	mock.ExpectQuery("INSERT INTO contracts").WithArgs(
+		c.ClientID,
+		c.SalesProcessID,
+		expectedStart,
+		expectedEnd,
+		c.DurationMonths,
+		c.RevenueTotal,
+		c.PaymentFreq,
+	).WillReturnRows(rows)
+
+	mock.ExpectCommit()
+
+	// stub mailer to fail the test if invoked
+	orig := mailer.SendMailFunc
+	defer func() { mailer.SendMailFunc = orig }()
+	mailer.SendMailFunc = func(to, subject, body string) error {
+		t.Fatalf("unexpected mailer call when NEW_CONTRACT_NOTIFY_EMAIL unset")
+		return nil
+	}
+
+	// ensure env var is unset
+	os.Unsetenv("NEW_CONTRACT_NOTIFY_EMAIL")
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateContract_MailerReturnsError_HandlerStillSucceeds(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	c := Contract{
+		ClientID:       1,
+		SalesProcessID: intPtr(2),
+		StartDate:      "2025-01-01",
+		DurationMonths: 0,
+		RevenueTotal:   1200,
+		PaymentFreq:    "monthly",
+	}
+
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+
+	created := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "created_at"}).AddRow(7, created)
+
+	expectedStart, _ := time.Parse("2006-01-02", c.StartDate)
+	expectedEnd := expectedStart.AddDate(0, c.DurationMonths, 0)
+
+	mock.ExpectQuery("INSERT INTO contracts").WithArgs(
+		c.ClientID,
+		c.SalesProcessID,
+		expectedStart,
+		expectedEnd,
+		c.DurationMonths,
+		c.RevenueTotal,
+		c.PaymentFreq,
+	).WillReturnRows(rows)
+
+	mock.ExpectCommit()
+
+	// stub mailer to return error but signal via channel
+	orig := mailer.SendMailFunc
+	defer func() { mailer.SendMailFunc = orig }()
+
+	ch := make(chan struct{}, 1)
+	mailer.SendMailFunc = func(to, subject, body string) error {
+		ch <- struct{}{}
+		return errors.New("smtp fail")
+	}
+
+	// set env var to trigger notification
+	os.Setenv("NEW_CONTRACT_NOTIFY_EMAIL", "ops@example.com")
+	defer os.Unsetenv("NEW_CONTRACT_NOTIFY_EMAIL")
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case <-ch:
+		// mailer was called; handler should still succeed
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("timed out waiting for mailer to be called")
 	}

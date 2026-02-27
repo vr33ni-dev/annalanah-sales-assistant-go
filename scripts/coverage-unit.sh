@@ -27,9 +27,6 @@ echo
 
 go test -v $(cat "$TMP") -coverpkg="$coverpkg" -coverprofile=coverage-unit.out
 
-# Exclude specific files from coverage report (keep tests unchanged)
-# List path fragments to exclude from the coverage profile (one per pattern)
-EXCLUDE_FILES=("/api/importer.go" "/pkg/mailer/")
 
 # If exclusions are present, filter the raw profile into a filtered file
 if [ ${#EXCLUDE_FILES[@]} -gt 0 ]; then
