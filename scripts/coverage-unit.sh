@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure EXCLUDE_FILES is defined (may be empty). Prevents unbound variable with `set -u`.
+EXCLUDE_FILES=()
+
 # Run unit tests (exclude integration and other excluded packages) and produce coverage
 TMP=$(mktemp /tmp/pkgs.XXXX)
 cleanup() { rm -f "$TMP"; }
@@ -27,8 +30,26 @@ echo
 
 go test -v $(cat "$TMP") -coverpkg="$coverpkg" -coverprofile=coverage-unit.out
 
+
+# If exclusions are present, filter the raw profile into a filtered file
+if [ ${#EXCLUDE_FILES[@]} -gt 0 ]; then
+  HEADER_LINE=$(head -n1 coverage-unit.out)
+  tail -n +2 coverage-unit.out > coverage-unit.body
+  FILTER_CMD="cat coverage-unit.body"
+  for pat in "${EXCLUDE_FILES[@]}"; do
+    FILTER_CMD="$FILTER_CMD | grep -v -- \"$pat\""
+  done
+  # Execute the pipeline and reassemble the profile
+  eval "$FILTER_CMD" > coverage-unit.body.filtered || true
+  (echo "$HEADER_LINE" && cat coverage-unit.body.filtered) > coverage-unit.filtered.out || true
+  rm -f coverage-unit.body coverage-unit.body.filtered
+  COVERFILE=coverage-unit.filtered.out
+else
+  COVERFILE=coverage-unit.out
+fi
+
 echo
 echo "Unit coverage summary (per-function):"
-go tool cover -func=coverage-unit.out || true
+go tool cover -func="$COVERFILE" || true
 echo
-echo "Open HTML report with: go tool cover -html=coverage-unit.out"
+echo "Open HTML report with: go tool cover -html=$COVERFILE"

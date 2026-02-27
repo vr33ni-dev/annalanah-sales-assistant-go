@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +28,35 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// -------------------------------------------------
+	// 🚨 MIGRATION MODE: CLEAR DATABASE FIRST
+	// -------------------------------------------------
+
+	// Optional: Block in production
+	if os.Getenv("APP_ENV") == "production" {
+		http.Error(w, "migration import not allowed in production", http.StatusForbidden)
+		return
+	}
+
+	// Require special header to prevent accidents
+	if r.Header.Get("X-Migration-Key") != "ALLOW_MIGRATION" {
+		http.Error(w, "invalid migration key", http.StatusForbidden)
+		return
+	}
+
+	_, err := h.DB.Exec(`
+		TRUNCATE TABLE 
+			cashflow_entries,
+			comments,
+			contracts,
+			clients
+		RESTART IDENTITY CASCADE;
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -214,13 +247,59 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 				}
 
 			case string:
-				if v == "" {
+				// Normalize and ignore placeholder tokens
+				trimmed := strings.TrimSpace(v)
+				if trimmed == "" {
 					continue
 				}
+				lower := strings.ToLower(trimmed)
+				if lower == "-" {
+					// skip placeholder marker
+					continue
+				}
+
+				// Detect numeric substrings (e.g. "? 190" or "190 ?")
+				numRe := regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
+				numStr := numRe.FindString(trimmed)
+				if numStr != "" {
+					// parse numeric value and insert cashflow entry
+					if n, err := strconv.ParseFloat(numStr, 64); err == nil && n != 0 {
+						_, err := tx.Exec(`
+							INSERT INTO cashflow_entries 
+								(contract_id, due_date, amount, status)
+							VALUES ($1, $2::date, $3, 'pending')
+						`, contractID, date, n)
+						if err != nil {
+							tx.Rollback()
+							http.Error(w, err.Error(), 500)
+							return
+						}
+					}
+
+					// If the original string contains non-numeric markers (like '?'), save it as a comment too
+					// Determine if there's any non-numeric content besides whitespace and the matched number
+					leftover := strings.TrimSpace(strings.Replace(trimmed, numStr, "", 1))
+					if leftover != "" {
+						commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
+						_, err := tx.Exec(`
+							INSERT INTO comments (entity_type, entity_id, body, author)
+							VALUES ('contract', $1, $2, 'importer')
+						`, contractID, commentBody)
+						if err != nil {
+							tx.Rollback()
+							http.Error(w, err.Error(), 500)
+							return
+						}
+					}
+					continue
+				}
+
+				// No numeric value found — treat as pure comment
+				commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 				_, err := tx.Exec(`
-					INSERT INTO comments (entity_type, entity_id, body)
-					VALUES ('contract', $1, $2)
-				`, contractID, fmt.Sprintf("%s: %s", ym, v))
+					INSERT INTO comments (entity_type, entity_id, body, author)
+					VALUES ('contract', $1, $2, 'importer')
+				`, contractID, commentBody)
 				if err != nil {
 					tx.Rollback()
 					http.Error(w, err.Error(), 500)
