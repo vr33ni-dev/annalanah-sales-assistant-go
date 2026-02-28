@@ -4,7 +4,9 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -296,10 +298,14 @@ ORDER BY month;
 	if contractID != nil {
 		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, *contractID)
 	} else {
-		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, nil)
+		// Pass an explicit NULL typed value for the integer parameter to avoid
+		// drivers interpreting untyped nil or mis-bound parameters incorrectly.
+		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, sql.NullInt64{})
 	}
 
 	if err != nil {
+		// Log error with context to help diagnose parameter binding issues
+		// (e.g. wrong types or mis-ordered arguments).
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -340,6 +346,9 @@ func (h *Handler) CashflowMetrics(w http.ResponseWriter, r *http.Request) {
 	var ytdPaid float64
 	// Count all cashflow_entries in the YTD window except those explicitly marked 'not paid'.
 	// This treats statuses like 'paid', 'pending', or NULL as contributing to YTD sums.
+	if os.Getenv("DEBUG_DB") == "true" {
+		fmt.Printf("CashflowMetrics: ytd params: ytdStart(%T)=%v, ytdEnd(%T)=%v\n", ytdStart, ytdStart, ytdEnd, ytdEnd)
+	}
 	if err := h.DB.QueryRow(`SELECT COALESCE(SUM(amount) FILTER (WHERE COALESCE(status,'') <> 'not paid' AND due_date::date >= $1 AND due_date::date <= $2), 0) FROM cashflow_entries`, ytdStart, ytdEnd).Scan(&ytdPaid); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -426,6 +435,9 @@ FROM confirmed
 GROUP BY ym
 ORDER BY month;`
 
+	if os.Getenv("DEBUG_DB") == "true" {
+		fmt.Printf("CashflowMetrics: forecast params: startMonth(%T)=%v, endMonth(%T)=%v\n", startMonth, startMonth, endMonth, endMonth)
+	}
 	rows, err := h.DB.Query(query, startMonth, endMonth)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

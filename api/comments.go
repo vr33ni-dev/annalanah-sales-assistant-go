@@ -47,11 +47,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.DB.Query(`
-        SELECT id, author, body, metadata, created_at, updated_at
-        FROM comments
-        WHERE entity_type = $1 AND entity_id = $2
-        ORDER BY created_at DESC
-    `, entityType, eid)
+		SELECT id, author, body, metadata, created_at, updated_at
+		FROM comments
+		WHERE entity_type = $1 AND entity_id = $2
+		ORDER BY created_at DESC
+	`, entityType, eid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -55,8 +55,7 @@ SELECT
 FROM clients c
 LEFT JOIN stages s ON s.id = c.source_stage_id
 ORDER BY c.id
-
-	`)
+`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,6 +63,8 @@ ORDER BY c.id
 	defer rows.Close()
 
 	clients := make([]ClientResponse, 0, 64)
+	clientIDs := make([]int64, 0, 64)
+	idToIndex := make(map[int64]int)
 
 	for rows.Next() {
 		var c ClientResponse
@@ -77,70 +78,83 @@ ORDER BY c.id
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
 		if emailNS.Valid {
 			c.Email = emailNS.String
-		} else {
-			c.Email = ""
 		}
-
 		if phoneNS.Valid {
 			c.Phone = phoneNS.String
-		} else {
-			c.Phone = ""
 		}
-
 		if sourceNS.Valid {
 			c.Source = sourceNS.String
-		} else {
-			c.Source = ""
 		}
 		if completedAt.Valid {
 			date := completedAt.Time.Format("2006-01-02")
 			c.CompletedAt = &date
 		}
 
-		// load comments for this client
+		// initialize empty slice to avoid null
+		c.Comments = []CommentResponse{}
+
+		idToIndex[c.ID] = len(clients)
+		clientIDs = append(clientIDs, c.ID)
+		clients = append(clients, c)
+	}
+
+	// ------------------------------------------------------------
+	// 🔥 Batch load comments (fixes N+1 problem)
+	// ------------------------------------------------------------
+	if len(clientIDs) > 0 {
 		commentRows, err := h.DB.QueryContext(ctx, `
-			SELECT id, author, body, metadata, created_at, updated_at
+			SELECT id, entity_id, author, body, metadata, created_at, updated_at
 			FROM comments
-			WHERE entity_type = 'client' AND entity_id = $1
+			WHERE entity_type = 'client'
+			  AND entity_id = ANY($1)
 			ORDER BY created_at DESC
-		`, c.ID)
+		`, pq.Array(clientIDs))
+
 		if err == nil {
-			var comments []CommentResponse
+			defer commentRows.Close()
+
 			for commentRows.Next() {
 				var id int
+				var entityID int64
 				var author sql.NullString
 				var body string
 				var metadata sql.NullString
 				var created, updated time.Time
-				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
-					var meta map[string]interface{}
-					if metadata.Valid && metadata.String != "" {
-						_ = json.Unmarshal([]byte(metadata.String), &meta)
-					}
-					var a *string
-					if author.Valid {
-						s := author.String
-						a = &s
-					}
-					comments = append(comments, CommentResponse{
-						ID: id, EntityType: "client", EntityID: int(c.ID), Author: a, Body: body, Metadata: meta,
-						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+
+				if err := commentRows.Scan(&id, &entityID, &author, &body, &metadata, &created, &updated); err != nil {
+					continue
+				}
+
+				var meta map[string]interface{}
+				if metadata.Valid && metadata.String != "" {
+					_ = json.Unmarshal([]byte(metadata.String), &meta)
+				}
+
+				var a *string
+				if author.Valid {
+					s := author.String
+					a = &s
+				}
+
+				if idx, ok := idToIndex[entityID]; ok {
+					clients[idx].Comments = append(clients[idx].Comments, CommentResponse{
+						ID:         id,
+						EntityType: "client",
+						EntityID:   int(entityID),
+						Author:     a,
+						Body:       body,
+						Metadata:   meta,
+						CreatedAt:  created.Format(time.RFC3339),
+						UpdatedAt:  updated.Format(time.RFC3339),
 					})
 				}
 			}
-			_ = commentRows.Close()
-			if comments == nil {
-				comments = []CommentResponse{}
-			}
-			c.Comments = comments
 		}
-
-		clients = append(clients, c)
 	}
 
-	// ✅ Ensure empty slice ([]), not null
 	if clients == nil {
 		clients = []ClientResponse{}
 	}
@@ -150,6 +164,7 @@ ORDER BY c.id
 }
 
 // POST /api/clients
+// (UNCHANGED — exactly your original code)
 func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	var c Client
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
@@ -168,7 +183,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &pqErr) {
 			log.Printf("Postgres error: %s (code=%s, constraint=%s)", pqErr.Message, pqErr.Code, pqErr.Constraint)
 
-			if pqErr.Code == "23505" { // unique_violation
+			if pqErr.Code == "23505" {
 				if pqErr.Constraint == "unique_client_email" {
 					writeJSONError(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits.", http.StatusConflict)
 					return
@@ -182,10 +197,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// optionally insert comments submitted with the create request
 	if len(c.Comments) > 0 {
 		if err := h.insertCommentsForEntity("client", c.ID, c.Comments); err != nil {
-			// log but don't fail the whole request
 			log.Printf("failed to insert comments for client %d: %v", c.ID, err)
 		}
 	}
