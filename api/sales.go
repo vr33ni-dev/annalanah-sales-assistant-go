@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lib/pq"
 )
 
 type SalesProcess struct {
@@ -87,10 +88,12 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	defer rows.Close()
 
 	var processes []SalesProcessResponse
+	var salesIDs []int
+	idToIndex := make(map[int]int)
+
 	for rows.Next() {
 		var sp SalesProcessResponse
 		if err := rows.Scan(
@@ -114,45 +117,71 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// load comments for this sales process
+		sp.Comments = []CommentResponse{}
+
+		idToIndex[sp.ID] = len(processes)
+		salesIDs = append(salesIDs, sp.ID)
+		processes = append(processes, sp)
+	}
+
+	// 🔥 Batch load sales_process comments (NO N+1)
+	if len(salesIDs) > 0 {
 		commentRows, err := h.DB.Query(`
-			SELECT id, author, body, metadata, created_at, updated_at
+			SELECT id, entity_id, author, body, metadata, created_at, updated_at
 			FROM comments
-			WHERE entity_type = 'sales_process' AND entity_id = $1
+			WHERE entity_type = 'sales_process'
+			  AND entity_id = ANY($1)
 			ORDER BY created_at DESC
-		`, sp.ID)
+		`, pq.Array(salesIDs))
+
 		if err == nil {
-			var comments []CommentResponse
+			defer commentRows.Close()
+
 			for commentRows.Next() {
 				var id int
+				var entityID int
 				var author sql.NullString
 				var body string
 				var metadata sql.NullString
 				var created, updated time.Time
-				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
-					var meta map[string]interface{}
-					if metadata.Valid && metadata.String != "" {
-						_ = json.Unmarshal([]byte(metadata.String), &meta)
-					}
-					var a *string
-					if author.Valid {
-						s := author.String
-						a = &s
-					}
-					comments = append(comments, CommentResponse{
-						ID: id, EntityType: "sales_process", EntityID: sp.ID, Author: a, Body: body, Metadata: meta,
-						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+
+				if err := commentRows.Scan(
+					&id,
+					&entityID,
+					&author,
+					&body,
+					&metadata,
+					&created,
+					&updated,
+				); err != nil {
+					continue
+				}
+
+				var meta map[string]interface{}
+				if metadata.Valid && metadata.String != "" {
+					_ = json.Unmarshal([]byte(metadata.String), &meta)
+				}
+
+				var a *string
+				if author.Valid {
+					s := author.String
+					a = &s
+				}
+
+				if idx, ok := idToIndex[entityID]; ok {
+					processes[idx].Comments = append(processes[idx].Comments, CommentResponse{
+						ID:         id,
+						EntityType: "sales_process",
+						EntityID:   entityID,
+						Author:     a,
+						Body:       body,
+						Metadata:   meta,
+						CreatedAt:  created.Format(time.RFC3339),
+						UpdatedAt:  updated.Format(time.RFC3339),
 					})
 				}
 			}
-			_ = commentRows.Close()
-			if comments == nil {
-				comments = []CommentResponse{}
-			}
-			sp.Comments = comments
 		}
-
-		processes = append(processes, sp)
 	}
 
 	if processes == nil {
@@ -160,7 +189,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(processes)
+	_ = json.NewEncoder(w).Encode(processes)
 }
 
 // PATCH /api/sales/{id}
