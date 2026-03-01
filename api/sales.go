@@ -124,7 +124,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		processes = append(processes, sp)
 	}
 
-	// 🔥 Batch load sales_process comments (NO N+1)
+	// Batch load sales_process comments (avoid N+1)
 	if len(salesIDs) > 0 {
 		commentRows, err := h.DB.Query(`
 			SELECT id, entity_id, author, body, metadata, created_at, updated_at
