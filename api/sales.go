@@ -34,6 +34,7 @@ type SalesProcessResponse struct {
 	ClientEmail        *string           `json:"client_email,omitempty"`
 	ClientPhone        *string           `json:"client_phone,omitempty"`
 	ClientSource       *string           `json:"client_source,omitempty"`
+	CompletedAt        *string           `json:"completed_at"`
 	Stage              string            `json:"stage"`
 	CreatedAt          *string           `json:"created_at,omitempty"`
 	UpdatedAt          *string           `json:"updated_at,omitempty"`
@@ -71,6 +72,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		cl.email AS client_email,
 		cl.phone AS client_phone,
 		cl.source AS client_source,
+		cl.completed_at AS completed_at,
 		sp.stage,
 		sp.created_at,
 		sp.initial_contact_date,
@@ -96,6 +98,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		var sp SalesProcessResponse
+		var completedAt sql.NullTime
 		if err := rows.Scan(
 			&sp.ID,
 			&sp.ClientID,
@@ -103,6 +106,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.ClientEmail,
 			&sp.ClientPhone,
 			&sp.ClientSource,
+			&completedAt,
 			&sp.Stage,
 			&sp.CreatedAt,
 			&sp.InitialContactDate,
@@ -115,6 +119,10 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if completedAt.Valid {
+			s := completedAt.Time.Format("2006-01-02")
+			sp.CompletedAt = &s
 		}
 
 		sp.Comments = []CommentResponse{}
@@ -415,6 +423,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	    c.email AS client_email,
 	    c.phone AS client_phone,
 	    c.source AS client_source,
+	    c.completed_at AS completed_at,
 	    sp.stage,
 			sp.initial_contact_date,
 	    sp.follow_up_date,
@@ -428,6 +437,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	`, id)
 
 	var updated SalesProcessResponse
+	var completedAt sql.NullTime
 	if err := row.Scan(
 		&updated.ID,
 		&updated.ClientID,
@@ -435,6 +445,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		&updated.ClientEmail,
 		&updated.ClientPhone,
 		&updated.ClientSource,
+		&completedAt,
 		&updated.Stage,
 		&updated.InitialContactDate,
 		&updated.FollowUpDate,
@@ -449,6 +460,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if completedAt.Valid {
+		s := completedAt.Time.Format("2006-01-02")
+		updated.CompletedAt = &s
 	}
 
 	// load comments for this sales process
