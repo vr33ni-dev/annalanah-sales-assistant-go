@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/pkg/mailer"
 
 	"github.com/go-chi/chi/v5"
@@ -84,22 +85,15 @@ SELECT
   c.duration_months,
   c.revenue_total,
   c.payment_frequency,
-
-  -- base_monthly_amount
   CASE 
     WHEN c.duration_months > 0
       THEN (c.revenue_total / c.duration_months)
     ELSE 0
   END AS base_monthly_amount,
-
-  -- next_due_date logic:
-  -- 1) overdue dominates
-  -- 2) otherwise closest upcoming
   COALESCE(
     o.overdue_due_date,
     u.upcoming_due_date
   ) AS next_due_date
-
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
 LEFT JOIN overdue  o ON o.contract_id = c.id
@@ -113,6 +107,9 @@ ORDER BY c.id;
 	defer rows.Close()
 
 	var out []ContractResponse
+	var contractIDs []int
+	idToIndex := make(map[int]int)
+
 	for rows.Next() {
 		var x ContractResponse
 		if err := rows.Scan(
@@ -124,45 +121,67 @@ ORDER BY c.id;
 			return
 		}
 
-		// load comments for this contract
+		x.Comments = []CommentResponse{}
+
+		idToIndex[x.ID] = len(out)
+		contractIDs = append(contractIDs, x.ID)
+
+		out = append(out, x)
+	}
+
+	// 🔥 Batch load contract comments (NO N+1)
+	if len(contractIDs) > 0 {
 		commentRows, err := h.DB.Query(`
-			SELECT id, author, body, metadata, created_at, updated_at
+			SELECT id, entity_id, author, body, metadata, created_at, updated_at
 			FROM comments
-			WHERE entity_type = 'contract' AND entity_id = $1
+			WHERE entity_type = 'contract'
+			  AND entity_id = ANY($1)
 			ORDER BY created_at DESC
-		`, x.ID)
+		`, pq.Array(contractIDs))
+
 		if err == nil {
-			var comments []CommentResponse
+			defer commentRows.Close()
+
 			for commentRows.Next() {
 				var id int
+				var entityID int
 				var author sql.NullString
 				var body string
 				var metadata sql.NullString
 				var created, updated time.Time
-				if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
-					var meta map[string]interface{}
-					if metadata.Valid && metadata.String != "" {
-						_ = json.Unmarshal([]byte(metadata.String), &meta)
-					}
-					var a *string
-					if author.Valid {
-						s := author.String
-						a = &s
-					}
-					comments = append(comments, CommentResponse{
-						ID: id, EntityType: "contract", EntityID: x.ID, Author: a, Body: body, Metadata: meta,
-						CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
+
+				if err := commentRows.Scan(
+					&id, &entityID, &author, &body,
+					&metadata, &created, &updated,
+				); err != nil {
+					continue
+				}
+
+				var meta map[string]interface{}
+				if metadata.Valid && metadata.String != "" {
+					_ = json.Unmarshal([]byte(metadata.String), &meta)
+				}
+
+				var a *string
+				if author.Valid {
+					s := author.String
+					a = &s
+				}
+
+				if idx, ok := idToIndex[entityID]; ok {
+					out[idx].Comments = append(out[idx].Comments, CommentResponse{
+						ID:         id,
+						EntityType: "contract",
+						EntityID:   entityID,
+						Author:     a,
+						Body:       body,
+						Metadata:   meta,
+						CreatedAt:  created.Format(time.RFC3339),
+						UpdatedAt:  updated.Format(time.RFC3339),
 					})
 				}
 			}
-			_ = commentRows.Close()
-			if comments == nil {
-				comments = []CommentResponse{}
-			}
-			x.Comments = comments
 		}
-
-		out = append(out, x)
 	}
 
 	if out == nil {
