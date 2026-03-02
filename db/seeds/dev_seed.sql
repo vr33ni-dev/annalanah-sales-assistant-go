@@ -15,6 +15,13 @@ settings_avg_rev AS (
   RETURNING 1
 ),
 
+-- Keep most dev-seed dates close to "today" so the UI looks current after reset
+seed_dates AS (
+  SELECT
+    (CURRENT_DATE - INTERVAL '2 months')::date AS anna_contract_start,
+    (CURRENT_DATE - INTERVAL '1 month')::date AS max_contract_start
+),
+
 -- 1) Stage (ad campaign)
 s AS (
   INSERT INTO stages (name, date, ad_budget, registrations, participants)
@@ -74,28 +81,33 @@ converted_lead AS (
 -- Sales process for explicit end_date client
 sp_explicit_enddate AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue)
-  SELECT eec.id, 'closed', (CURRENT_DATE + INTERVAL '2 days')::date, TRUE, TRUE, 1234
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT eec.id, 'closed', ('2026-01-15'::date - INTERVAL '5 days')::date, TRUE, TRUE, 1234
   FROM explicit_enddate_client eec
   RETURNING id, client_id
 ),
 -- Anna: closed/won (Abschluss)
 sp_anna AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT a.id, 'closed', (CURRENT_DATE + INTERVAL '10 days')::date, TRUE, TRUE, 4800, NULL
-  FROM anna a
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT a.id, 'closed', (sd.anna_contract_start - INTERVAL '7 days')::date, TRUE, TRUE, 4800, NULL
+  FROM anna a, seed_dates sd
   RETURNING id, client_id
 ),
 -- Max: closed/won (Abschluss) linked to stage
 sp_max AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT m.id, 'closed', (CURRENT_DATE + INTERVAL '5 days')::date, TRUE, TRUE, 6000, s.id
-  FROM maxc m, s
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT m.id, 'closed', (sd.max_contract_start - INTERVAL '7 days')::date, TRUE, TRUE, 6000, s.id
+  FROM maxc m, s, seed_dates sd
   RETURNING id, client_id
 ),
 -- Moritz: follow-up done, not closed (FollowUp)
 sp_moritz AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT mo.id, 'follow_up', (CURRENT_DATE + INTERVAL '20 days')::date, TRUE, FALSE, 5400, s.id
+  -- Funnel order: Erstgespräch -> Zweitgespräch (follow_up) -> Abschluss (contract) -> Upsell (extension)
+  -- Keep Zweitgespräch before the upsell record and before the seeded extension contract start (see contract_moritz_ext)
+  SELECT mo.id, 'follow_up', (CURRENT_DATE - INTERVAL '10 days')::date, TRUE, FALSE, 5400, s.id
   FROM moritz mo, s
   RETURNING id, client_id
 ),
@@ -116,14 +128,14 @@ contract_explicit_enddate AS (
 ),
 contract_anna AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sa.client_id, sa.id, '2025-10-01'::date, 6, 4800, 'monthly'
-  FROM sp_anna sa
+  SELECT sa.client_id, sa.id, sd.anna_contract_start, 6, 4800, 'monthly'
+  FROM sp_anna sa, seed_dates sd
   RETURNING id
 ),
 contract_max AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, '2025-09-23'::date, 6, 6000, 'bi-monthly'
-  FROM sp_max sm
+  SELECT sm.client_id, sm.id, sd.max_contract_start, 6, 6000, 'bi-monthly'
+  FROM sp_max sm, seed_dates sd
   RETURNING id
 ),
 contract_moritz AS (
@@ -262,7 +274,7 @@ ON CONFLICT (contract_id, due_date) DO NOTHING;
 
 -- Insert a confirmed upsell for Moritz linking previous and new contract (idempotent)
 INSERT INTO contract_upsells (sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
-SELECT sp.id, sp.client_id, (CURRENT_DATE - INTERVAL '5 days')::date, 'verlaengerung', nc.revenue_total, pc.id, nc.id
+SELECT sp.id, sp.client_id, (sp.follow_up_date + INTERVAL '1 day')::date, 'verlaengerung', nc.revenue_total, pc.id, nc.id
 FROM sales_process sp
 JOIN clients cl ON cl.id = sp.client_id
 JOIN contracts pc ON pc.client_id = cl.id AND pc.start_date <= CURRENT_DATE
