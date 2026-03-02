@@ -1092,7 +1092,38 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 }
 
 func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.DB.Query(`
+	q := r.URL.Query()
+	var where []string
+	var args []any
+	idx := 1
+
+	if v := q.Get("start_date"); v != "" {
+		start, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		where = append(where, "cu.upsell_date >= $"+strconv.Itoa(idx))
+		args = append(args, start)
+		idx++
+	}
+	if v := q.Get("end_date"); v != "" {
+		end, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		where = append(where, "cu.upsell_date <= $"+strconv.Itoa(idx))
+		args = append(args, end)
+		idx++
+	}
+
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	query := `
 SELECT 
     cu.id,
     cu.sales_process_id,
@@ -1110,8 +1141,11 @@ SELECT
 FROM contract_upsells cu
 LEFT JOIN contracts c
        ON c.id = cu.new_contract_id
+` + whereSQL + `
 ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
-`)
+`
+
+	rows, err := h.DB.Query(query, args...)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -1384,6 +1418,36 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var where []string
+	var args []any
+	idx := 1
+
+	if v := q.Get("start_date"); v != "" {
+		start, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		where = append(where, "cu.upsell_date >= $"+strconv.Itoa(idx))
+		args = append(args, start)
+		idx++
+	}
+	if v := q.Get("end_date"); v != "" {
+		end, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		where = append(where, "cu.upsell_date <= $"+strconv.Itoa(idx))
+		args = append(args, end)
+		idx++
+	}
+
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
 
 	var stats struct {
 		VerlaengerungCount      int      `json:"verlangerung_count"`
@@ -1393,7 +1457,7 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 		UmsatzSum               float64  `json:"umsatz_sum"`
 	}
 
-	err := h.DB.QueryRow(`
+	query := `
         SELECT
 			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlangerung_count,
 			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlangerung_count,
@@ -1409,8 +1473,11 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 			) AS verlangerungsquote,
 
 			COALESCE(SUM(upsell_revenue), 0) AS umsatz_sum
-        FROM contract_upsells;
-    `).Scan(
+		FROM contract_upsells cu
+	` + whereSQL + `;
+    `
+
+	err := h.DB.QueryRow(query, args...).Scan(
 		&stats.VerlaengerungCount,
 		&stats.KeineVerlaengerungCount,
 		&stats.ScheduledCount,

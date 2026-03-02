@@ -123,3 +123,99 @@ func TestListSalesProcesses_WithComments(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	start := "2026-01-01"
+	end := "2026-01-31"
+	startT, _ := time.Parse("2006-01-02", start)
+	endT, _ := time.Parse("2006-01-02", end)
+
+	cols := []string{
+		"id",
+		"sales_process_id",
+		"client_id",
+		"upsell_date",
+		"upsell_result",
+		"upsell_revenue",
+		"previous_contract_id",
+		"new_contract_id",
+		"created_at",
+		"updated_at",
+		"contract_start_date",
+		"contract_duration_months",
+		"contract_frequency",
+	}
+	rows := sqlmock.NewRows(cols).
+		AddRow(1, 10, 100, "2026-01-10", "verlaengerung", 123.45, nil, nil, "2026-01-10T10:00:00Z", "2026-01-10T10:00:00Z", nil, nil, nil)
+
+	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(rows)
+
+	req := httptest.NewRequest("GET", "/api/upsells/categories?start_date="+start+"&end_date="+end, nil)
+	w := httptest.NewRecorder()
+	h.ListUpsellCategories(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Fatalf("expected 200, got %d; body=%s", w.Result().StatusCode, w.Body.String())
+	}
+
+	var resp map[string][]ContractUpsell
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp["successful"]) != 1 {
+		t.Fatalf("expected 1 successful upsell, got %#v", resp)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestGetUpsellAnalytics_DateRangeFiltersQuery(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	start := "2026-02-01"
+	end := "2026-02-28"
+	startT, _ := time.Parse("2006-01-02", start)
+	endT, _ := time.Parse("2006-01-02", end)
+
+	// query row result columns correspond to Scan order in handler
+	result := sqlmock.NewRows([]string{"verlangerung_count", "keine_verlangerung_count", "scheduled_count", "verlangerungsquote", "umsatz_sum"}).
+		AddRow(2, 1, 3, 66.7, 1000.0)
+
+	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(result)
+
+	req := httptest.NewRequest("GET", "/api/upsells/analytics?start_date="+start+"&end_date="+end, nil)
+	w := httptest.NewRecorder()
+	h.GetUpsellAnalytics(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Fatalf("expected 200, got %d; body=%s", w.Result().StatusCode, w.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["verlangerung_count"] != float64(2) {
+		t.Fatalf("expected verlangerung_count=2, got %#v", body["verlangerung_count"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
