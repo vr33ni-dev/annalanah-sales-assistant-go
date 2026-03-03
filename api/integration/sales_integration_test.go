@@ -41,6 +41,52 @@ func TestStartSalesProcess_NewClient(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
+
+	var status string
+	testhelpers.MustQueryRow(t, suite.DB.DB,
+		`SELECT status FROM clients WHERE email = $1`,
+		"b@example.com",
+	).Scan(&status)
+
+	if status != "follow_up_scheduled" {
+		t.Fatalf("expected status follow_up_scheduled, got %q", status)
+	}
+}
+
+func TestStartSalesProcess_NewClientInitialContactOnly_SetsInitialCallScheduled(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	testhelpers.TruncateAll(t, suite.DB)
+
+	body := api.StartSalesProcessRequest{
+		Name:               "Ina",
+		Email:              "ina@example.com",
+		Phone:              "123",
+		Source:             "organic",
+		InitialContactDate: strPtr("2025-10-01"),
+		FollowUpDate:       nil,
+	}
+
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/sales/start", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	handler.StartSalesProcess(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var status string
+	testhelpers.MustQueryRow(t, suite.DB.DB,
+		`SELECT status FROM clients WHERE email = $1`,
+		"ina@example.com",
+	).Scan(&status)
+
+	if status != "initial_call_scheduled" {
+		t.Fatalf("expected status initial_call_scheduled, got %q", status)
+	}
 }
 
 // ----------------------------------------------------

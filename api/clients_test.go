@@ -116,6 +116,34 @@ func TestCreateClient(t *testing.T) {
 	}
 }
 
+func TestCreateClient_MissingStatus(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createTestSchema(t, db)
+
+	h := &api.Handler{DB: db}
+	body := strings.NewReader(`{
+		"name": "Bob",
+		"email": "bob@example.com",
+		"phone": "456",
+		"source": "referral"
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
+	w := httptest.NewRecorder()
+
+	h.CreateClient(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d", resp.StatusCode)
+	}
+}
+
 func TestDeleteClient(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
