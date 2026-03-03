@@ -55,8 +55,8 @@ func TestStartSalesProcess_BlockedWhenActiveContractExists(t *testing.T) {
 	// seed client (let DB assign id)
 	var existingClientID int
 	testhelpers.MustQueryRow(t, suite.DB.DB, `
-		INSERT INTO clients (name, email, phone, source)
-		VALUES ('Bob', 'b@example.com', '999', 'organic') RETURNING id
+		INSERT INTO clients (name, email, phone, source, status)
+		VALUES ('Bob', 'b@example.com', '999', 'organic', 'active') RETURNING id
 	`).Scan(&existingClientID)
 
 	// seed sales_process
@@ -110,8 +110,8 @@ func TestStartSalesProcess_OverwriteAlsoUpdatesLead(t *testing.T) {
 
 	var existingClientID2 int
 	testhelpers.MustQueryRow(t, suite.DB.DB, `
-		INSERT INTO clients (name, email, phone, source)
-		VALUES ('Dana', 'd@example.com', '555', 'organic') RETURNING id
+		INSERT INTO clients (name, email, phone, source, status)
+		VALUES ('Dana', 'd@example.com', '555', 'organic', 'active') RETURNING id
 	`).Scan(&existingClientID2)
 
 	testhelpers.MustExec(t, suite.DB.DB, `

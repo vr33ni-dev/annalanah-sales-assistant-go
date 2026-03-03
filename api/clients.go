@@ -50,10 +50,28 @@ SELECT
   c.phone,
   c.source,
   COALESCE(s.name, '') AS source_stage_name,
-  COALESCE(c.status, 'new') AS status,
+	COALESCE(
+		c.status,
+		CASE
+			WHEN sp.stage = 'closed' AND COALESCE(sp.closed, FALSE) = TRUE THEN 'active'
+			WHEN sp.stage = 'lost' THEN 'lost'
+			WHEN sp.stage = 'initial_contact'
+				AND sp.initial_contact_date IS NOT NULL
+				AND sp.follow_up_result IS NULL
+				THEN 'initial_call_scheduled'
+			WHEN sp.stage = 'follow_up'
+				AND sp.follow_up_result IS NULL
+				THEN 'follow_up_scheduled'
+			WHEN sp.stage = 'follow_up'
+				AND sp.follow_up_result IS TRUE
+				THEN 'awaiting_response'
+			ELSE 'inactive'
+		END
+	) AS status,
   c.completed_at
 FROM clients c
 LEFT JOIN stages s ON s.id = c.source_stage_id
+LEFT JOIN sales_process sp ON sp.client_id = c.id
 ORDER BY c.id
 `)
 	if err != nil {
@@ -164,11 +182,15 @@ ORDER BY c.id
 }
 
 // POST /api/clients
-// (UNCHANGED — exactly your original code)
 func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	var c Client
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 		http.Error(w, "Ungültige Anfrage", http.StatusBadRequest)
+		return
+	}
+
+	if c.Status == "" {
+		http.Error(w, "status is required", http.StatusBadRequest)
 		return
 	}
 

@@ -30,6 +30,13 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT
 		);`,
+		`CREATE TABLE sales_process (
+			client_id INTEGER,
+			stage TEXT,
+			closed BOOLEAN,
+			initial_contact_date DATETIME,
+			follow_up_result BOOLEAN
+		);`,
 	}
 
 	for _, stmt := range schema {
@@ -203,7 +210,7 @@ func TestCreateClient_DBError(t *testing.T) {
 	defer db.Close() // closed → error
 	h := &api.Handler{DB: db}
 
-	body := strings.NewReader(`{"name":"Eve"}`)
+	body := strings.NewReader(`{"name":"Eve","status":"active"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
 	w := httptest.NewRecorder()
 	h.CreateClient(w, req)
