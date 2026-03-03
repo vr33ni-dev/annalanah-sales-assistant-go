@@ -358,7 +358,7 @@ func TestConvertLead_Success(t *testing.T) {
 
 	// insert client
 	mock.ExpectQuery(`INSERT INTO clients`).
-		WithArgs("LeadName", sqlmock.AnyArg(), sqlmock.AnyArg(), "organic", sqlmock.AnyArg()).
+		WithArgs("LeadName", sqlmock.AnyArg(), sqlmock.AnyArg(), "organic", sqlmock.AnyArg(), "follow_up_scheduled").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(11))
 
 	// insert sales_process

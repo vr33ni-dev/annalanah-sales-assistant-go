@@ -30,6 +30,13 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT
 		);`,
+		`CREATE TABLE sales_process (
+			client_id INTEGER,
+			stage TEXT,
+			closed BOOLEAN,
+			initial_contact_date DATETIME,
+			follow_up_result BOOLEAN
+		);`,
 	}
 
 	for _, stmt := range schema {
@@ -106,6 +113,34 @@ func TestCreateClient(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 client inserted, got %d", count)
+	}
+}
+
+func TestCreateClient_MissingStatus(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createTestSchema(t, db)
+
+	h := &api.Handler{DB: db}
+	body := strings.NewReader(`{
+		"name": "Bob",
+		"email": "bob@example.com",
+		"phone": "456",
+		"source": "referral"
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
+	w := httptest.NewRecorder()
+
+	h.CreateClient(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d", resp.StatusCode)
 	}
 }
 
@@ -203,7 +238,7 @@ func TestCreateClient_DBError(t *testing.T) {
 	defer db.Close() // closed → error
 	h := &api.Handler{DB: db}
 
-	body := strings.NewReader(`{"name":"Eve"}`)
+	body := strings.NewReader(`{"name":"Eve","status":"active"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
 	w := httptest.NewRecorder()
 	h.CreateClient(w, req)

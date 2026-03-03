@@ -167,6 +167,18 @@ func TestConvertLead_Success(t *testing.T) {
 		t.Fatalf("expected client_id and sales_process_id, got %+v", resp)
 	}
 
+	var clientStatus string
+	testhelpers.MustQueryRow(
+		t,
+		suite.DB.DB,
+		`SELECT status FROM clients WHERE id = $1`,
+		resp["client_id"],
+	).Scan(&clientStatus)
+
+	if clientStatus != "follow_up_scheduled" {
+		t.Fatalf("expected client status follow_up_scheduled, got %q", clientStatus)
+	}
+
 	var converted bool
 	testhelpers.MustQueryRow(
 		t,

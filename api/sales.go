@@ -34,6 +34,7 @@ type SalesProcessResponse struct {
 	ClientEmail        *string           `json:"client_email,omitempty"`
 	ClientPhone        *string           `json:"client_phone,omitempty"`
 	ClientSource       *string           `json:"client_source,omitempty"`
+	CompletedAt        *string           `json:"completed_at"`
 	Stage              string            `json:"stage"`
 	CreatedAt          *string           `json:"created_at,omitempty"`
 	UpdatedAt          *string           `json:"updated_at,omitempty"`
@@ -71,6 +72,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		cl.email AS client_email,
 		cl.phone AS client_phone,
 		cl.source AS client_source,
+		cl.completed_at AS completed_at,
 		sp.stage,
 		sp.created_at,
 		sp.initial_contact_date,
@@ -96,6 +98,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		var sp SalesProcessResponse
+		var completedAt sql.NullTime
 		if err := rows.Scan(
 			&sp.ID,
 			&sp.ClientID,
@@ -103,6 +106,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 			&sp.ClientEmail,
 			&sp.ClientPhone,
 			&sp.ClientSource,
+			&completedAt,
 			&sp.Stage,
 			&sp.CreatedAt,
 			&sp.InitialContactDate,
@@ -115,6 +119,10 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if completedAt.Valid {
+			s := completedAt.Time.Format("2006-01-02")
+			sp.CompletedAt = &s
 		}
 
 		sp.Comments = []CommentResponse{}
@@ -208,6 +216,19 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ---------- NORMALIZATION ----------
+	// If the follow-up did not happen (no-show), the process cannot be closed/won.
+	// Force closed=false and clear any won-only fields.
+	if sp.FollowUpResult != nil && *sp.FollowUpResult == false {
+		f := false
+		sp.Closed = &f
+		sp.Revenue = nil
+		sp.ContractDurationMonths = nil
+		sp.ContractStartDate = nil
+		sp.ContractFrequency = nil
+		sp.CompletedAt = nil
+	}
+
 	// ---------- VALIDATION ----------
 	// If closed=true, all contract fields must be present/valid.
 	if sp.Closed != nil && *sp.Closed == true {
@@ -241,12 +262,13 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			ELSE revenue
 		END,
 		stage = CASE
+			-- A no-show ends the process (UI can’t reschedule), mark as lost.
+			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
 			WHEN COALESCE($4, closed) IS TRUE  THEN 'closed'
 			WHEN $4 IS NOT NULL AND $4 IS FALSE THEN 'lost'
 			WHEN stage = 'lost' AND $4 IS NULL AND $3 IS NULL THEN 'lost'
 			WHEN COALESCE($2, follow_up_date) IS NOT NULL THEN 'follow_up'
 			WHEN COALESCE($1, initial_contact_date) IS NOT NULL THEN 'initial_contact'
-			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
 			WHEN COALESCE($3, follow_up_result) IS TRUE  THEN 'follow_up'
 			ELSE 'follow_up'
 		END
@@ -263,6 +285,29 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Resolve client_id once (used for completed_at and optional contract creation)
+	var clientID int
+	if err := h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, id).Scan(&clientID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Keep clients.completed_at consistent with the sales process state.
+	// - If closed is explicitly false -> clear completed_at.
+	// - If closed is explicitly true and completed_at provided -> set it.
+	if sp.Closed != nil && !*sp.Closed {
+		if _, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID); err != nil {
+			http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if sp.Closed != nil && *sp.Closed && sp.CompletedAt != nil {
+		if _, err := h.DB.Exec(`UPDATE clients SET completed_at = $1::date WHERE id = $2`, *sp.CompletedAt, clientID); err != nil {
+			http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// ---------- SYNC CLIENT STATUS ----------
@@ -302,33 +347,6 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		sp.Revenue != nil &&
 		sp.ContractDurationMonths != nil && *sp.ContractDurationMonths > 0 &&
 		sp.ContractStartDate != nil && sp.ContractFrequency != nil {
-
-		// get client_id for this sales process
-		var clientID int
-		if err := h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, id).Scan(&clientID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// If Closed is explicitly true, update clients.completed_at (set to provided date)
-		// If closed is explicitly false, clear the client's completed_at.
-		if sp.Closed != nil && *sp.Closed && sp.CompletedAt != nil {
-			_, err := h.DB.Exec(`
-		UPDATE clients
-		SET completed_at = $1::date
-		WHERE id = $2
-		`, *sp.CompletedAt, clientID)
-			if err != nil {
-				http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else if sp.Closed != nil && !*sp.Closed {
-			_, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID)
-			if err != nil {
-				http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
 
 		tx2, err := h.DB.BeginTx(r.Context(), nil)
 		if err != nil {
@@ -415,6 +433,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	    c.email AS client_email,
 	    c.phone AS client_phone,
 	    c.source AS client_source,
+	    c.completed_at AS completed_at,
 	    sp.stage,
 			sp.initial_contact_date,
 	    sp.follow_up_date,
@@ -428,6 +447,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	`, id)
 
 	var updated SalesProcessResponse
+	var completedAt sql.NullTime
 	if err := row.Scan(
 		&updated.ID,
 		&updated.ClientID,
@@ -435,6 +455,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		&updated.ClientEmail,
 		&updated.ClientPhone,
 		&updated.ClientSource,
+		&completedAt,
 		&updated.Stage,
 		&updated.InitialContactDate,
 		&updated.FollowUpDate,
@@ -449,6 +470,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if completedAt.Valid {
+		s := completedAt.Time.Format("2006-01-02")
+		updated.CompletedAt = &s
 	}
 
 	// load comments for this sales process
@@ -487,6 +512,47 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			comments = []CommentResponse{}
 		}
 		updated.Comments = comments
+	}
+
+	// If this sales process was started from an unconverted lead and ended up lost,
+	// delete the temporary client record so the lead can be scheduled again cleanly.
+	if updated.Stage == "lost" && updated.Closed != nil && !*updated.Closed {
+		var leadID sql.NullInt64
+		if err := h.DB.QueryRow(`SELECT lead_id FROM sales_process WHERE id = $1`, updated.ID).Scan(&leadID); err == nil && leadID.Valid {
+			var converted bool
+			if err := h.DB.QueryRow(`SELECT converted FROM leads WHERE id = $1`, leadID.Int64).Scan(&converted); err == nil && !converted {
+				var hasContracts bool
+				if err := h.DB.QueryRow(`SELECT EXISTS (SELECT 1 FROM contracts WHERE client_id = $1)`, updated.ClientID).Scan(&hasContracts); err == nil && !hasContracts {
+					txDel, err := h.DB.BeginTx(r.Context(), nil)
+					if err != nil {
+						http.Error(w, "delete tx begin failed: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+					defer txDel.Rollback()
+
+					// Comments are not FK-linked, so clean them explicitly.
+					if _, err := txDel.ExecContext(r.Context(), `
+						DELETE FROM comments
+						WHERE (entity_type = 'client' AND entity_id = $1)
+						   OR (entity_type = 'sales_process' AND entity_id = $2)
+					`, updated.ClientID, updated.ID); err != nil {
+						http.Error(w, "failed to delete comments: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					// Deleting the client cascades to sales_process.
+					if _, err := txDel.ExecContext(r.Context(), `DELETE FROM clients WHERE id = $1`, updated.ClientID); err != nil {
+						http.Error(w, "failed to delete client: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					if err := txDel.Commit(); err != nil {
+						http.Error(w, "delete commit failed: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -712,6 +778,20 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// determine stage in Go to avoid ambiguous SQL parameter typing
+	stage := "follow_up"
+	if req.FollowUpDate != nil && strings.TrimSpace(*req.FollowUpDate) != "" {
+		stage = "follow_up"
+	} else if req.InitialContactDate != nil && strings.TrimSpace(*req.InitialContactDate) != "" {
+		stage = "initial_contact"
+	}
+
+	// Any client created by a sales process must start in a scheduled status.
+	desiredClientStatus := "initial_call_scheduled"
+	if stage == "follow_up" {
+		desiredClientStatus = "follow_up_scheduled"
+	}
+
 	// ------------------------------------------------
 	// 6) Transaction (WRITES ONLY)
 	// ------------------------------------------------
@@ -745,15 +825,26 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if err := tx.QueryRowContext(ctx, `
-			INSERT INTO clients (name, email, phone, source, source_stage_id)
-			VALUES ($1,$2,$3,$4,$5)
+			INSERT INTO clients (name, email, phone, source, source_stage_id, status)
+			VALUES ($1,$2,$3,$4,$5,$6)
 			RETURNING id
 		`,
-			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID,
+			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID, desiredClientStatus,
 		).Scan(&clientID); err != nil {
 			http.Error(w, "client insert failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	// Backfill missing client status on older rows (avoid NULL status responses)
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE clients
+		SET status = $1
+		WHERE id = $2
+		  AND status IS NULL
+	`, desiredClientStatus, clientID); err != nil {
+		http.Error(w, "client status backfill failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// ------------------------------------------------
@@ -790,13 +881,6 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// 8) Create or reuse sales_process
 	// ------------------------------------------------
 	var salesID int
-	// determine stage in Go to avoid ambiguous SQL parameter typing
-	stage := "follow_up"
-	if req.FollowUpDate != nil && strings.TrimSpace(*req.FollowUpDate) != "" {
-		stage = "follow_up"
-	} else if req.InitialContactDate != nil && strings.TrimSpace(*req.InitialContactDate) != "" {
-		stage = "initial_contact"
-	}
 
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO sales_process
@@ -875,24 +959,49 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load persisted client for response (ensures keep_existing/overwrite reflect reality)
+	var respClient ClientResponse
+	var phone sql.NullString
+	var source sql.NullString
+	var sourceStageID sql.NullInt64
+	if err := h.DB.QueryRowContext(ctx, `
+		SELECT id, name, email, phone, source, source_stage_id
+		FROM clients
+		WHERE id = $1
+	`, clientID).Scan(
+		&respClient.ID,
+		&respClient.Name,
+		&respClient.Email,
+		&phone,
+		&source,
+		&sourceStageID,
+	); err != nil {
+		http.Error(w, "client load failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if phone.Valid {
+		respClient.Phone = phone.String
+	}
+	if source.Valid {
+		respClient.Source = source.String
+	}
+	if sourceStageID.Valid {
+		v := int(sourceStageID.Int64)
+		respClient.SourceStageID = &v
+	}
+	respClient.Comments = respComments
+
 	// ------------------------------------------------
 	// 9) Response
 	// ------------------------------------------------
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(StartSalesProcessResponse{
 		SalesProcessID: salesID,
-		Client: ClientResponse{
-			ID:       clientID,
-			Name:     req.Name,
-			Email:    req.Email,
-			Phone:    req.Phone,
-			Source:   req.Source,
-			Comments: respComments,
-		},
+		Client:         respClient,
 		SalesProcess: SalesProcessSummary{
 			ID:                 salesID,
 			ClientID:           clientID,
-			Stage:              "follow_up",
+			Stage:              stage,
 			InitialContactDate: req.InitialContactDate,
 			FollowUpDate:       req.FollowUpDate,
 			StageID:            req.SourceStageID,
@@ -920,6 +1029,19 @@ func (h *Handler) createClientAndSalesProcessTx(
 	var clientID int
 	var salesProcessID int
 
+	// determine stage in Go to avoid SQL parameter type ambiguity
+	stage := "follow_up"
+	if followUpDate != nil && strings.TrimSpace(*followUpDate) != "" {
+		stage = "follow_up"
+	} else if initialContactDate != nil && strings.TrimSpace(*initialContactDate) != "" {
+		stage = "initial_contact"
+	}
+
+	clientStatus := "initial_call_scheduled"
+	if stage == "follow_up" {
+		clientStatus = "follow_up_scheduled"
+	}
+
 	// ------------------------------------------
 	// 1) Create OR reuse client (email-idempotent)
 	// ------------------------------------------
@@ -931,10 +1053,10 @@ func (h *Handler) createClientAndSalesProcessTx(
 
 		if err == sql.ErrNoRows {
 			err = tx.QueryRowContext(ctx,
-				`INSERT INTO clients (name, email, phone, source, source_stage_id)
-				 VALUES ($1,$2,$3,$4,$5)
+				`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
+				 VALUES ($1,$2,$3,$4,$5,$6)
 				 RETURNING id`,
-				name, email, phone, source, sourceStageID,
+				name, email, phone, source, sourceStageID, clientStatus,
 			).Scan(&clientID)
 			if err != nil {
 				return 0, 0, err
@@ -945,10 +1067,10 @@ func (h *Handler) createClientAndSalesProcessTx(
 	} else {
 		// no email → always new client
 		err := tx.QueryRowContext(ctx,
-			`INSERT INTO clients (name, phone, source, source_stage_id)
-			 VALUES ($1,$2,$3,$4)
+			`INSERT INTO clients (name, phone, source, source_stage_id, status)
+			 VALUES ($1,$2,$3,$4,$5)
 			 RETURNING id`,
-			name, phone, source, sourceStageID,
+			name, phone, source, sourceStageID, clientStatus,
 		).Scan(&clientID)
 		if err != nil {
 			return 0, 0, err
@@ -958,14 +1080,6 @@ func (h *Handler) createClientAndSalesProcessTx(
 	// ------------------------------------------
 	// 2) Create OR reuse sales_process (SAFE)
 	// ------------------------------------------
-
-	// determine stage in Go to avoid SQL parameter type ambiguity
-	stage := "follow_up"
-	if followUpDate != nil && strings.TrimSpace(*followUpDate) != "" {
-		stage = "follow_up"
-	} else if initialContactDate != nil && strings.TrimSpace(*initialContactDate) != "" {
-		stage = "initial_contact"
-	}
 
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO sales_process

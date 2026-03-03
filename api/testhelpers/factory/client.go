@@ -7,8 +7,8 @@ type Client struct {
 func (s *APITestSuite) CreateClient() Client {
 	var id int
 	err := s.DB.DB.QueryRow(`
-		INSERT INTO clients (name)
-		VALUES ('Client ' || NOW()::text)
+		INSERT INTO clients (name, status)
+		VALUES ('Client ' || NOW()::text, 'inactive')
 		RETURNING id
 	`).Scan(&id)
 

@@ -15,6 +15,23 @@ settings_avg_rev AS (
   RETURNING 1
 ),
 
+-- Keep most dev-seed dates close to "today" so the UI looks current after reset
+seed_dates AS (
+  SELECT
+    (CURRENT_DATE - INTERVAL '2 months')::date AS anna_contract_start,
+    (CURRENT_DATE - INTERVAL '1 month')::date AS max_contract_start,
+    ((CURRENT_DATE - INTERVAL '2 months')::date - INTERVAL '7 days')::date AS anna_completed_at,
+    ((CURRENT_DATE - INTERVAL '1 month')::date - INTERVAL '7 days')::date AS max_completed_at,
+    (CURRENT_DATE + INTERVAL '1 month')::date AS moritz_ext_contract_start,
+    -- Keep completion timestamps in the past/present (never future), even if the next contract starts in the future
+    (CURRENT_DATE - INTERVAL '5 days')::date AS moritz_completed_at,
+
+    -- Explicit end_date test scenario (keep it close to "today")
+    (CURRENT_DATE - INTERVAL '20 days')::date AS explicit_contract_start,
+    ((CURRENT_DATE - INTERVAL '20 days')::date + INTERVAL '90 days')::date AS explicit_contract_end,
+    ((CURRENT_DATE - INTERVAL '20 days')::date - INTERVAL '7 days')::date AS explicit_completed_at
+),
+
 -- 1) Stage (ad campaign)
 s AS (
   INSERT INTO stages (name, date, ad_budget, registrations, participants)
@@ -24,29 +41,40 @@ s AS (
 
 -- 2c) Client for explicit end_date test
 explicit_enddate_client AS (
-  INSERT INTO clients (name, email, phone, source, status)
-  VALUES ('Explicit Enddate Client', 'explicit@enddate.com', '555000111', 'organic', 'active')
+  INSERT INTO clients (name, email, phone, source, status, completed_at)
+  -- Closed deal: completion should be before contract start.
+  SELECT
+    'Explicit Enddate Client',
+    'explicit@enddate.com',
+    '555000111',
+    'organic',
+    'active',
+    sd.explicit_completed_at
+  FROM seed_dates sd
   RETURNING id
 ),
 anna AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  VALUES ('Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', (CURRENT_DATE + INTERVAL '60 days')::date)
+  SELECT 'Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', sd.anna_completed_at
+  FROM seed_dates sd
   RETURNING id
 ),
 maxc AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', (CURRENT_DATE + INTERVAL '45 days')::date
-  FROM s
+  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', sd.max_completed_at
+  FROM s, seed_dates sd
   RETURNING id
 ),
 moritz AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status)
-  SELECT 'Moritz Mustermann', 'mo@example.com', '912345', 'paid', s.id, 'follow_up_scheduled'
-  FROM s
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
+  -- Moritz represents a completed upsell/extension sale in the seed
+  SELECT 'Moritz Mustermann', 'mo@example.com', '912345', 'paid', s.id, 'active', sd.moritz_completed_at
+  FROM s, seed_dates sd
   RETURNING id
 ),
 maria AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status)
+  -- Maria represents a no-show that is treated as lost
   SELECT 'Maria Mustermann', 'ma@example.com', '912345', 'paid', s.id, 'lost'
   FROM s
   RETURNING id
@@ -73,69 +101,140 @@ converted_lead AS (
 
 -- Sales process for explicit end_date client
 sp_explicit_enddate AS (
-  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue)
-  SELECT eec.id, 'closed', (CURRENT_DATE + INTERVAL '2 days')::date, TRUE, TRUE, 1234
-  FROM explicit_enddate_client eec
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, created_at)
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT eec.id,
+         'closed',
+         (sd.explicit_contract_start - INTERVAL '5 days')::date,
+         TRUE,
+         TRUE,
+         1234,
+         ((sd.explicit_contract_start - INTERVAL '6 days')::timestamp)
+  FROM explicit_enddate_client eec, seed_dates sd
   RETURNING id, client_id
 ),
 -- Anna: closed/won (Abschluss)
 sp_anna AS (
-  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT a.id, 'closed', (CURRENT_DATE + INTERVAL '10 days')::date, TRUE, TRUE, 4800, NULL
-  FROM anna a
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id, created_at)
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT a.id,
+         'closed',
+         (sd.anna_contract_start - INTERVAL '7 days')::date,
+         TRUE,
+         TRUE,
+         4800,
+         NULL,
+         ((sd.anna_contract_start - INTERVAL '8 days')::timestamp)
+  FROM anna a, seed_dates sd
   RETURNING id, client_id
 ),
 -- Max: closed/won (Abschluss) linked to stage
 sp_max AS (
-  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT m.id, 'closed', (CURRENT_DATE + INTERVAL '5 days')::date, TRUE, TRUE, 6000, s.id
-  FROM maxc m, s
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id, created_at)
+  -- For closed deals, keep the Abschluss meeting before contract start
+  SELECT m.id,
+         'closed',
+         (sd.max_contract_start - INTERVAL '7 days')::date,
+         TRUE,
+         TRUE,
+         6000,
+         s.id,
+         ((sd.max_contract_start - INTERVAL '8 days')::timestamp)
+  FROM maxc m, s, seed_dates sd
   RETURNING id, client_id
 ),
 -- Moritz: follow-up done, not closed (FollowUp)
 sp_moritz AS (
-  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT mo.id, 'follow_up', (CURRENT_DATE + INTERVAL '20 days')::date, TRUE, FALSE, 5400, s.id
-  FROM moritz mo, s
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id, created_at)
+  -- For a contract to exist, the sales process must be completed (closed).
+  -- Keep completion before contract created_at/start_date.
+  SELECT mo.id,
+         'closed',
+         sd.moritz_completed_at,
+         TRUE,
+         TRUE,
+         12000,
+         s.id,
+         ((sd.moritz_completed_at - INTERVAL '1 day')::timestamp)
+  FROM moritz mo, s, seed_dates sd
   RETURNING id, client_id
 ),
--- Maria: lost (lost)
+-- Maria: no-show -> lost
 sp_maria AS (
-  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id)
-  SELECT ma.id, 'lost', (CURRENT_DATE + INTERVAL '15 days')::date, FALSE, FALSE, NULL, s.id
+  INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id, created_at)
+  SELECT ma.id,
+         'lost',
+         (CURRENT_DATE - INTERVAL '1 day')::date,
+         FALSE,
+         FALSE,
+         NULL,
+         s.id,
+         (((CURRENT_DATE - INTERVAL '1 day')::date - INTERVAL '1 day')::timestamp)
   FROM maria ma, s
   RETURNING id, client_id
 ),
 
 -- Contract with explicit end_date (not matching start + duration)
 contract_explicit_enddate AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-  SELECT se.client_id, se.id, '2026-01-15'::date, '2026-04-30'::date, 2, 1234, 'monthly'
-  FROM sp_explicit_enddate se
+  INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
+  SELECT se.client_id,
+         se.id,
+         sd.explicit_contract_start,
+         sd.explicit_contract_end,
+         2,
+         1234,
+         'monthly',
+         (sd.explicit_contract_start - INTERVAL '1 day')::timestamptz
+  FROM sp_explicit_enddate se, seed_dates sd
   RETURNING id
 ),
 contract_anna AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sa.client_id, sa.id, '2025-10-01'::date, 6, 4800, 'monthly'
-  FROM sp_anna sa
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
+  SELECT sa.client_id,
+         sa.id,
+         sd.anna_contract_start,
+         6,
+         4800,
+         'monthly',
+         (sd.anna_contract_start - INTERVAL '1 day')::timestamptz
+  FROM sp_anna sa, seed_dates sd
   RETURNING id
 ),
 contract_max AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, '2025-09-23'::date, 6, 6000, 'bi-monthly'
-  FROM sp_max sm
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
+  SELECT sm.client_id,
+         sm.id,
+         sd.max_contract_start,
+         6,
+         6000,
+         'bi-monthly',
+         (sd.max_contract_start - INTERVAL '1 day')::timestamptz
+  FROM sp_max sm, seed_dates sd
   RETURNING id
 ),
 contract_moritz AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, (CURRENT_DATE - INTERVAL '11 months')::date, 12, 12000, 'bi-yearly'
-  FROM sp_moritz sm
+  -- Previous contract: not created from the current follow-up sales process (upsell only links it as "previous")
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
+  SELECT mo.id,
+         NULL,
+         (CURRENT_DATE - INTERVAL '11 months')::date,
+         12,
+         12000,
+         'bi-yearly',
+         ((CURRENT_DATE - INTERVAL '11 months')::date - INTERVAL '1 day')::timestamptz
+  FROM moritz mo
   RETURNING id
 ),
 contract_moritz_ext AS (
-  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency)
-  SELECT sm.client_id, sm.id, (CURRENT_DATE + INTERVAL '1 month')::date, 12, 12000, 'bi-yearly'
-  FROM sp_moritz sm
+  INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
+  SELECT sm.client_id,
+         sm.id,
+         sd.moritz_ext_contract_start,
+         12,
+         12000,
+         'bi-yearly',
+         (CURRENT_DATE::timestamp)
+  FROM sp_moritz sm, seed_dates sd
   RETURNING id
 ),
 
@@ -262,13 +361,13 @@ ON CONFLICT (contract_id, due_date) DO NOTHING;
 
 -- Insert a confirmed upsell for Moritz linking previous and new contract (idempotent)
 INSERT INTO contract_upsells (sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
-SELECT sp.id, sp.client_id, (CURRENT_DATE - INTERVAL '5 days')::date, 'verlaengerung', nc.revenue_total, pc.id, nc.id
+SELECT sp.id, sp.client_id, (sp.follow_up_date + INTERVAL '1 day')::date, 'verlaengerung', nc.revenue_total, pc.id, nc.id
 FROM sales_process sp
 JOIN clients cl ON cl.id = sp.client_id
 JOIN contracts pc ON pc.client_id = cl.id AND pc.start_date <= CURRENT_DATE
 JOIN contracts nc ON nc.client_id = cl.id AND nc.start_date > CURRENT_DATE
 WHERE cl.email = 'mo@example.com'
-  AND sp.stage = 'follow_up'
+  AND sp.stage IN ('follow_up','closed')
   AND NOT EXISTS (
     SELECT 1 FROM contract_upsells cu WHERE cu.sales_process_id = sp.id AND cu.new_contract_id = nc.id
   );
