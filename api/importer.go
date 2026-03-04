@@ -120,12 +120,16 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 			status = "inactive"
 		}
 
+		// Derive a stable created_at from the contract start date so imported
+		// records don't look "new" just because they were inserted today.
+		createdAt := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+
 		var clientID int
 		err = tx.QueryRow(`
-			INSERT INTO clients (name, status)
-			VALUES ($1, $2)
+			INSERT INTO clients (name, status, created_at)
+			VALUES ($1, $2, $3)
 			RETURNING id
-		`, c.Name, status).Scan(&clientID)
+		`, c.Name, status, createdAt).Scan(&clientID)
 
 		if err != nil {
 			tx.Rollback()
@@ -197,8 +201,8 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		var contractID int
 		err = tx.QueryRow(`
 			INSERT INTO contracts 
-				(client_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-			VALUES ($1, $2, $3, $4, $5, $6)
+				(client_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			RETURNING id
 		`,
 			clientID,
@@ -207,6 +211,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 			durationMonths,
 			revenueTotal,
 			paymentFreq,
+			createdAt,
 		).Scan(&contractID)
 
 		if err != nil {
