@@ -639,3 +639,173 @@ func TestUpdateContract_UpdateExecFails(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestNormalizePaymentFrequency(t *testing.T) {
+	got, err := normalizePaymentFrequency("  MONTHLY  ", 6)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got != "monthly" {
+		t.Fatalf("expected monthly, got %q", got)
+	}
+
+	if _, err := normalizePaymentFrequency("bi-yearly", 6); err == nil {
+		t.Fatalf("expected bi-yearly validation error")
+	}
+
+	if _, err := normalizePaymentFrequency("weekly", 12); err == nil {
+		t.Fatalf("expected invalid frequency error")
+	}
+}
+
+func TestInsertCashflowEntriesTx_EndBeforeStart(t *testing.T) {
+	start := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	err := insertCashflowEntriesTx(nil, 1, start, end, 100, "monthly")
+	if err == nil {
+		t.Fatalf("expected error when endDate < startDate")
+	}
+}
+
+func TestInsertCashflowEntriesTx_NoFullPeriods_NoInsert(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+
+	start := time.Date(2025, 1, 31, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2025, 2, 15, 0, 0, 0, 0, time.UTC)
+
+	if err := insertCashflowEntriesTx(tx, 5, start, end, 200, "monthly"); err != nil {
+		t.Fatalf("insertCashflowEntriesTx failed: %v", err)
+	}
+
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback tx: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListContracts_Handler_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mainRows := sqlmock.NewRows([]string{
+		"id", "client_id", "client_name", "sales_process_id",
+		"start_date", "end_date", "created_at", "duration_months", "revenue_total", "payment_frequency",
+		"base_monthly_amount", "next_due_date",
+	}).AddRow(
+		1, 10, "Acme GmbH", nil,
+		"2025-01-01", nil, nil, 12, 1200.0, "monthly",
+		100.0, nil,
+	)
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRows)
+
+	now := time.Now()
+	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
+		AddRow(77, 1, "tester", "note", `{"k":"v"}`, now, now)
+	mock.ExpectQuery("FROM comments").WillReturnRows(commentRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+
+	h.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out []ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 contract, got %d", len(out))
+	}
+	if out[0].ClientName != "Acme GmbH" {
+		t.Fatalf("unexpected client name: %q", out[0].ClientName)
+	}
+	if len(out[0].Comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(out[0].Comments))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListContractCashflowEntries_Handler(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"}).
+		AddRow(1, 7, now, 123.45, "pending", now)
+
+	mock.ExpectQuery("SELECT id, contract_id, due_date, amount, status, updated_at").
+		WithArgs(7).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/7/cashflow", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "7")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.ListContractCashflowEntries(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(out))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListContractCashflowEntries_InvalidID(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/nope/cashflow", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "nope")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.ListContractCashflowEntries(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
