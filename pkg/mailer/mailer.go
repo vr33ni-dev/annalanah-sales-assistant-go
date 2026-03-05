@@ -47,10 +47,23 @@ func SendMail(to, subject, body string) error {
 	return smtp.SendMail(addr, auth, from, []string{to}, []byte(payload))
 }
 
-// SendNewContractNotification composes a basic message for new contracts.
-func SendNewContractNotification(to string, contractID int, clientID int, revenue float64, startDate string) error {
-	subject := fmt.Sprintf("New contract confirmed: #%d", contractID)
-	body := fmt.Sprintf("A new contract was created.\n\nContract ID: %d\nClient ID: %d\nStart Date: %s\nRevenue: %.2f\n", contractID, clientID, startDate, revenue)
+// SendNewContractNotification composes a German notification for new contracts.
+func SendNewContractNotification(to, clientName, startDate, closureDate, source, stageName string, revenue float64, nextDueDate string) error {
+	subject := fmt.Sprintf("Neuer Vertrag bestätigt: %s", clientName)
+	body := fmt.Sprintf("Ein neuer Vertrag wurde angelegt.\n\nKunde: %s\nStartdatum: %s\n", clientName, startDate)
+	if closureDate != "" {
+		body += fmt.Sprintf("Abschlussdatum: %s\n", closureDate)
+	}
+	if source != "" {
+		body += fmt.Sprintf("Quelle: %s\n", source)
+	}
+	if stageName != "" {
+		body += fmt.Sprintf("Bühne: %s\n", stageName)
+	}
+	body += fmt.Sprintf("Umsatz: %.2f\n", revenue)
+	if nextDueDate != "" {
+		body += fmt.Sprintf("Nächste Fälligkeit: %s\n", nextDueDate)
+	}
 	return SendMailFunc(to, subject, body)
 }
 

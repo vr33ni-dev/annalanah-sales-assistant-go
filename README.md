@@ -34,6 +34,23 @@ Example:
 ```bash
 DB_URL=postgres://sales_assistant_app:sales_assistant_app@localhost:5432/sales_assistant_db?sslmode=disable
 PORT=8080
+# Optional fallback recipient for new sales-created contract notifications
+NEW_CONTRACT_NOTIFY_EMAIL=ops@example.com
+```
+
+### Contract notification recipient (Einstellungen)
+
+New contract notification emails (for sales-linked contracts) can be configured via app settings.
+
+- Preferred: setting key `new_contract_notify_email` (stored in `app_settings.value_text`)
+- Fallback: env var `NEW_CONTRACT_NOTIFY_EMAIL`
+
+Example:
+
+```bash
+curl -X PUT http://localhost:8080/api/settings/new_contract_notify_email \
+ -H "Content-Type: application/json" \
+ -d '{"value_text":"ops@example.com"}'
 ```
 
 ### 4. Run migrations

@@ -347,6 +347,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		sp.Revenue != nil &&
 		sp.ContractDurationMonths != nil && *sp.ContractDurationMonths > 0 &&
 		sp.ContractStartDate != nil && sp.ContractFrequency != nil {
+		var notifyContractID *int
+		var notifyRevenue *float64
+		var notifyStartDate *time.Time
+		var notifySalesProcessID *int
 
 		tx2, err := h.DB.BeginTx(r.Context(), nil)
 		if err != nil {
@@ -377,7 +381,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 		if err == sql.ErrNoRows {
 			spID := id
-			if _, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
+			contractID, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
 				ClientID:         clientID,
 				SalesProcessID:   &spID,
 				StartDate:        sd,
@@ -385,10 +389,15 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 				RevenueTotal:     *sp.Revenue,
 				PaymentFreq:      *sp.ContractFrequency,
 				GenerateSchedule: true,
-			}); err != nil {
+			})
+			if err != nil {
 				http.Error(w, "failed to create contract: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			notifyContractID = &contractID
+			notifyRevenue = sp.Revenue
+			notifyStartDate = &sd
+			notifySalesProcessID = &spID
 		}
 
 		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
@@ -413,6 +422,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		if err := tx2.Commit(); err != nil {
 			http.Error(w, "commit failed: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if notifyContractID != nil && notifyRevenue != nil && notifyStartDate != nil && notifySalesProcessID != nil {
+			h.notifyNewContractAsync(*notifyContractID, clientID, *notifyRevenue, *notifyStartDate, notifySalesProcessID)
 		}
 
 	}
@@ -824,7 +837,11 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		`,
 			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID, desiredClientStatus,
 		).Scan(&clientID); err != nil {
-			http.Error(w, "client insert failed: "+err.Error(), http.StatusInternalServerError)
+			if isUniqueViolation(err, "unique_client_email") {
+				writeJSONError(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits. Bitte den bestehenden Kunden auswählen.", http.StatusConflict)
+				return
+			}
+			writeJSONError(w, "Fehler beim Anlegen des Kunden.", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -1392,6 +1409,9 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	// -----------------------
 
 	var newContractID *int = nil
+	var notifyRevenue *float64
+	var notifyStartDate *time.Time
+	var notifySalesProcessID *int
 
 	if req.UpsellResult != nil && *req.UpsellResult == "verlaengerung" {
 
@@ -1431,6 +1451,9 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newContractID = &contractID
+		notifyRevenue = req.UpsellRevenue
+		notifyStartDate = &sd
+		notifySalesProcessID = &spID
 
 	}
 
@@ -1485,6 +1508,10 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		http.Error(w, "commit: "+err.Error(), 500)
 		return
+	}
+
+	if newContractID != nil && notifyRevenue != nil && notifyStartDate != nil && notifySalesProcessID != nil {
+		h.notifyNewContractAsync(*newContractID, clientID, *notifyRevenue, *notifyStartDate, notifySalesProcessID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

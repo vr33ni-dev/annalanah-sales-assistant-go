@@ -19,7 +19,7 @@ func TestSendNewContractNotification_UsesSendMailFunc(t *testing.T) {
 		return nil
 	}
 
-	if err := SendNewContractNotification("ops@example.com", 5, 7, 190.0, "2025-10-01"); err != nil {
+	if err := SendNewContractNotification("ops@example.com", "Anna Schmidt", "2025-10-01", "2025-09-24", "organic", "Abschluss", 190.0, "2025-11-01"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -28,11 +28,26 @@ func TestSendNewContractNotification_UsesSendMailFunc(t *testing.T) {
 	if toGot != "ops@example.com" {
 		t.Fatalf("unexpected to: %s", toGot)
 	}
-	if !strings.Contains(subjGot, "#5") {
-		t.Fatalf("subject didn't contain contract id: %s", subjGot)
+	if !strings.Contains(subjGot, "Anna Schmidt") {
+		t.Fatalf("subject didn't contain client name: %s", subjGot)
 	}
 	if !strings.Contains(bodyGot, "190.00") {
 		t.Fatalf("body didn't contain revenue: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Startdatum: 2025-10-01") {
+		t.Fatalf("body didn't contain start date: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Abschlussdatum: 2025-09-24") {
+		t.Fatalf("body didn't contain closure date: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Quelle: organic") {
+		t.Fatalf("body didn't contain source: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Vertriebsphase: Abschluss") && !strings.Contains(bodyGot, "Bühne: Abschluss") {
+		t.Fatalf("body didn't contain stage: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Nächste Fälligkeit: 2025-11-01") {
+		t.Fatalf("body didn't contain next due date: %s", bodyGot)
 	}
 }
 
@@ -47,7 +62,7 @@ func TestSendMail_NoSMTP(t *testing.T) {
 
 func TestSendNewContractNotification_NoSMTP(t *testing.T) {
 	os.Unsetenv("SMTP_HOST")
-	if err := SendNewContractNotification("ops@example.com", 1, 2, 123.45, "2025-10-01"); err != nil {
+	if err := SendNewContractNotification("ops@example.com", "Max Müller", "2025-10-01", "", "", "", 123.45, ""); err != nil {
 		t.Fatalf("expected nil error when SMTP_HOST unset, got: %v", err)
 	}
 }

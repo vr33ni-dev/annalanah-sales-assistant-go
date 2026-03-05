@@ -145,6 +145,87 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 	return contractID, nil, nil
 }
 
+func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float64, startDate time.Time, salesProcessID *int) {
+	if salesProcessID == nil {
+		return
+	}
+	notifyTo := h.getTextSetting("new_contract_notify_email", "")
+	if notifyTo == "" {
+		notifyTo = os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
+	}
+	if notifyTo == "" {
+		return
+	}
+
+	clientName := fmt.Sprintf("Kunde #%d", clientID)
+	closureDate := ""
+	source := ""
+	stageName := ""
+	nextDueDate := ""
+
+	var dbClientName sql.NullString
+	var dbClosureDate sql.NullTime
+	var dbSource sql.NullString
+	var dbSourceStageName sql.NullString
+	var dbSalesStageName sql.NullString
+	var dbNextDueDate sql.NullTime
+
+	err := h.DB.QueryRow(`
+		SELECT
+			cl.name,
+			COALESCE(cl.completed_at::date, sp.follow_up_date::date) AS closure_date,
+			cl.source,
+			src_st.name AS source_stage_name,
+			COALESCE(st.name, sp.stage) AS sales_stage_name,
+			(
+				SELECT MIN(due_date)::date
+				FROM cashflow_entries
+				WHERE contract_id = c.id AND status <> 'paid'
+			) AS next_due_date
+		FROM contracts c
+		JOIN clients cl ON cl.id = c.client_id
+		LEFT JOIN sales_process sp ON sp.id = c.sales_process_id
+		LEFT JOIN stages st ON st.id = sp.stage_id
+		LEFT JOIN stages src_st ON src_st.id = cl.source_stage_id
+		WHERE c.id = $1
+	`, contractID).Scan(&dbClientName, &dbClosureDate, &dbSource, &dbSourceStageName, &dbSalesStageName, &dbNextDueDate)
+
+	if err == nil {
+		if dbClientName.Valid && strings.TrimSpace(dbClientName.String) != "" {
+			clientName = dbClientName.String
+		}
+		if dbClosureDate.Valid {
+			closureDate = dbClosureDate.Time.Format("2006-01-02")
+		}
+		if dbSource.Valid {
+			source = strings.TrimSpace(dbSource.String)
+		}
+		if dbSourceStageName.Valid && strings.TrimSpace(dbSourceStageName.String) != "" {
+			stageName = strings.TrimSpace(dbSourceStageName.String)
+		} else if dbSalesStageName.Valid {
+			stageName = strings.TrimSpace(dbSalesStageName.String)
+		}
+		if dbNextDueDate.Valid {
+			nextDueDate = dbNextDueDate.Time.Format("2006-01-02")
+		}
+	}
+
+	go func() {
+		if err := mailer.SendNewContractNotification(
+			notifyTo,
+			clientName,
+			startDate.Format("2006-01-02"),
+			closureDate,
+			source,
+			stageName,
+			revenue,
+			nextDueDate,
+		); err != nil {
+			fmt.Printf("failed to send new contract notification: %v\n", err)
+		}
+	}()
+}
+
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
@@ -421,15 +502,8 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(c)
 
-	// Send notification email asynchronously
-	notifyTo := os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
-	if notifyTo != "" {
-		go func() {
-			if err := mailer.SendNewContractNotification(notifyTo, c.ID, c.ClientID, c.RevenueTotal, c.StartDate); err != nil {
-				fmt.Printf("failed to send new contract notification: %v\n", err)
-			}
-		}()
-	}
+	// Send notification email only for sales-process contracts (not importer/manual without sales process)
+	h.notifyNewContractAsync(c.ID, c.ClientID, c.RevenueTotal, sd, c.SalesProcessID)
 }
 
 // PATCH /api/contracts/{id}

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
@@ -77,6 +79,16 @@ func (h *Handler) GetSetting(w http.ResponseWriter, r *http.Request) {
 		WHERE key = $1`, key).Scan(&vn, &vt, &ua)
 
 	if err == sql.ErrNoRows {
+		if key == "new_contract_notify_email" {
+			resp := AppSetting{Key: key}
+			fallback := strings.TrimSpace(os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL"))
+			if fallback != "" {
+				resp.ValueText = &fallback
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -164,6 +176,20 @@ func (h *Handler) getNumericSetting(key string, def float64) float64 {
 	_ = h.DB.QueryRow(`SELECT value_numeric FROM app_settings WHERE key = $1`, key).Scan(&v)
 	if v.Valid {
 		return v.Float64
+	}
+	return def
+}
+
+// getTextSetting returns app_settings.value_text for a key,
+// or the provided default if the key is missing/NULL/blank.
+func (h *Handler) getTextSetting(key string, def string) string {
+	var v sql.NullString
+	_ = h.DB.QueryRow(`SELECT value_text FROM app_settings WHERE key = $1`, key).Scan(&v)
+	if v.Valid {
+		trimmed := strings.TrimSpace(v.String)
+		if trimmed != "" {
+			return trimmed
+		}
 	}
 	return def
 }
