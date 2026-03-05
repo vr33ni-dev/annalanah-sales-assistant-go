@@ -126,3 +126,113 @@ func TestExportAggregatedCashflowCSV(t *testing.T) {
 		t.Fatalf("expected aggregated monthly amounts, body=%s", body)
 	}
 }
+
+func TestExportRawContractsCSV(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	_, _ = db.Exec(`INSERT INTO clients (id,name,email,phone,source,status) VALUES (1,'Alice','alice@example.com','123','organic','active')`)
+	_, _ = db.Exec(`INSERT INTO contracts (id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,created_at,updated_at) VALUES (10,1,100,'2026-01-15','2026-03-20',3,300,'monthly','2026-01-01','2026-01-02')`)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/raw/contracts.csv", nil)
+	w := httptest.NewRecorder()
+
+	h.ExportRawContractsCSV(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,created_at,updated_at") {
+		t.Fatalf("missing contracts csv header, body=%s", body)
+	}
+	if !strings.Contains(body, ",monthly,") {
+		t.Fatalf("missing contracts row data, body=%s", body)
+	}
+}
+
+func TestExportRawCashflowEntriesCSV(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	_, _ = db.Exec(`INSERT INTO cashflow_entries (contract_id,due_date,amount,status,updated_at) VALUES (10,'2026-01-20',100.5,'pending','2026-01-21')`)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/raw/cashflow_entries.csv", nil)
+	w := httptest.NewRecorder()
+
+	h.ExportRawCashflowEntriesCSV(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "id,contract_id,due_date,amount,status,updated_at") {
+		t.Fatalf("missing cashflow csv header, body=%s", body)
+	}
+	if !strings.Contains(body, ",pending,") {
+		t.Fatalf("missing cashflow row data, body=%s", body)
+	}
+}
+
+func TestExportAggregatedCashflowCSV_EmptyContracts(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/aggregated/cashflow.csv", nil)
+	w := httptest.NewRecorder()
+
+	h.ExportAggregatedCashflowCSV(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "client_source_stage_name") {
+		t.Fatalf("expected aggregated header in empty export, body=%s", body)
+	}
+}
+
+func TestExportAggregatedCashflowCSV_InvalidRange(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	_, _ = db.Exec(`INSERT INTO clients (id,name,email,phone,source,status) VALUES (1,'Alice','alice@example.com','123','organic','active')`)
+	_, _ = db.Exec(`INSERT INTO contracts (id,client_id,start_date,end_date,duration_months,revenue_total,payment_frequency) VALUES (10,1,'2026-01-15','2026-03-20',3,300,'monthly')`)
+
+	h := &api.Handler{DB: db}
+
+	// invalid from format
+	reqBadFrom := httptest.NewRequest(http.MethodGet, "/api/exports/aggregated/cashflow.csv?from=2026/01", nil)
+	wBadFrom := httptest.NewRecorder()
+	h.ExportAggregatedCashflowCSV(wBadFrom, reqBadFrom)
+	if wBadFrom.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid from, got %d", wBadFrom.Code)
+	}
+
+	// to before from
+	reqBadRange := httptest.NewRequest(http.MethodGet, "/api/exports/aggregated/cashflow.csv?from=2026-03&to=2026-01", nil)
+	wBadRange := httptest.NewRecorder()
+	h.ExportAggregatedCashflowCSV(wBadRange, reqBadRange)
+	if wBadRange.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid range, got %d", wBadRange.Code)
+	}
+}
