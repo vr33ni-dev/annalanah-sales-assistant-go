@@ -14,6 +14,12 @@ settings_avg_rev AS (
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
+settings_notify_email AS (
+  INSERT INTO app_settings (key, value_text)
+  VALUES ('new_contract_notify_email', '')
+  ON CONFLICT (key) DO NOTHING
+  RETURNING 1
+),
 
 -- Keep most dev-seed dates close to "today" so the UI looks current after reset
 seed_dates AS (

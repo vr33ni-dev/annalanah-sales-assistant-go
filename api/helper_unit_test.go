@@ -3,10 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -211,5 +213,92 @@ func TestUpsertSetting_InvalidPotentialMonths(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for input %v, got %d", c, w.Code)
 		}
+	}
+}
+
+func TestGetSetting_NewContractNotifyEmail_NoRow_UsesEnvFallback(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+		WithArgs("new_contract_notify_email").
+		WillReturnError(sql.ErrNoRows)
+
+	os.Setenv("NEW_CONTRACT_NOTIFY_EMAIL", "ops@example.com")
+	defer os.Unsetenv("NEW_CONTRACT_NOTIFY_EMAIL")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/new_contract_notify_email", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "new_contract_notify_email")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.GetSetting(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp AppSetting
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Key != "new_contract_notify_email" {
+		t.Fatalf("expected key new_contract_notify_email, got %s", resp.Key)
+	}
+	if resp.ValueText == nil || *resp.ValueText != "ops@example.com" {
+		t.Fatalf("expected value_text ops@example.com, got %v", resp.ValueText)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestGetSetting_NewContractNotifyEmail_NoRow_NoEnv_ReturnsEmptyPayload(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+		WithArgs("new_contract_notify_email").
+		WillReturnError(sql.ErrNoRows)
+
+	os.Unsetenv("NEW_CONTRACT_NOTIFY_EMAIL")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/new_contract_notify_email", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "new_contract_notify_email")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.GetSetting(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp AppSetting
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Key != "new_contract_notify_email" {
+		t.Fatalf("expected key new_contract_notify_email, got %s", resp.Key)
+	}
+	if resp.ValueText != nil {
+		t.Fatalf("expected empty value_text when env unset, got %v", *resp.ValueText)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

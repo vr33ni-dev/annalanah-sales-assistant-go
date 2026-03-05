@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -78,6 +79,16 @@ func (h *Handler) GetSetting(w http.ResponseWriter, r *http.Request) {
 		WHERE key = $1`, key).Scan(&vn, &vt, &ua)
 
 	if err == sql.ErrNoRows {
+		if key == "new_contract_notify_email" {
+			resp := AppSetting{Key: key}
+			fallback := strings.TrimSpace(os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL"))
+			if fallback != "" {
+				resp.ValueText = &fallback
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
