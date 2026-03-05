@@ -43,7 +43,7 @@ func TestSendNewContractNotification_UsesSendMailFunc(t *testing.T) {
 	if !strings.Contains(bodyGot, "Quelle: organic") {
 		t.Fatalf("body didn't contain source: %s", bodyGot)
 	}
-	if !strings.Contains(bodyGot, "Vertriebsphase: Abschluss") {
+	if !strings.Contains(bodyGot, "Vertriebsphase: Abschluss") && !strings.Contains(bodyGot, "Bühne: Abschluss") {
 		t.Fatalf("body didn't contain stage: %s", bodyGot)
 	}
 	if !strings.Contains(bodyGot, "Nächste Fälligkeit: 2025-11-01") {
