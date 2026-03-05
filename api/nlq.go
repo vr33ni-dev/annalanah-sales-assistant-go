@@ -340,6 +340,15 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 		case strings.Contains(q, "wie viele stages") || strings.Contains(q, "wieviele stages"):
 			return "SELECT COUNT(*) FROM stages", nil
 
+		case strings.Contains(q, "keine verlängerung") || strings.Contains(q, "keine verlaengerung") || strings.Contains(q, "nicht verlängert") || strings.Contains(q, "nicht verlaengert"):
+			return "SELECT COUNT(*) FROM contract_upsells WHERE upsell_result = 'keine_verlaengerung'", nil
+
+		case strings.Contains(q, "upsell-umsatz") || strings.Contains(q, "upsell umsatz") || strings.Contains(q, "renewal revenue"):
+			return "SELECT COALESCE(SUM(upsell_revenue), 0) AS total_upsell_revenue FROM contract_upsells", nil
+
+		case strings.Contains(q, "verlängerung") || strings.Contains(q, "verlaengerung") || strings.Contains(q, "renewal"):
+			return "SELECT id, client_id, upsell_date, upsell_result, upsell_revenue FROM contract_upsells WHERE upsell_result = 'verlaengerung' LIMIT 50", nil
+
 		case strings.Contains(q, "aktive kunden"):
 			return "SELECT id, name, email, status FROM clients WHERE status = 'active'", nil
 

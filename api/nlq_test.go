@@ -43,6 +43,54 @@ func TestGenerateSQL_NLQMockMode(t *testing.T) {
 	}
 }
 
+func TestGenerateSQL_NLQMockMode_UpsellQuestions(t *testing.T) {
+	os.Setenv("NLQ_MOCK", "1")
+	defer os.Unsetenv("NLQ_MOCK")
+
+	tests := []struct {
+		name         string
+		question     string
+		mustContain  string
+		mustNotError bool
+	}{
+		{
+			name:         "upsell revenue",
+			question:     "Wie hoch ist unser Upsell-Umsatz?",
+			mustContain:  "from contract_upsells",
+			mustNotError: true,
+		},
+		{
+			name:         "successful renewals",
+			question:     "Zeige mir alle Verlängerung Fälle",
+			mustContain:  "upsell_result = 'verlaengerung'",
+			mustNotError: true,
+		},
+		{
+			name:         "no renewal count",
+			question:     "Wie viele keine Verlängerung Fälle gibt es?",
+			mustContain:  "upsell_result = 'keine_verlaengerung'",
+			mustNotError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sqlText, err := generateSQL(context.Background(), tc.question)
+			if tc.mustNotError && err != nil {
+				t.Fatalf("generateSQL failed: %v", err)
+			}
+
+			s := strings.ToLower(strings.TrimSpace(sqlText))
+			if !strings.HasPrefix(s, "select") {
+				t.Fatalf("expected SELECT, got: %s", sqlText)
+			}
+			if !strings.Contains(s, strings.ToLower(tc.mustContain)) {
+				t.Fatalf("expected SQL to contain %q, got: %s", tc.mustContain, sqlText)
+			}
+		})
+	}
+}
+
 func TestGenerateSQL_QuestionsFromFile(t *testing.T) {
 	os.Setenv("NLQ_MOCK", "1")
 	defer os.Unsetenv("NLQ_MOCK")
