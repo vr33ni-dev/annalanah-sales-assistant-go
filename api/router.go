@@ -146,6 +146,12 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/cashflow/metrics", h.CashflowMetrics)
 		pr.Get("/cashflow/entries", h.ListCashflowEntries)
 
+		// Exports
+		pr.Get("/exports/raw/clients.csv", h.ExportRawClientsCSV)
+		pr.Get("/exports/raw/contracts.csv", h.ExportRawContractsCSV)
+		pr.Get("/exports/raw/cashflow_entries.csv", h.ExportRawCashflowEntriesCSV)
+		pr.Get("/exports/aggregated/cashflow.csv", h.ExportAggregatedCashflowCSV)
+
 		// Settings
 		pr.Get("/settings", h.ListSettings)
 		pr.Get("/settings/{key}", h.GetSetting)
