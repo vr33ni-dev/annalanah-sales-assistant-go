@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -52,6 +53,96 @@ type ContractResponse struct {
 	BaseMonthlyAmount float64           `json:"base_monthly_amount"`
 	NextDueDate       *string           `json:"next_due_date,omitempty"`
 	Comments          []CommentResponse `json:"comments,omitempty"`
+}
+
+type ContractCreateInput struct {
+	ClientID          int
+	SalesProcessID    *int
+	StartDate         time.Time
+	EndDate           *time.Time
+	DurationMonths    int
+	RevenueTotal      float64
+	PaymentFreq       string
+	CreatedAtOverride *time.Time
+	GenerateSchedule  bool
+}
+
+func normalizePaymentFrequency(paymentFreq string, durationMonths int) (string, error) {
+	pf := strings.ToLower(strings.TrimSpace(paymentFreq))
+	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
+		return "", fmt.Errorf("invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)")
+	}
+	if pf == "bi-yearly" && durationMonths < 12 {
+		return "", fmt.Errorf("bi-yearly payment frequency requires duration_months >= 12")
+	}
+	return pf, nil
+}
+
+func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractCreateInput) (int, *string, error) {
+	pf, err := normalizePaymentFrequency(in.PaymentFreq, in.DurationMonths)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	ed := in.StartDate.AddDate(0, in.DurationMonths, 0)
+	if in.EndDate != nil {
+		if in.EndDate.Before(in.StartDate) {
+			return 0, nil, fmt.Errorf("end_date cannot be before start_date")
+		}
+		ed = *in.EndDate
+	}
+
+	var contractID int
+	var createdAt sql.NullTime
+
+	if in.CreatedAtOverride != nil {
+		err = tx.QueryRowContext(ctx, `
+	INSERT INTO contracts
+		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
+	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8)
+	RETURNING id, created_at
+	`,
+			in.ClientID,
+			in.SalesProcessID,
+			in.StartDate,
+			ed,
+			in.DurationMonths,
+			in.RevenueTotal,
+			pf,
+			*in.CreatedAtOverride,
+		).Scan(&contractID, &createdAt)
+	} else {
+		err = tx.QueryRowContext(ctx, `
+	INSERT INTO contracts
+		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
+	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7)
+	RETURNING id, created_at
+	`,
+			in.ClientID,
+			in.SalesProcessID,
+			in.StartDate,
+			ed,
+			in.DurationMonths,
+			in.RevenueTotal,
+			pf,
+		).Scan(&contractID, &createdAt)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if in.GenerateSchedule && in.DurationMonths > 0 {
+		if err := insertCashflowEntriesTx(tx, contractID, in.StartDate, ed, in.RevenueTotal, pf); err != nil {
+			return 0, nil, fmt.Errorf("failed to insert cashflow entries: %w", err)
+		}
+	}
+
+	if createdAt.Valid {
+		s := createdAt.Time.Format(time.RFC3339)
+		return contractID, &s, nil
+	}
+
+	return contractID, nil, nil
 }
 
 // GET /api/contracts
@@ -261,14 +352,9 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normalize and validate payment frequency
-	pf := strings.ToLower(strings.TrimSpace(c.PaymentFreq))
-	if pf != "monthly" && pf != "bi-monthly" && pf != "quarterly" && pf != "one-time" && pf != "bi-yearly" {
-		http.Error(w, "invalid payment_frequency (allowed: monthly, bi-monthly, quarterly, one-time, bi-yearly)", http.StatusBadRequest)
-		return
-	}
-	if pf == "bi-yearly" && c.DurationMonths < 12 {
-		http.Error(w, "bi-yearly payment frequency requires duration_months >= 12", http.StatusBadRequest)
+	pf, err := normalizePaymentFrequency(c.PaymentFreq, c.DurationMonths)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	c.PaymentFreq = pf
@@ -280,9 +366,8 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine end date
-	var ed time.Time
-
+	// Determine optional end date override
+	var ed *time.Time
 	if c.EndDate != nil && *c.EndDate != "" {
 		parsedEnd, err := time.Parse("2006-01-02", *c.EndDate)
 		if err != nil {
@@ -293,9 +378,7 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "end_date cannot be before start_date", http.StatusBadRequest)
 			return
 		}
-		ed = parsedEnd
-	} else {
-		ed = sd.AddDate(0, c.DurationMonths, 0)
+		ed = &parsedEnd
 	}
 
 	// Begin transaction
@@ -305,43 +388,23 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var createdAt sql.NullTime
-
-	// Insert contract (NOW including end_date)
-	err = tx.QueryRowContext(r.Context(), `
-	INSERT INTO contracts
-		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7)
-	RETURNING id, created_at
-	`,
-		c.ClientID,
-		c.SalesProcessID,
-		sd,
-		ed,
-		c.DurationMonths,
-		c.RevenueTotal,
-		c.PaymentFreq,
-	).Scan(&c.ID, &createdAt)
-
+	contractID, createdAt, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
+		ClientID:         c.ClientID,
+		SalesProcessID:   c.SalesProcessID,
+		StartDate:        sd,
+		EndDate:          ed,
+		DurationMonths:   c.DurationMonths,
+		RevenueTotal:     c.RevenueTotal,
+		PaymentFreq:      c.PaymentFreq,
+		GenerateSchedule: true,
+	})
 	if err != nil {
 		tx.Rollback()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	if createdAt.Valid {
-		s := createdAt.Time.Format(time.RFC3339)
-		c.CreatedAt = &s
-	}
-
-	// Insert scheduled cashflow entries
-	if c.DurationMonths > 0 {
-		if err := insertCashflowEntriesTx(tx, c.ID, sd, ed, c.RevenueTotal, c.PaymentFreq); err != nil {
-			tx.Rollback()
-			http.Error(w, "failed to insert cashflow entries: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
+	c.ID = contractID
+	c.CreatedAt = createdAt
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -58,13 +61,17 @@ func insertCashflowEntriesTx(
 		return err
 	}
 
-	// Count number of periods
+	// Count number of full periods where the next boundary still fits in contract range.
+	// This models "pay at period start" semantics.
 	periods := 0
 	current := startDate
-
-	for !current.After(endDate) {
+	for {
+		next := addMonthClamped(current, step)
+		if next.After(endDate) {
+			break
+		}
 		periods++
-		current = addMonthClamped(current, step)
+		current = next
 	}
 
 	if periods == 0 {
@@ -76,8 +83,7 @@ func insertCashflowEntriesTx(
 
 	// Reset loop
 	current = startDate
-
-	for !current.After(endDate) {
+	for i := 0; i < periods; i++ {
 
 		_, err := tx.ExecContext(ctx, stmt,
 			contractID,
@@ -115,4 +121,76 @@ func addMonthClamped(t time.Time, months int) time.Time {
 		0, 0, 0, 0,
 		loc,
 	)
+}
+
+// insertImportedCashflowEntriesTx inserts imported contract cashflow rows and notes as comments.
+// It preserves importer semantics: numeric values become cashflow entries, mixed/non-numeric
+// strings become comments, and placeholders like "-" are ignored.
+func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[string]interface{}) error {
+	numRe := regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
+
+	for ym, value := range cashflows {
+		date, err := time.Parse("2006-01", ym)
+		if err != nil {
+			continue
+		}
+
+		switch v := value.(type) {
+		case float64:
+			if v == 0 {
+				continue
+			}
+			if _, err := tx.Exec(`
+				INSERT INTO cashflow_entries
+					(contract_id, due_date, amount, status)
+				VALUES ($1, $2::date, $3, 'pending')
+			`, contractID, date, v); err != nil {
+				return err
+			}
+
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed == "" {
+				continue
+			}
+			if strings.ToLower(trimmed) == "-" {
+				continue
+			}
+
+			numStr := numRe.FindString(trimmed)
+			if numStr != "" {
+				if n, err := strconv.ParseFloat(numStr, 64); err == nil && n != 0 {
+					if _, err := tx.Exec(`
+						INSERT INTO cashflow_entries
+							(contract_id, due_date, amount, status)
+						VALUES ($1, $2::date, $3, 'pending')
+					`, contractID, date, n); err != nil {
+						return err
+					}
+				}
+
+				leftover := strings.TrimSpace(strings.Replace(trimmed, numStr, "", 1))
+				if leftover != "" {
+					commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
+					if _, err := tx.Exec(`
+						INSERT INTO comments (entity_type, entity_id, body, author)
+						VALUES ('contract', $1, $2, 'importer')
+					`, contractID, commentBody); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+
+			commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
+			if _, err := tx.Exec(`
+				INSERT INTO comments (entity_type, entity_id, body, author)
+				VALUES ('contract', $1, $2, 'importer')
+			`, contractID, commentBody); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }

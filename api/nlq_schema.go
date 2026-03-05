@@ -26,11 +26,13 @@ TABLE sales_process (
   id SERIAL PRIMARY KEY,
   client_id INT REFERENCES clients(id),
   stage TEXT CHECK (stage IN ('initial_contact','follow_up','closed','lost')),
+  initial_contact_date DATE,
   follow_up_date DATE,
   follow_up_result BOOLEAN,
   closed BOOLEAN,
   revenue NUMERIC,
   stage_id INT REFERENCES stages(id),
+  lead_id INT REFERENCES leads(id),
   created_at TIMESTAMP,
   updated_at TIMESTAMP
 );
@@ -38,12 +40,26 @@ TABLE sales_process (
 TABLE contracts (
   id SERIAL PRIMARY KEY,
   client_id INT,
-  sales_process_id INT,
+  sales_process_id INT, -- nullable for imported/legacy contracts
   start_date DATE,
   end_date DATE,
   duration_months INT,
   revenue_total NUMERIC,
-  payment_frequency TEXT CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly'))
+  payment_frequency TEXT CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly','one-time','bi-yearly')),
+  updated_at TIMESTAMP
+);
+
+TABLE leads (
+  id SERIAL PRIMARY KEY,
+  name TEXT,
+  email TEXT,
+  phone TEXT,
+  source TEXT CHECK (source IN ('organic','paid')),
+  source_stage_id INT REFERENCES stages(id),
+  converted BOOLEAN,
+  converted_at TIMESTAMPTZ,
+  converted_client_id INT REFERENCES clients(id),
+  created_at TIMESTAMPTZ
 );
 
 TABLE stages (
@@ -57,11 +73,36 @@ TABLE stages (
 
 TABLE comments (
   id SERIAL PRIMARY KEY,
-  entity_type TEXT, -- 'client' | 'contract' | 'sales_process' | 'stage'
+  entity_type TEXT, -- 'client' | 'contract' | 'sales_process' | 'stage' | 'lead'
   entity_id INT,
   author TEXT,
   body TEXT,
   metadata JSONB,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+TABLE stage_participants (
+  id SERIAL PRIMARY KEY,
+  stage_id INT REFERENCES stages(id),
+  linked_client_id INT REFERENCES clients(id),
+  linked_lead_id INT REFERENCES leads(id),
+  participant_name TEXT,
+  participant_email TEXT,
+  participant_phone TEXT,
+  attended BOOLEAN,
+  created_at TIMESTAMP
+);
+
+TABLE contract_upsells (
+  id SERIAL PRIMARY KEY,
+  sales_process_id INT REFERENCES sales_process(id),
+  client_id INT REFERENCES clients(id),
+  upsell_date DATE,
+  upsell_result TEXT CHECK (upsell_result IN ('verlaengerung','keine_verlaengerung')),
+  upsell_revenue NUMERIC,
+  previous_contract_id INT REFERENCES contracts(id),
+  new_contract_id INT REFERENCES contracts(id),
   created_at TIMESTAMP,
   updated_at TIMESTAMP
 );
@@ -75,6 +116,10 @@ Throughout all examples and SQL generation:
 - sp → sales_process
 - ct → contracts
 - st → stages
+- l  → leads
+- cm → comments
+- stp → stage_participants
+- cu → contract_upsells
 
 
 ---------------------------
@@ -160,7 +205,6 @@ LIMIT 50
       - FALSE → No-show or canceled
       - NULL → Salesperson has not entered result yet
   - closed (BOOLEAN) – indicates final decision (e.g., lost or won)
-  - outcome (TEXT) – optional outcome reason, e.g. 'lost', 'won'
 
   #### Zweitgespräch geplant, noch kein Eintrag / kein Ergebnis
   User might say:
@@ -211,10 +255,9 @@ LIMIT 50
   outcome was negative (the customer declined, no collaboration).
 
   SQL condition:
-  sp.stage = 'follow_up'
+  sp.stage = 'lost'
   AND sp.follow_up_result = TRUE
-  AND sp.closed = TRUE
-  AND sp.outcome = 'lost'
+  AND sp.follow_up_date <= CURRENT_DATE
   
 
   #### Zweitgespräch durchgeführt, Abschluss erzielt (Closed Won)
@@ -226,10 +269,9 @@ LIMIT 50
   outcome was positive (the customer confirmed, contract has been signed).
 
   SQL condition:
-  sp.stage = 'follow_up'
+  sp.stage = 'closed'
   AND sp.follow_up_result = TRUE
   AND sp.closed = TRUE
-  AND sp.outcome = 'closed'
 
 
   #### Summary
@@ -238,7 +280,7 @@ LIMIT 50
   | 1 | Scheduled, no entry yet | result IS NULL |
   | 2 | Happened, open | result = TRUE, closed IS NULL/FALSE |
   | 3 | No-show | result = FALSE |
-  | 4 | Lost after follow-up | result = TRUE, closed = TRUE (and optionally outcome = 'lost') |
+  | 4 | Lost after follow-up | stage = 'lost' and result = TRUE |
 
 
 ##### Mappings Summary
@@ -261,6 +303,8 @@ LIMIT 50
 ### Contracts (ct)
 - "mit Vertrag", "hat Vertrag" → EXISTS a row in contracts for the client
   (JOIN contracts ct ON ct.client_id = c.id)
+
+- payment_frequency values are: 'monthly', 'bi-monthly', 'quarterly', 'one-time', 'bi-yearly'.
 
 - "aktive Verträge", "laufende Verträge"
   → ct.start_date <= CURRENT_DATE
@@ -286,11 +330,21 @@ LIMIT 50
 ### Stages (st)
 - "Anmeldungen", "Registrierungen" → st.registrations
 - "Teilnehmer", "Teilnahmen" → st.participants
+- "erfasste Kontakte", "recorded contacts" → COUNT(stp.id) via stage_participants
 - "Werbebudget", "Ad Budget" → st.ad_budget
 - "heute" → st.date = CURRENT_DATE
 - "diesen Monat" → date_trunc('month', st.date) = date_trunc('month', CURRENT_DATE)
 - "letzten Monat" → date_trunc('month', st.date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
 - "diese Woche" → date_trunc('week', st.date) = date_trunc('week', CURRENT_DATE)
+
+### Upsells / Renewals (cu)
+- "Verlängerung", "renewal", "verlängert" → cu.upsell_result = 'verlaengerung'
+- "keine Verlängerung", "nicht verlängert", "churn" → cu.upsell_result = 'keine_verlaengerung'
+- "Upsell-Umsatz", "renewal revenue" → SUM(cu.upsell_revenue)
+- "Upsells diesen Monat" → date_trunc('month', cu.upsell_date) = date_trunc('month', CURRENT_DATE)
+- For client-level renewal details, JOIN clients c ON c.id = cu.client_id.
+- For contract lineage, JOIN contracts ct_prev ON ct_prev.id = cu.previous_contract_id
+  and/or JOIN contracts ct_new ON ct_new.id = cu.new_contract_id.
 
 
 ---------------------------
@@ -299,7 +353,7 @@ LIMIT 50
 
 - Only generate a single valid SELECT statement.
 - Use only the tables/columns defined above.
-- Prefer clear aliases: c for clients, sp for sales_process, ct for contracts, st for stages.
+- Prefer clear aliases: c for clients, sp for sales_process, ct for contracts, st for stages, l for leads, cm for comments, stp for stage_participants, cu for contract_upsells.
 - Use proper joins on id fields (e.g. sp.client_id = c.id).
 - If the user asks for "overdue", compare follow_up_date with CURRENT_DATE.
 - If time ranges are mentioned ("this month", "last 30 days"), convert to appropriate WHERE clauses.
