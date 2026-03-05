@@ -362,9 +362,13 @@ func TestUpdateContract_Success(t *testing.T) {
 	expectedEnd := expectedStart.AddDate(0, reqBody.DurationMonths, 0)
 	periods := 0
 	cur := expectedStart
-	for !cur.After(expectedEnd) {
+	for {
+		next := cur.AddDate(0, 1, 0)
+		if next.After(expectedEnd) {
+			break
+		}
 		periods++
-		cur = cur.AddDate(0, 1, 0)
+		cur = next
 	}
 	for i := 0; i < periods; i++ {
 		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -396,12 +400,12 @@ func TestInsertCashflowEntriesTx_Monthly(t *testing.T) {
 		t.Fatalf("begin tx: %v", err)
 	}
 
-	// Oct 1 to Dec 1 inclusive -> 3 periods
+	// Oct 1 to Dec 1 -> two full monthly periods: Oct->Nov, Nov->Dec
 	start := time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
 
-	// Expect three Exec calls for monthly periods
-	for i := 0; i < 3; i++ {
+	// Expect two Exec calls for monthly periods
+	for i := 0; i < 2; i++ {
 		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
 	}
 
@@ -453,9 +457,13 @@ func TestUpdateContract_RecreateSchedule_BiMonthly(t *testing.T) {
 	expectedEnd := expectedStart.AddDate(0, reqBody.DurationMonths, 0)
 	periods := 0
 	cur := expectedStart
-	for !cur.After(expectedEnd) {
+	for {
+		next := addMonthClamped(cur, 2)
+		if next.After(expectedEnd) {
+			break
+		}
 		periods++
-		cur = addMonthClamped(cur, 2)
+		cur = next
 	}
 
 	for i := 0; i < periods; i++ {
@@ -498,9 +506,13 @@ func TestInsertCashflowEntriesTx_BiMonthly(t *testing.T) {
 
 	periods := 0
 	cur := start
-	for !cur.After(end) {
+	for {
+		next := addMonthClamped(cur, 2)
+		if next.After(end) {
+			break
+		}
 		periods++
-		cur = addMonthClamped(cur, 2)
+		cur = next
 	}
 
 	for i := 0; i < periods; i++ {
@@ -539,9 +551,13 @@ func TestInsertCashflowEntriesTx_Quarterly(t *testing.T) {
 
 	periods := 0
 	cur := start
-	for !cur.After(end) {
+	for {
+		next := addMonthClamped(cur, 3)
+		if next.After(end) {
+			break
+		}
 		periods++
-		cur = addMonthClamped(cur, 3)
+		cur = next
 	}
 
 	for i := 0; i < periods; i++ {

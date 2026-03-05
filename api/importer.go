@@ -6,10 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -198,21 +195,16 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		// -------------------------
 		// Insert Contract
 		// -------------------------
-		var contractID int
-		err = tx.QueryRow(`
-			INSERT INTO contracts 
-				(client_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			RETURNING id
-		`,
-			clientID,
-			start,
-			end,
-			durationMonths,
-			revenueTotal,
-			paymentFreq,
-			createdAt,
-		).Scan(&contractID)
+		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
+			ClientID:          clientID,
+			StartDate:         start,
+			EndDate:           &end,
+			DurationMonths:    durationMonths,
+			RevenueTotal:      revenueTotal,
+			PaymentFreq:       paymentFreq,
+			CreatedAtOverride: &createdAt,
+			GenerateSchedule:  false,
+		})
 
 		if err != nil {
 			tx.Rollback()
@@ -228,89 +220,10 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		// -------------------------
 		// Insert Cashflows + Comments
 		// -------------------------
-		for ym, value := range c.Cashflows {
-			date, err := time.Parse("2006-01", ym)
-			if err != nil {
-				continue
-			}
-
-			switch v := value.(type) {
-
-			case float64:
-				if v == 0 {
-					continue
-				}
-				_, err := tx.Exec(`
-					INSERT INTO cashflow_entries 
-						(contract_id, due_date, amount, status)
-					VALUES ($1, $2::date, $3, 'pending')
-				`, contractID, date, v)
-				if err != nil {
-					tx.Rollback()
-					http.Error(w, err.Error(), 500)
-					return
-				}
-
-			case string:
-				// Normalize and ignore placeholder tokens
-				trimmed := strings.TrimSpace(v)
-				if trimmed == "" {
-					continue
-				}
-				lower := strings.ToLower(trimmed)
-				if lower == "-" {
-					// skip placeholder marker
-					continue
-				}
-
-				// Detect numeric substrings (e.g. "? 190" or "190 ?")
-				numRe := regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
-				numStr := numRe.FindString(trimmed)
-				if numStr != "" {
-					// parse numeric value and insert cashflow entry
-					if n, err := strconv.ParseFloat(numStr, 64); err == nil && n != 0 {
-						_, err := tx.Exec(`
-							INSERT INTO cashflow_entries 
-								(contract_id, due_date, amount, status)
-							VALUES ($1, $2::date, $3, 'pending')
-						`, contractID, date, n)
-						if err != nil {
-							tx.Rollback()
-							http.Error(w, err.Error(), 500)
-							return
-						}
-					}
-
-					// If the original string contains non-numeric markers (like '?'), save it as a comment too
-					// Determine if there's any non-numeric content besides whitespace and the matched number
-					leftover := strings.TrimSpace(strings.Replace(trimmed, numStr, "", 1))
-					if leftover != "" {
-						commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
-						_, err := tx.Exec(`
-							INSERT INTO comments (entity_type, entity_id, body, author)
-							VALUES ('contract', $1, $2, 'importer')
-						`, contractID, commentBody)
-						if err != nil {
-							tx.Rollback()
-							http.Error(w, err.Error(), 500)
-							return
-						}
-					}
-					continue
-				}
-
-				// No numeric value found — treat as pure comment
-				commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
-				_, err := tx.Exec(`
-					INSERT INTO comments (entity_type, entity_id, body, author)
-					VALUES ('contract', $1, $2, 'importer')
-				`, contractID, commentBody)
-				if err != nil {
-					tx.Rollback()
-					http.Error(w, err.Error(), 500)
-					return
-				}
-			}
+		if err := insertImportedCashflowEntriesTx(tx, contractID, c.Cashflows); err != nil {
+			tx.Rollback()
+			http.Error(w, err.Error(), 500)
+			return
 		}
 
 		if err := tx.Commit(); err != nil {

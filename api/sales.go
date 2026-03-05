@@ -355,47 +355,40 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 		defer tx2.Rollback()
 
-		// insert contract
-		var newContractID int
-		err = tx2.QueryRowContext(r.Context(), `
-		INSERT INTO contracts (
-			client_id, sales_process_id, start_date,
-			duration_months, revenue_total, payment_frequency
-		)
-		VALUES ($1, $2, $3::date, $4, $5, $6)
-		RETURNING id
-	`,
-			clientID,
-			id,
-			*sp.ContractStartDate,
-			*sp.ContractDurationMonths,
-			*sp.Revenue,
-			*sp.ContractFrequency,
-		).Scan(&newContractID)
-
-		if err != nil {
-			http.Error(w, "failed to create contract: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// insert the full schedule for the new contract (atomic within tx)
+		// Parse start date once
 		sd, err := time.Parse("2006-01-02", *sp.ContractStartDate)
 		if err != nil {
 			http.Error(w, "invalid contract_start_date", http.StatusBadRequest)
 			return
 		}
-		endDate := sd.AddDate(0, *sp.ContractDurationMonths, 0)
 
-		if err := insertCashflowEntriesTx(
-			tx2,
-			newContractID,
-			sd,
-			endDate,
-			*sp.Revenue,
-			*sp.ContractFrequency,
-		); err != nil {
-			http.Error(w, "failed to create cashflow entries: "+err.Error(), http.StatusInternalServerError)
+		// idempotency: only one contract per sales process
+		var existingContractID int
+		err = tx2.QueryRowContext(r.Context(), `
+		SELECT id
+		FROM contracts
+		WHERE sales_process_id = $1
+		LIMIT 1
+		`, id).Scan(&existingContractID)
+		if err != nil && err != sql.ErrNoRows {
+			http.Error(w, "failed to check existing contract: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if err == sql.ErrNoRows {
+			spID := id
+			if _, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
+				ClientID:         clientID,
+				SalesProcessID:   &spID,
+				StartDate:        sd,
+				DurationMonths:   *sp.ContractDurationMonths,
+				RevenueTotal:     *sp.Revenue,
+				PaymentFreq:      *sp.ContractFrequency,
+				GenerateSchedule: true,
+			}); err != nil {
+				http.Error(w, "failed to create contract: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
@@ -1405,68 +1398,39 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		// ----- VALIDATE required contract fields -----
 		if req.ContractStartDate == nil ||
 			req.ContractDurationMonths == nil || *req.ContractDurationMonths <= 0 ||
-			req.ContractFrequency == nil ||
-			(*req.ContractFrequency != "monthly" &&
-				*req.ContractFrequency != "bi-monthly" &&
-				*req.ContractFrequency != "quarterly" &&
-				*req.ContractFrequency != "one-time" &&
-				*req.ContractFrequency != "bi-yearly") {
+			req.ContractFrequency == nil {
 
 			http.Error(w, "contract_start_date, contract_duration_months > 0 and contract_frequency (monthly|bi-monthly|quarterly|one-time|bi-yearly) are required", http.StatusBadRequest)
 			return
 		}
 
-		// If bi-yearly selected, require duration >= 12 months
-		if req.ContractFrequency != nil && *req.ContractFrequency == "bi-yearly" {
-			if req.ContractDurationMonths == nil || *req.ContractDurationMonths < 12 {
-				http.Error(w, "bi-yearly payment frequency requires contract_duration_months >= 12", http.StatusBadRequest)
-				return
-			}
-		}
-
-		// ----- INSERT CONTRACT -----
-		err = tx.QueryRow(`
-        INSERT INTO contracts (
-            client_id, sales_process_id, start_date,
-            duration_months, revenue_total, payment_frequency
-        )
-        VALUES ($1, $2, $3::date, $4, $5, $6)
-        RETURNING id
-    `,
-			clientID,
-			salesID,
-			*req.ContractStartDate,
-			*req.ContractDurationMonths,
-			*req.UpsellRevenue,
-			*req.ContractFrequency,
-		).Scan(&newContractID)
-
+		pf, err := normalizePaymentFrequency(*req.ContractFrequency, *req.ContractDurationMonths)
 		if err != nil {
-			http.Error(w, "failed to create contract: "+err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// first payment date / spacing is handled inside the cashflow helper
-
-		// insert the full schedule for the new contract (atomic within tx)
 		sd, err := time.Parse("2006-01-02", *req.ContractStartDate)
 		if err != nil {
 			http.Error(w, "invalid contract_start_date", 400)
 			return
 		}
-		endDate := sd.AddDate(0, *req.ContractDurationMonths, 0)
 
-		if err := insertCashflowEntriesTx(
-			tx,
-			*newContractID,
-			sd,
-			endDate,
-			*req.UpsellRevenue,
-			*req.ContractFrequency,
-		); err != nil {
-			http.Error(w, "failed to create cashflow entries: "+err.Error(), 500)
+		spID := salesID
+		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
+			ClientID:         clientID,
+			SalesProcessID:   &spID,
+			StartDate:        sd,
+			DurationMonths:   *req.ContractDurationMonths,
+			RevenueTotal:     *req.UpsellRevenue,
+			PaymentFreq:      pf,
+			GenerateSchedule: true,
+		})
+		if err != nil {
+			http.Error(w, "failed to create contract: "+err.Error(), 500)
 			return
 		}
+		newContractID = &contractID
 
 	}
 

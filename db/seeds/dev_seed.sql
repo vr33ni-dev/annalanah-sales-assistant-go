@@ -181,7 +181,7 @@ contract_explicit_enddate AS (
          se.id,
          sd.explicit_contract_start,
          sd.explicit_contract_end,
-         2,
+    3,
          1234,
          'monthly',
          (sd.explicit_contract_start - INTERVAL '1 day')::timestamptz
@@ -236,22 +236,6 @@ contract_moritz_ext AS (
          (CURRENT_DATE::timestamp)
   FROM sp_moritz sm, seed_dates sd
   RETURNING id
-),
-
--- 5) Cashflow entries (pending payments)
-cf_ins AS (
-  INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-  SELECT c.id, d.due_date, d.amount, d.status
-  FROM (
-    SELECT (SELECT id FROM contract_anna) AS contract_id, (CURRENT_DATE + INTERVAL '7 days')::date AS due_date, 800::numeric AS amount, 'pending'::text AS status
-    UNION ALL SELECT (SELECT id FROM contract_anna), (CURRENT_DATE + INTERVAL '37 days')::date, 800, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '7 days')::date, 2000, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_max),  (CURRENT_DATE + INTERVAL '75 days')::date, 2000, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_moritz), (CURRENT_DATE + INTERVAL '14 days')::date, 6000, 'pending'
-    UNION ALL SELECT (SELECT id FROM contract_moritz), (CURRENT_DATE + INTERVAL '194 days')::date, 6000, 'pending'
-  ) d
-  JOIN contracts c ON c.id = d.contract_id
-  RETURNING 1
 ),
 
 -- 6) Stage assignments & participants
@@ -332,31 +316,73 @@ SELECT 'ok';
 CREATE UNIQUE INDEX IF NOT EXISTS ux_cashflow_contract_due ON cashflow_entries (contract_id, due_date);
 
 -- Generate full cashflow schedules for dev contracts (idempotent)
--- For the dev clients (Anna, Max, Moritz) derive payment dates from contract.start_date,
--- contract.duration_months and contract.payment_frequency and insert entries.
+-- For the dev clients derive payment dates the same way runtime does:
+-- start_date..effective_end (effective_end = explicit end_date or computed via duration_months).
 INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-SELECT c.id,
-       (c.start_date + (gs.n * (c.step || ' months')::interval))::date AS due_date,
-       CASE WHEN c.payment_frequency = 'one-time' THEN c.revenue_total
-            ELSE ROUND((c.revenue_total::numeric / NULLIF(c.duration_months,0)) * c.step, 2)
-       END AS amount,
-       'pending'
+SELECT
+  sr.contract_id,
+  sr.due_date,
+  CASE
+    WHEN sr.payment_frequency = 'one-time' THEN sr.revenue_total
+    ELSE ROUND((sr.revenue_total::numeric / NULLIF(sr.periods, 0)), 2)
+  END AS amount,
+  'pending'
 FROM (
-  SELECT id, start_date, duration_months, revenue_total, payment_frequency,
-         CASE payment_frequency
-           WHEN 'monthly' THEN 1
-           WHEN 'bi-monthly' THEN 2
-           WHEN 'quarterly' THEN 3
-           WHEN 'bi-yearly' THEN 6
-           WHEN 'one-time' THEN GREATEST(duration_months,1)
-           ELSE 1
-         END AS step
-  FROM contracts
-  WHERE client_id IN (
-    SELECT id FROM clients WHERE email IN ('anna@example.com','max@example.com','mo@example.com')
-  )
-) c
-CROSS JOIN LATERAL generate_series(0, ((c.duration_months - 1) / c.step)) AS gs(n)
+  SELECT
+    c.id AS contract_id,
+    gs::date AS due_date,
+    c.revenue_total,
+    c.payment_frequency,
+    c.effective_end,
+    COUNT(*) FILTER (
+      WHERE (
+        CASE c.payment_frequency
+          WHEN 'monthly' THEN (gs + interval '1 month')
+          WHEN 'bi-monthly' THEN (gs + interval '2 months')
+          WHEN 'quarterly' THEN (gs + interval '3 months')
+          WHEN 'bi-yearly' THEN (gs + interval '6 months')
+          WHEN 'one-time' THEN (gs + interval '100 years')
+          ELSE (gs + interval '1 month')
+        END
+      ) <= c.effective_end::timestamp
+    ) OVER (PARTITION BY c.id) AS periods
+  FROM (
+    SELECT
+      co.id,
+      co.start_date,
+      COALESCE(co.end_date, (co.start_date + (co.duration_months || ' months')::interval)::date) AS effective_end,
+      co.revenue_total,
+      co.payment_frequency
+    FROM contracts co
+    WHERE co.client_id IN (
+      SELECT id
+      FROM clients
+      WHERE email IN ('anna@example.com', 'max@example.com', 'mo@example.com', 'explicit@enddate.com')
+    )
+  ) c
+  JOIN LATERAL generate_series(
+    c.start_date::timestamp,
+    c.effective_end::timestamp,
+    CASE c.payment_frequency
+      WHEN 'monthly' THEN interval '1 month'
+      WHEN 'bi-monthly' THEN interval '2 months'
+      WHEN 'quarterly' THEN interval '3 months'
+      WHEN 'bi-yearly' THEN interval '6 months'
+      WHEN 'one-time' THEN interval '100 years'
+      ELSE interval '1 month'
+    END
+  ) gs ON TRUE
+) sr
+WHERE (
+  CASE sr.payment_frequency
+    WHEN 'monthly' THEN (sr.due_date::timestamp + interval '1 month')
+    WHEN 'bi-monthly' THEN (sr.due_date::timestamp + interval '2 months')
+    WHEN 'quarterly' THEN (sr.due_date::timestamp + interval '3 months')
+    WHEN 'bi-yearly' THEN (sr.due_date::timestamp + interval '6 months')
+    WHEN 'one-time' THEN (sr.due_date::timestamp + interval '100 years')
+    ELSE (sr.due_date::timestamp + interval '1 month')
+  END
+) <= sr.effective_end::timestamp
 ON CONFLICT (contract_id, due_date) DO NOTHING;
 
 -- Insert a confirmed upsell for Moritz linking previous and new contract (idempotent)
