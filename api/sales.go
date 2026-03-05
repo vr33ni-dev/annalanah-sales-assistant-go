@@ -377,7 +377,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 		if err == sql.ErrNoRows {
 			spID := id
-			if _, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
+			contractID, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
 				ClientID:         clientID,
 				SalesProcessID:   &spID,
 				StartDate:        sd,
@@ -385,10 +385,12 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 				RevenueTotal:     *sp.Revenue,
 				PaymentFreq:      *sp.ContractFrequency,
 				GenerateSchedule: true,
-			}); err != nil {
+			})
+			if err != nil {
 				http.Error(w, "failed to create contract: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			h.notifyNewContractAsync(contractID, clientID, *sp.Revenue, sd, &spID)
 		}
 
 		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
@@ -1431,6 +1433,7 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newContractID = &contractID
+		h.notifyNewContractAsync(contractID, clientID, *req.UpsellRevenue, sd, &spID)
 
 	}
 

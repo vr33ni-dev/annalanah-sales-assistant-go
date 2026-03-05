@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
@@ -164,6 +165,20 @@ func (h *Handler) getNumericSetting(key string, def float64) float64 {
 	_ = h.DB.QueryRow(`SELECT value_numeric FROM app_settings WHERE key = $1`, key).Scan(&v)
 	if v.Valid {
 		return v.Float64
+	}
+	return def
+}
+
+// getTextSetting returns app_settings.value_text for a key,
+// or the provided default if the key is missing/NULL/blank.
+func (h *Handler) getTextSetting(key string, def string) string {
+	var v sql.NullString
+	_ = h.DB.QueryRow(`SELECT value_text FROM app_settings WHERE key = $1`, key).Scan(&v)
+	if v.Valid {
+		trimmed := strings.TrimSpace(v.String)
+		if trimmed != "" {
+			return trimmed
+		}
 	}
 	return def
 }

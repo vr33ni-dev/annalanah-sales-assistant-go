@@ -67,6 +67,61 @@ func TestGetNumericSetting_DefaultOnNullOrMissing(t *testing.T) {
 	}
 }
 
+func TestGetTextSetting_ReturnsValue(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT value_text FROM app_settings WHERE key = \$1`).
+		WithArgs("new_contract_notify_email").
+		WillReturnRows(sqlmock.NewRows([]string{"value_text"}).AddRow("ops@example.com"))
+
+	got := h.getTextSetting("new_contract_notify_email", "")
+	if got != "ops@example.com" {
+		t.Fatalf("expected ops@example.com, got %q", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestGetTextSetting_DefaultOnNullOrBlank(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT value_text FROM app_settings WHERE key = \$1`).
+		WithArgs("new_contract_notify_email").
+		WillReturnRows(sqlmock.NewRows([]string{"value_text"}).AddRow(nil))
+
+	got := h.getTextSetting("new_contract_notify_email", "fallback@example.com")
+	if got != "fallback@example.com" {
+		t.Fatalf("expected fallback@example.com, got %q", got)
+	}
+
+	mock.ExpectQuery(`SELECT value_text FROM app_settings WHERE key = \$1`).
+		WithArgs("new_contract_notify_email").
+		WillReturnRows(sqlmock.NewRows([]string{"value_text"}).AddRow("   "))
+
+	got = h.getTextSetting("new_contract_notify_email", "fallback@example.com")
+	if got != "fallback@example.com" {
+		t.Fatalf("expected fallback@example.com for blank setting, got %q", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestIsUniqueViolation(t *testing.T) {
 	// matching pq error
 	pe := &pq.Error{Code: "23505", Constraint: "unique_client_email"}

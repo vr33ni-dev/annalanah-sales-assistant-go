@@ -145,6 +145,24 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 	return contractID, nil, nil
 }
 
+func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float64, startDate time.Time, salesProcessID *int) {
+	if salesProcessID == nil {
+		return
+	}
+	notifyTo := h.getTextSetting("new_contract_notify_email", "")
+	if notifyTo == "" {
+		notifyTo = os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
+	}
+	if notifyTo == "" {
+		return
+	}
+	go func() {
+		if err := mailer.SendNewContractNotification(notifyTo, contractID, clientID, revenue, startDate.Format("2006-01-02")); err != nil {
+			fmt.Printf("failed to send new contract notification: %v\n", err)
+		}
+	}()
+}
+
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
@@ -421,15 +439,8 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(c)
 
-	// Send notification email asynchronously
-	notifyTo := os.Getenv("NEW_CONTRACT_NOTIFY_EMAIL")
-	if notifyTo != "" {
-		go func() {
-			if err := mailer.SendNewContractNotification(notifyTo, c.ID, c.ClientID, c.RevenueTotal, c.StartDate); err != nil {
-				fmt.Printf("failed to send new contract notification: %v\n", err)
-			}
-		}()
-	}
+	// Send notification email only for sales-process contracts (not importer/manual without sales process)
+	h.notifyNewContractAsync(c.ID, c.ClientID, c.RevenueTotal, sd, c.SalesProcessID)
 }
 
 // PATCH /api/contracts/{id}
