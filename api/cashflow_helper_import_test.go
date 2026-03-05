@@ -61,7 +61,7 @@ func TestInsertImportedCashflowEntriesTx_MixedString_InsertsCashflowAndComment(t
 		WithArgs(9, dueDate, 190.0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO comments").
-		WithArgs(9, "2025-04: ? 190", "importer").
+		WithArgs(9, "2025-04: ? 190").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
@@ -95,7 +95,7 @@ func TestInsertImportedCashflowEntriesTx_TextOnly_InsertsCommentOnly(t *testing.
 	}
 
 	mock.ExpectExec("INSERT INTO comments").
-		WithArgs(11, "2025-05: delayed invoice", "importer").
+		WithArgs(11, "2025-05: delayed invoice").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 

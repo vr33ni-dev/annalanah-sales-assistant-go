@@ -331,7 +331,7 @@ ORDER BY month;
 	var rows *sql.Rows
 	var err error
 
-	// Wenn contractID vorhanden → vierter Parameter wird gesetzt (see SQL param ordering)
+	// Wenn contractID is passed → set as 4th parameter (see SQL param ordering)
 	if contractID != nil {
 		rows, err = h.DB.Query(query, start, end, avgRevenuePerContract, *contractID)
 	} else {

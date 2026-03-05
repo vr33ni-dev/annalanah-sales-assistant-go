@@ -128,13 +128,13 @@ func TestCreateContract_Integration(t *testing.T) {
 		count++
 	}
 
-	// Expect 13 rows (inclusive start → end)
-	if count != 13 {
-		t.Fatalf("expected 13 projection rows, got %d", count)
+	// Expect 12 rows (full-period-fit start dates)
+	if count != 12 {
+		t.Fatalf("expected 12 projection rows, got %d", count)
 	}
 
 	expectedStart, _ := time.Parse("2006-01-02", "2025-01-01")
-	expectedEnd := expectedStart.AddDate(0, 12, 0)
+	expectedEnd := expectedStart.AddDate(0, 11, 0)
 
 	if !firstDue.Equal(expectedStart) {
 		t.Fatalf("expected first due_date %v, got %v", expectedStart, firstDue)
@@ -144,8 +144,8 @@ func TestCreateContract_Integration(t *testing.T) {
 		t.Fatalf("expected last due_date %v, got %v", expectedEnd, lastDue)
 	}
 
-	// 1200 / 13 periods
-	expectedAmount := 1200.0 / 13.0
+	// 1200 / 12 periods
+	expectedAmount := 1200.0 / 12.0
 
 	if amount != expectedAmount {
 		t.Fatalf("expected per-period amount %v, got %v", expectedAmount, amount)
@@ -305,9 +305,9 @@ func TestProjection_Quarterly(t *testing.T) {
 		count++
 	}
 
-	// Jan 2025 → Jan 2026 inclusive = 5 rows (0,3,6,9,12)
-	if count != 5 {
-		t.Fatalf("expected 5 quarterly rows, got %d", count)
+	// Jan 2025 → Oct 2025 = 4 rows (0,3,6,9)
+	if count != 4 {
+		t.Fatalf("expected 4 quarterly rows, got %d", count)
 	}
 }
 
@@ -383,9 +383,9 @@ func TestProjection_Shortening(t *testing.T) {
 		SELECT COUNT(*) FROM cashflow_entries WHERE contract_id=$1
 	`, contract.ID).Scan(&count)
 
-	// Jan → July inclusive = 7 rows
-	if count != 7 {
-		t.Fatalf("expected 7 rows after shortening, got %d", count)
+	// Jan → Jun = 6 rows
+	if count != 6 {
+		t.Fatalf("expected 6 rows after shortening, got %d", count)
 	}
 }
 
@@ -440,9 +440,9 @@ func TestProjection_Extension(t *testing.T) {
 		SELECT COUNT(*) FROM cashflow_entries WHERE contract_id=$1
 	`, out.ID).Scan(&count)
 
-	// Jan 2025 → Jan 2026 inclusive = 13
-	if count != 13 {
-		t.Fatalf("expected 13 rows after extension, got %d", count)
+	// Jan 2025 → Dec 2025 = 12
+	if count != 12 {
+		t.Fatalf("expected 12 rows after extension, got %d", count)
 	}
 }
 
