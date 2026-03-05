@@ -86,6 +86,7 @@ func (h *Handler) ExportRawClientsCSV(w http.ResponseWriter, r *http.Request) {
 			COALESCE(email, ''),
 			COALESCE(phone, ''),
 			COALESCE(source, ''),
+			COALESCE((SELECT name FROM stages s WHERE s.id = clients.source_stage_id), ''),
 			COALESCE(CAST(source_stage_id AS TEXT), ''),
 			COALESCE(status, ''),
 			COALESCE(CAST(completed_at AS TEXT), ''),
@@ -102,15 +103,15 @@ func (h *Handler) ExportRawClientsCSV(w http.ResponseWriter, r *http.Request) {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	_ = cw.Write([]string{"id", "name", "email", "phone", "source", "source_stage_id", "status", "completed_at", "created_at"})
+	_ = cw.Write([]string{"id", "name", "email", "phone", "source", "source_stage_name", "source_stage_id", "status", "completed_at", "created_at"})
 
 	for rows.Next() {
-		var id, name, email, phone, source, sourceStageID, status, completedAt, createdAt string
-		if err := rows.Scan(&id, &name, &email, &phone, &source, &sourceStageID, &status, &completedAt, &createdAt); err != nil {
+		var id, name, email, phone, source, sourceStageName, sourceStageID, status, completedAt, createdAt string
+		if err := rows.Scan(&id, &name, &email, &phone, &source, &sourceStageName, &sourceStageID, &status, &completedAt, &createdAt); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_ = cw.Write([]string{id, name, email, phone, source, sourceStageID, status, completedAt, createdAt})
+		_ = cw.Write([]string{id, name, email, phone, source, sourceStageName, sourceStageID, status, completedAt, createdAt})
 	}
 }
 
@@ -191,20 +192,21 @@ func (h *Handler) ExportRawCashflowEntriesCSV(w http.ResponseWriter, r *http.Req
 }
 
 type exportContractRow struct {
-	ClientID       int
-	ClientName     string
-	ClientEmail    string
-	ClientPhone    string
-	ClientSource   string
-	ClientStatus   string
-	ContractID     int
-	SalesProcessID string
-	StartDate      time.Time
-	EndDate        time.Time
-	PaymentFreq    string
-	DurationMonths int
-	RevenueTotal   float64
-	BaseAmount     string
+	ClientID              int
+	ClientName            string
+	ClientEmail           string
+	ClientPhone           string
+	ClientSource          string
+	ClientSourceStageName string
+	ClientStatus          string
+	ContractID            int
+	SalesProcessID        string
+	StartDate             time.Time
+	EndDate               time.Time
+	PaymentFreq           string
+	DurationMonths        int
+	RevenueTotal          float64
+	BaseAmount            string
 }
 
 func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Request) {
@@ -226,11 +228,12 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 
 	rows, err := h.DB.QueryContext(ctx, `
 		SELECT
-			c.id,
+			ct.client_id,
 			COALESCE(cl.name, ''),
 			COALESCE(cl.email, ''),
 			COALESCE(cl.phone, ''),
 			COALESCE(cl.source, ''),
+			COALESCE(ss.name, ''),
 			COALESCE(cl.status, ''),
 			ct.id,
 			COALESCE(CAST(ct.sales_process_id AS TEXT), ''),
@@ -241,7 +244,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 			COALESCE(ct.revenue_total, 0)
 		FROM contracts ct
 		JOIN clients cl ON cl.id = ct.client_id
-		JOIN clients c ON c.id = cl.id
+		LEFT JOIN stages ss ON ss.id = cl.source_stage_id
 		ORDER BY cl.id, ct.id`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -262,6 +265,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 			&row.ClientEmail,
 			&row.ClientPhone,
 			&row.ClientSource,
+			&row.ClientSourceStageName,
 			&row.ClientStatus,
 			&row.ContractID,
 			&row.SalesProcessID,
@@ -305,7 +309,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 		setCSVHeaders(w, "cashflow_aggregated.csv")
 		cw := csv.NewWriter(w)
 		defer cw.Flush()
-		_ = cw.Write([]string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"})
+		_ = cw.Write([]string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"})
 		return
 	}
 
@@ -354,7 +358,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	header := []string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"}
+	header := []string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"}
 	for _, m := range months {
 		header = append(header, monthHeaderKey(m))
 	}
@@ -374,6 +378,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 			c.ClientEmail,
 			c.ClientPhone,
 			c.ClientSource,
+			c.ClientSourceStageName,
 			c.ClientStatus,
 			strconv.Itoa(c.ContractID),
 			c.SalesProcessID,

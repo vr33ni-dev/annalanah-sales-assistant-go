@@ -14,6 +14,10 @@ import (
 func createExportTestSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	stmts := []string{
+		`CREATE TABLE stages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT
+		);`,
 		`CREATE TABLE clients (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT,
@@ -61,7 +65,8 @@ func TestExportRawClientsCSV(t *testing.T) {
 	defer db.Close()
 	createExportTestSchema(t, db)
 
-	_, _ = db.Exec(`INSERT INTO clients (name,email,phone,source,status,created_at) VALUES ('Alice','alice@example.com','123','organic','active','2026-01-01')`)
+	_, _ = db.Exec(`INSERT INTO stages (id,name) VALUES (3,'Instagram Ads')`)
+	_, _ = db.Exec(`INSERT INTO clients (name,email,phone,source,source_stage_id,status,created_at) VALUES ('Alice','alice@example.com','123','organic',3,'active','2026-01-01')`)
 
 	h := &api.Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/exports/raw/clients.csv", nil)
@@ -76,11 +81,14 @@ func TestExportRawClientsCSV(t *testing.T) {
 		t.Fatalf("expected csv content-type, got %q", ct)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "id,name,email,phone,source,source_stage_id,status,completed_at,created_at") {
+	if !strings.Contains(body, "id,name,email,phone,source,source_stage_name,source_stage_id,status,completed_at,created_at") {
 		t.Fatalf("missing expected csv header, body=%s", body)
 	}
 	if !strings.Contains(body, "alice@example.com") {
 		t.Fatalf("missing inserted client row, body=%s", body)
+	}
+	if !strings.Contains(body, "Instagram Ads") {
+		t.Fatalf("missing source stage name in csv row, body=%s", body)
 	}
 }
 
@@ -92,7 +100,8 @@ func TestExportAggregatedCashflowCSV(t *testing.T) {
 	defer db.Close()
 	createExportTestSchema(t, db)
 
-	_, _ = db.Exec(`INSERT INTO clients (id,name,email,phone,source,status) VALUES (1,'Alice','alice@example.com','123','organic','active')`)
+	_, _ = db.Exec(`INSERT INTO stages (id,name) VALUES (8,'Webinar')`)
+	_, _ = db.Exec(`INSERT INTO clients (id,name,email,phone,source,source_stage_id,status) VALUES (1,'Alice','alice@example.com','123','organic',8,'active')`)
 	_, _ = db.Exec(`INSERT INTO contracts (id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency) VALUES (10,1,100,'2026-01-15','2026-03-20',3,300,'monthly')`)
 	_, _ = db.Exec(`INSERT INTO cashflow_entries (contract_id,due_date,amount,status) VALUES (10,'2026-01-20',100,'pending')`)
 	_, _ = db.Exec(`INSERT INTO cashflow_entries (contract_id,due_date,amount,status) VALUES (10,'2026-02-20',100,'pending')`)
@@ -107,6 +116,9 @@ func TestExportAggregatedCashflowCSV(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
+	if !strings.Contains(body, "client_source_stage_name") {
+		t.Fatalf("missing client_source_stage_name column, body=%s", body)
+	}
 	if !strings.Contains(body, "m_2026_01") || !strings.Contains(body, "m_2026_02") || !strings.Contains(body, "m_2026_03") {
 		t.Fatalf("missing month columns in header, body=%s", body)
 	}
