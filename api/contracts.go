@@ -159,36 +159,36 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 
 	clientName := fmt.Sprintf("Kunde #%d", clientID)
 	closureDate := ""
+	source := ""
 	stageName := ""
 	nextDueDate := ""
 
 	var dbClientName sql.NullString
 	var dbClosureDate sql.NullTime
-	var dbStageName sql.NullString
-	var overdueDueDate sql.NullTime
-	var upcomingDueDate sql.NullTime
+	var dbSource sql.NullString
+	var dbSourceStageName sql.NullString
+	var dbSalesStageName sql.NullString
+	var dbNextDueDate sql.NullTime
 
 	err := h.DB.QueryRow(`
 		SELECT
 			cl.name,
 			COALESCE(cl.completed_at::date, sp.follow_up_date::date) AS closure_date,
-			COALESCE(st.name, sp.stage) AS stage_name,
+			cl.source,
+			src_st.name AS source_stage_name,
+			COALESCE(st.name, sp.stage) AS sales_stage_name,
 			(
 				SELECT MIN(due_date)::date
 				FROM cashflow_entries
-				WHERE contract_id = c.id AND status = 'overdue'
-			) AS overdue_due_date,
-			(
-				SELECT MIN(due_date)::date
-				FROM cashflow_entries
-				WHERE contract_id = c.id AND due_date >= CURRENT_DATE
-			) AS upcoming_due_date
+				WHERE contract_id = c.id AND status <> 'paid'
+			) AS next_due_date
 		FROM contracts c
 		JOIN clients cl ON cl.id = c.client_id
 		LEFT JOIN sales_process sp ON sp.id = c.sales_process_id
 		LEFT JOIN stages st ON st.id = sp.stage_id
+		LEFT JOIN stages src_st ON src_st.id = cl.source_stage_id
 		WHERE c.id = $1
-	`, contractID).Scan(&dbClientName, &dbClosureDate, &dbStageName, &overdueDueDate, &upcomingDueDate)
+	`, contractID).Scan(&dbClientName, &dbClosureDate, &dbSource, &dbSourceStageName, &dbSalesStageName, &dbNextDueDate)
 
 	if err == nil {
 		if dbClientName.Valid && strings.TrimSpace(dbClientName.String) != "" {
@@ -197,13 +197,16 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 		if dbClosureDate.Valid {
 			closureDate = dbClosureDate.Time.Format("2006-01-02")
 		}
-		if dbStageName.Valid {
-			stageName = strings.TrimSpace(dbStageName.String)
+		if dbSource.Valid {
+			source = strings.TrimSpace(dbSource.String)
 		}
-		if overdueDueDate.Valid {
-			nextDueDate = overdueDueDate.Time.Format("2006-01-02")
-		} else if upcomingDueDate.Valid {
-			nextDueDate = upcomingDueDate.Time.Format("2006-01-02")
+		if dbSourceStageName.Valid && strings.TrimSpace(dbSourceStageName.String) != "" {
+			stageName = strings.TrimSpace(dbSourceStageName.String)
+		} else if dbSalesStageName.Valid {
+			stageName = strings.TrimSpace(dbSalesStageName.String)
+		}
+		if dbNextDueDate.Valid {
+			nextDueDate = dbNextDueDate.Time.Format("2006-01-02")
 		}
 	}
 
@@ -213,6 +216,7 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 			clientName,
 			startDate.Format("2006-01-02"),
 			closureDate,
+			source,
 			stageName,
 			revenue,
 			nextDueDate,

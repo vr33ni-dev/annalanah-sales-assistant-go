@@ -19,7 +19,7 @@ func TestSendNewContractNotification_UsesSendMailFunc(t *testing.T) {
 		return nil
 	}
 
-	if err := SendNewContractNotification("ops@example.com", "Anna Schmidt", "2025-10-01", "2025-09-24", "Abschluss", 190.0, "2025-11-01"); err != nil {
+	if err := SendNewContractNotification("ops@example.com", "Anna Schmidt", "2025-10-01", "2025-09-24", "organic", "Abschluss", 190.0, "2025-11-01"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -40,7 +40,10 @@ func TestSendNewContractNotification_UsesSendMailFunc(t *testing.T) {
 	if !strings.Contains(bodyGot, "Abschlussdatum: 2025-09-24") {
 		t.Fatalf("body didn't contain closure date: %s", bodyGot)
 	}
-	if !strings.Contains(bodyGot, "Stage: Abschluss") {
+	if !strings.Contains(bodyGot, "Quelle: organic") {
+		t.Fatalf("body didn't contain source: %s", bodyGot)
+	}
+	if !strings.Contains(bodyGot, "Vertriebsphase: Abschluss") {
 		t.Fatalf("body didn't contain stage: %s", bodyGot)
 	}
 	if !strings.Contains(bodyGot, "Nächste Fälligkeit: 2025-11-01") {
@@ -59,7 +62,7 @@ func TestSendMail_NoSMTP(t *testing.T) {
 
 func TestSendNewContractNotification_NoSMTP(t *testing.T) {
 	os.Unsetenv("SMTP_HOST")
-	if err := SendNewContractNotification("ops@example.com", "Max Müller", "2025-10-01", "", "", 123.45, ""); err != nil {
+	if err := SendNewContractNotification("ops@example.com", "Max Müller", "2025-10-01", "", "", "", 123.45, ""); err != nil {
 		t.Fatalf("expected nil error when SMTP_HOST unset, got: %v", err)
 	}
 }

@@ -48,14 +48,17 @@ func SendMail(to, subject, body string) error {
 }
 
 // SendNewContractNotification composes a German notification for new contracts.
-func SendNewContractNotification(to, clientName, startDate, closureDate, stageName string, revenue float64, nextDueDate string) error {
+func SendNewContractNotification(to, clientName, startDate, closureDate, source, stageName string, revenue float64, nextDueDate string) error {
 	subject := fmt.Sprintf("Neuer Vertrag bestätigt: %s", clientName)
 	body := fmt.Sprintf("Ein neuer Vertrag wurde angelegt.\n\nKunde: %s\nStartdatum: %s\n", clientName, startDate)
 	if closureDate != "" {
 		body += fmt.Sprintf("Abschlussdatum: %s\n", closureDate)
 	}
+	if source != "" {
+		body += fmt.Sprintf("Quelle: %s\n", source)
+	}
 	if stageName != "" {
-		body += fmt.Sprintf("Stage: %s\n", stageName)
+		body += fmt.Sprintf("Bühne: %s\n", stageName)
 	}
 	body += fmt.Sprintf("Umsatz: %.2f\n", revenue)
 	if nextDueDate != "" {
