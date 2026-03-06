@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -201,6 +202,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 }
 
 // PATCH /api/sales/{id}
+// Orchestrates update -> sync -> ensure contract -> load response -> maybe cleanup -> encode JSON.
 func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -294,140 +296,23 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Keep clients.completed_at consistent with the sales process state.
-	// - If closed is explicitly false -> clear completed_at.
-	// - If closed is explicitly true and completed_at provided -> set it.
-	if sp.Closed != nil && !*sp.Closed {
-		if _, err := h.DB.Exec(`UPDATE clients SET completed_at = NULL WHERE id = $1`, clientID); err != nil {
-			http.Error(w, "failed to clear completed_at: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	if sp.Closed != nil && *sp.Closed && sp.CompletedAt != nil {
-		if _, err := h.DB.Exec(`UPDATE clients SET completed_at = $1::date WHERE id = $2`, *sp.CompletedAt, clientID); err != nil {
-			http.Error(w, "failed to update completed_at: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// ---------- SYNC CLIENT STATUS ----------
-	_, err = h.DB.Exec(`
-	WITH s AS (
-		SELECT client_id, stage, follow_up_result, closed, initial_contact_date
-		FROM sales_process WHERE id = $1
-	)
-	  UPDATE clients c
-	  SET status = CASE
-	    WHEN (SELECT stage FROM s) = 'closed'
-	         AND COALESCE((SELECT closed FROM s), FALSE) = TRUE
-	      THEN 'active'
-	    WHEN (SELECT stage FROM s) = 'lost'
-	      THEN 'lost'
-		WHEN (SELECT stage FROM s) = 'initial_contact'
-			 AND (SELECT initial_contact_date FROM s) IS NOT NULL
-			 AND (SELECT follow_up_result FROM s) IS NULL
-		THEN 'initial_call_scheduled'
-		WHEN (SELECT stage FROM s) = 'follow_up'
-				 AND (SELECT follow_up_result FROM s) IS NULL
-			THEN 'follow_up_scheduled'
-	    WHEN (SELECT stage FROM s) = 'follow_up'
-	         AND (SELECT follow_up_result FROM s) IS TRUE
-	      THEN 'awaiting_response'
-	    ELSE c.status
-	  END
-	  WHERE c.id = (SELECT client_id FROM s)
-	`, id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := h.syncClientCompletedAtFromSales(r.Context(), clientID, sp); err != nil {
+		http.Error(w, "failed to sync completed_at: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// ---------- (OPTIONAL) AUTO-CREATE CONTRACT ON CLOSE-WON ----------
-	if sp.Closed != nil && *sp.Closed == true &&
-		sp.Revenue != nil &&
-		sp.ContractDurationMonths != nil && *sp.ContractDurationMonths > 0 &&
-		sp.ContractStartDate != nil && sp.ContractFrequency != nil {
-		var notifyContractID *int
-		var notifyRevenue *float64
-		var notifyStartDate *time.Time
-		var notifySalesProcessID *int
+	if err := h.syncClientStatusFromSales(r.Context(), id); err != nil {
+		http.Error(w, "failed to sync client status: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-		tx2, err := h.DB.BeginTx(r.Context(), nil)
-		if err != nil {
-			http.Error(w, "failed to begin tx: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer tx2.Rollback()
-
-		// Parse start date once
-		sd, err := time.Parse("2006-01-02", *sp.ContractStartDate)
-		if err != nil {
+	if err := h.ensureContractForClosedSales(r.Context(), id, clientID, sp); err != nil {
+		if errors.Is(err, errInvalidContractStartDate) {
 			http.Error(w, "invalid contract_start_date", http.StatusBadRequest)
 			return
 		}
-
-		// idempotency: only one contract per sales process
-		var existingContractID int
-		err = tx2.QueryRowContext(r.Context(), `
-		SELECT id
-		FROM contracts
-		WHERE sales_process_id = $1
-		LIMIT 1
-		`, id).Scan(&existingContractID)
-		if err != nil && err != sql.ErrNoRows {
-			http.Error(w, "failed to check existing contract: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if err == sql.ErrNoRows {
-			spID := id
-			contractID, _, err := h.createContractTx(r.Context(), tx2, ContractCreateInput{
-				ClientID:         clientID,
-				SalesProcessID:   &spID,
-				StartDate:        sd,
-				DurationMonths:   *sp.ContractDurationMonths,
-				RevenueTotal:     *sp.Revenue,
-				PaymentFreq:      *sp.ContractFrequency,
-				GenerateSchedule: true,
-			})
-			if err != nil {
-				http.Error(w, "failed to create contract: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			notifyContractID = &contractID
-			notifyRevenue = sp.Revenue
-			notifyStartDate = &sd
-			notifySalesProcessID = &spID
-		}
-
-		// ---------- CONVERT LEAD → CLIENT (ONLY ON CONTRACT) ----------
-		if _, err = tx2.ExecContext(r.Context(), `
-	UPDATE leads
-	SET
-		converted = TRUE,
-		converted_at = now(),
-		converted_client_id = $1
-	WHERE id = (
-		SELECT lead_id
-		FROM sales_process
-		WHERE id = $2
-		  AND lead_id IS NOT NULL
-	)
-	  AND converted = FALSE
-`, clientID, id); err != nil {
-			http.Error(w, "failed to convert lead: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if err := tx2.Commit(); err != nil {
-			http.Error(w, "commit failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if notifyContractID != nil && notifyRevenue != nil && notifyStartDate != nil && notifySalesProcessID != nil {
-			h.notifyNewContractAsync(*notifyContractID, clientID, *notifyRevenue, *notifyStartDate, notifySalesProcessID)
-		}
-
+		http.Error(w, "failed to ensure contract for closed sales: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// ---------- RETURN UPDATED ROW ----------
@@ -523,40 +408,15 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	// If this sales process was started from an unconverted lead and ended up lost,
 	// delete the temporary client record so the lead can be scheduled again cleanly.
 	if updated.Stage == "lost" && updated.Closed != nil && !*updated.Closed {
-		var leadID sql.NullInt64
-		if err := h.DB.QueryRow(`SELECT lead_id FROM sales_process WHERE id = $1`, updated.ID).Scan(&leadID); err == nil && leadID.Valid {
-			var converted bool
-			if err := h.DB.QueryRow(`SELECT converted FROM leads WHERE id = $1`, leadID.Int64).Scan(&converted); err == nil && !converted {
-				var hasContracts bool
-				if err := h.DB.QueryRow(`SELECT EXISTS (SELECT 1 FROM contracts WHERE client_id = $1)`, updated.ClientID).Scan(&hasContracts); err == nil && !hasContracts {
-					txDel, err := h.DB.BeginTx(r.Context(), nil)
-					if err != nil {
-						http.Error(w, "delete tx begin failed: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
-					defer txDel.Rollback()
-
-					// Comments are not FK-linked, so clean them explicitly.
-					if _, err := txDel.ExecContext(r.Context(), `
-						DELETE FROM comments
-						WHERE (entity_type = 'client' AND entity_id = $1)
-						   OR (entity_type = 'sales_process' AND entity_id = $2)
-					`, updated.ClientID, updated.ID); err != nil {
-						http.Error(w, "failed to delete comments: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
-
-					// Deleting the client cascades to sales_process.
-					if _, err := txDel.ExecContext(r.Context(), `DELETE FROM clients WHERE id = $1`, updated.ClientID); err != nil {
-						http.Error(w, "failed to delete client: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
-
-					if err := txDel.Commit(); err != nil {
-						http.Error(w, "delete commit failed: "+err.Error(), http.StatusInternalServerError)
-						return
-					}
-				}
+		shouldDelete, err := h.shouldDeleteLostTemporaryClient(r.Context(), updated.ID, updated.ClientID)
+		if err != nil {
+			http.Error(w, "cleanup check failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if shouldDelete {
+			if err := h.deleteTemporaryClientWithComments(r.Context(), updated.ClientID, updated.ID); err != nil {
+				http.Error(w, "temporary client cleanup failed: "+err.Error(), http.StatusInternalServerError)
+				return
 			}
 		}
 	}
