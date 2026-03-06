@@ -241,7 +241,25 @@ func (h *Handler) DeleteClient(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	result, err := h.DB.ExecContext(ctx, `DELETE FROM clients WHERE id = $1`, id)
+	tx, err := h.DB.BeginTx(ctx, nil)
+	if err != nil {
+		http.Error(w, "failed to start delete transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE leads
+		SET converted = FALSE,
+		    converted_at = NULL,
+		    converted_client_id = NULL
+		WHERE converted_client_id = $1
+	`, id); err != nil {
+		http.Error(w, "failed to reset linked leads: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM clients WHERE id = $1`, id)
 	if err != nil {
 		http.Error(w, "failed to delete client: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -250,6 +268,11 @@ func (h *Handler) DeleteClient(w http.ResponseWriter, r *http.Request) {
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		http.Error(w, "client not found", http.StatusNotFound)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "failed to commit delete transaction", http.StatusInternalServerError)
 		return
 	}
 
