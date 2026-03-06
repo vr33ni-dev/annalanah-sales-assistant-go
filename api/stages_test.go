@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,6 +40,19 @@ func createStageSchema(db *sql.DB, t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			client_id INTEGER,
 			stage_id INTEGER
+		);`,
+		`CREATE TABLE sales_process (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id INTEGER,
+			stage TEXT,
+			closed BOOLEAN,
+			stage_id INTEGER
+		);`,
+		`CREATE TABLE contracts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id INTEGER,
+			sales_process_id INTEGER,
+			revenue_total REAL
 		);`,
 	}
 	for _, s := range stmts {
@@ -76,6 +90,97 @@ func TestListStages(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "Kickoff" {
 		t.Fatalf("expected one stage named Kickoff, got %+v", got)
+	}
+}
+
+func TestListStages_ComputesPerformanceMetrics(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createStageSchema(db, t)
+
+	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, closed, stage_id) VALUES (1, 100, 'closed', 1, 1)`)
+	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, closed, stage_id) VALUES (2, 101, 'follow_up', 0, 1)`)
+	_, _ = db.Exec(`INSERT INTO contracts (client_id, sales_process_id, revenue_total) VALUES (100, 1, 2400)`)
+	_, _ = db.Exec(`INSERT INTO contracts (client_id, sales_process_id, revenue_total) VALUES (101, 2, 9999)`)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/stages", nil)
+	w := httptest.NewRecorder()
+	h.ListStages(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var got []api.Stage
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one stage, got %+v", got)
+	}
+
+	stage := got[0]
+	if stage.ClosedContracts == nil || *stage.ClosedContracts != 1 {
+		t.Fatalf("expected 1 closed contract, got %+v", stage.ClosedContracts)
+	}
+	if stage.ActualRevenue == nil || *stage.ActualRevenue != 2400 {
+		t.Fatalf("expected actual revenue 2400, got %+v", stage.ActualRevenue)
+	}
+	if stage.AttendanceRate == nil || *stage.AttendanceRate != 80 {
+		t.Fatalf("expected attendance rate 80, got %+v", stage.AttendanceRate)
+	}
+	if stage.ClosingRate == nil || *stage.ClosingRate != 12.5 {
+		t.Fatalf("expected closing rate 12.5, got %+v", stage.ClosingRate)
+	}
+	if stage.ROI == nil || *stage.ROI != 0.48 {
+		t.Fatalf("expected roi 0.48, got %+v", stage.ROI)
+	}
+}
+
+func TestListStages_RoundsPercentageMetrics(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createStageSchema(db, t)
+
+	_, _ = db.Exec(`UPDATE stages SET registrations = 45, participants = 30 WHERE id = 1`)
+	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, closed, stage_id) VALUES (1, 100, 'closed', 1, 1)`)
+	_, _ = db.Exec(`INSERT INTO sales_process (id, client_id, stage, closed, stage_id) VALUES (2, 101, 'closed', 1, 1)`)
+	_, _ = db.Exec(`INSERT INTO contracts (client_id, sales_process_id, revenue_total) VALUES (100, 1, 1000)`)
+	_, _ = db.Exec(`INSERT INTO contracts (client_id, sales_process_id, revenue_total) VALUES (101, 2, 500)`)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/stages", nil)
+	w := httptest.NewRecorder()
+	h.ListStages(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	var got []api.Stage
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one stage, got %+v", got)
+	}
+
+	stage := got[0]
+	if stage.ClosingRate == nil || math.Abs(*stage.ClosingRate-6.7) > 0.000001 {
+		t.Fatalf("expected closing rate 6.7, got %+v", stage.ClosingRate)
+	}
+	if stage.AttendanceRate == nil || math.Abs(*stage.AttendanceRate-66.7) > 0.000001 {
+		t.Fatalf("expected attendance rate 66.7, got %+v", stage.AttendanceRate)
+	}
+	if stage.ROI == nil || math.Abs(*stage.ROI-0.30) > 0.000001 {
+		t.Fatalf("expected roi 0.30, got %+v", stage.ROI)
 	}
 }
 

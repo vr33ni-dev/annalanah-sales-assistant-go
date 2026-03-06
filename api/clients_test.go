@@ -37,6 +37,17 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			initial_contact_date DATETIME,
 			follow_up_result BOOLEAN
 		);`,
+		`CREATE TABLE leads (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT,
+			email TEXT,
+			phone TEXT,
+			source TEXT,
+			source_stage_id INTEGER,
+			converted BOOLEAN DEFAULT FALSE,
+			converted_at DATETIME,
+			converted_client_id INTEGER
+		);`,
 	}
 
 	for _, stmt := range schema {
@@ -184,6 +195,65 @@ func TestDeleteClient(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected 0 clients after deletion, got %d", count)
+	}
+}
+
+func TestDeleteClient_ResetsLinkedLeadConversion(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createTestSchema(t, db)
+
+	res, err := db.Exec(`
+		INSERT INTO clients (name, email, phone, source, status)
+		VALUES ('Charlie', 'charlie@example.com', '789', 'ad', 'active')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID, _ := res.LastInsertId()
+
+	_, err = db.Exec(`
+		INSERT INTO leads (name, email, phone, source, converted, converted_at, converted_client_id)
+		VALUES ('Lead One', 'lead@example.com', '111', 'web', 1, CURRENT_TIMESTAMP, ?)
+	`, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/clients/%d", clientID), nil)
+	w := httptest.NewRecorder()
+
+	h.DeleteClient(w, req)
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content, got %d", resp.StatusCode)
+	}
+
+	var converted bool
+	var convertedAt sql.NullString
+	var convertedClientID sql.NullInt64
+	if err := db.QueryRow(`
+		SELECT converted, converted_at, converted_client_id
+		FROM leads
+		WHERE email = 'lead@example.com'
+	`).Scan(&converted, &convertedAt, &convertedClientID); err != nil {
+		t.Fatal(err)
+	}
+
+	if converted {
+		t.Fatal("expected lead to be reset to unconverted")
+	}
+	if convertedAt.Valid {
+		t.Fatal("expected converted_at to be NULL after client deletion")
+	}
+	if convertedClientID.Valid {
+		t.Fatal("expected converted_client_id to be NULL after client deletion")
 	}
 }
 

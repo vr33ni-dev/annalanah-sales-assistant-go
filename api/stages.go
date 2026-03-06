@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,16 @@ type Stage struct {
 	Registrations    *int     `json:"registrations,omitempty"`
 	Participants     *int     `json:"participants,omitempty"`      // manual
 	RecordedContacts *int     `json:"recorded_contacts,omitempty"` // derived
+	ClosedContracts  *int     `json:"closed_contracts,omitempty"`
+	ActualRevenue    *float64 `json:"actual_revenue,omitempty"`
+	AttendanceRate   *float64 `json:"attendance_rate,omitempty"`
+	ClosingRate      *float64 `json:"closing_rate,omitempty"`
+	ROI              *float64 `json:"roi,omitempty"`
+}
+
+func roundFloat(value float64, decimals int) float64 {
+	pow := math.Pow(10, float64(decimals))
+	return math.Round(value*pow) / pow
 }
 
 // GET /api/stages
@@ -31,16 +42,31 @@ SELECT
   s.ad_budget,
   s.registrations,
   s.participants,
-  COUNT(sp.id) AS recorded_contacts
+	COUNT(sp.id) AS recorded_contacts,
+	COALESCE(cm.closed_contracts, 0) AS closed_contracts,
+	COALESCE(cm.actual_revenue, 0) AS actual_revenue
 FROM stages s
 LEFT JOIN stage_participants sp ON sp.stage_id = s.id
+LEFT JOIN (
+	SELECT
+		sp.stage_id,
+		COUNT(DISTINCT c.id) AS closed_contracts,
+		COALESCE(SUM(c.revenue_total), 0) AS actual_revenue
+	FROM sales_process sp
+	JOIN contracts c ON c.sales_process_id = sp.id
+	WHERE sp.stage_id IS NOT NULL
+	  AND (sp.stage = 'closed' OR COALESCE(sp.closed, false) = true)
+	GROUP BY sp.stage_id
+) cm ON cm.stage_id = s.id
 GROUP BY
   s.id,
   s.name,
   s.date,
   s.ad_budget,
   s.registrations,
-  s.participants
+	 s.participants,
+	 cm.closed_contracts,
+	 cm.actual_revenue
 ORDER BY s.id;
 `)
 	if err != nil {
@@ -52,10 +78,41 @@ ORDER BY s.id;
 	var stages []Stage
 	for rows.Next() {
 		var s Stage
-		if err := rows.Scan(&s.ID, &s.Name, &s.Date, &s.AdBudget, &s.Registrations, &s.Participants, &s.RecordedContacts); err != nil {
+		var closedContracts int
+		var actualRevenue float64
+		if err := rows.Scan(
+			&s.ID,
+			&s.Name,
+			&s.Date,
+			&s.AdBudget,
+			&s.Registrations,
+			&s.Participants,
+			&s.RecordedContacts,
+			&closedContracts,
+			&actualRevenue,
+		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		s.ClosedContracts = &closedContracts
+		s.ActualRevenue = &actualRevenue
+
+		if s.Registrations != nil && *s.Registrations > 0 && s.Participants != nil {
+			attendanceRate := roundFloat((float64(*s.Participants)/float64(*s.Registrations))*100, 1)
+			s.AttendanceRate = &attendanceRate
+		}
+
+		if s.Participants != nil && *s.Participants > 0 {
+			closingRate := roundFloat((float64(closedContracts)/float64(*s.Participants))*100, 1)
+			s.ClosingRate = &closingRate
+		}
+
+		if s.AdBudget != nil && *s.AdBudget > 0 {
+			roi := roundFloat(actualRevenue / *s.AdBudget, 2)
+			s.ROI = &roi
+		}
+
 		stages = append(stages, s)
 	}
 
