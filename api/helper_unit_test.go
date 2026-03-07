@@ -157,9 +157,9 @@ func TestUpsertSetting_ValidPotentialMonths(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Expect SELECT in GetSetting to return the stored value
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("potential_months").
-		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "to_char"}).AddRow(12.0, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "updated_at"}).AddRow(12.0, nil, nil))
 
 	body := map[string]float64{"value_numeric": 12}
 	b, _ := json.Marshal(body)
@@ -225,7 +225,7 @@ func TestGetSetting_NewContractNotifyEmail_NoRow_UsesEnvFallback(t *testing.T) {
 
 	h := &Handler{DB: db}
 
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("new_contract_notify_email").
 		WillReturnError(sql.ErrNoRows)
 
@@ -269,7 +269,7 @@ func TestGetSetting_NewContractNotifyEmail_NoRow_NoEnv_ReturnsEmptyPayload(t *te
 
 	h := &Handler{DB: db}
 
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("new_contract_notify_email").
 		WillReturnError(sql.ErrNoRows)
 

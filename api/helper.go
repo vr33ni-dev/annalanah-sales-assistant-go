@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"math"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lib/pq"
@@ -23,13 +25,44 @@ type AppSetting struct {
 	UpdatedAt    *string  `json:"updated_at,omitempty"`
 }
 
+func normalizeSettingUpdatedAt(raw sql.NullString) *string {
+	if !raw.Valid {
+		return nil
+	}
+
+	s := strings.TrimSpace(raw.String)
+	if s == "" {
+		return nil
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999-07",
+		"2006-01-02 15:04:05.999999-07:00",
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05",
+	}
+
+	for _, layout := range layouts {
+		if ts, err := time.Parse(layout, s); err == nil {
+			normalized := ts.UTC().Format(time.RFC3339)
+			return &normalized
+		}
+	}
+
+	return &s
+}
+
 // GET /api/settings  -> list all settings
 func (h *Handler) ListSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
 		SELECT key,
 		       value_numeric,
 		       value_text,
-		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')
+		       CAST(updated_at AS text)
 		FROM app_settings
 		ORDER BY key`)
 	if err != nil {
@@ -54,9 +87,7 @@ func (h *Handler) ListSettings(w http.ResponseWriter, r *http.Request) {
 		if vt.Valid {
 			s.ValueText = &vt.String
 		}
-		if ua.Valid {
-			s.UpdatedAt = &ua.String
-		}
+		s.UpdatedAt = normalizeSettingUpdatedAt(ua)
 		out = append(out, s)
 	}
 
@@ -74,7 +105,7 @@ func (h *Handler) GetSetting(w http.ResponseWriter, r *http.Request) {
 	err := h.DB.QueryRow(`
 		SELECT value_numeric,
 		       value_text,
-		       to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')
+		       CAST(updated_at AS text)
 		FROM app_settings
 		WHERE key = $1`, key).Scan(&vn, &vt, &ua)
 
@@ -93,6 +124,7 @@ func (h *Handler) GetSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		log.Printf("GetSetting: key=%q query failed: %v", key, err)
 		http.Error(w, err.Error(), 500)
 		return
 	}
@@ -104,9 +136,7 @@ func (h *Handler) GetSetting(w http.ResponseWriter, r *http.Request) {
 	if vt.Valid {
 		resp.ValueText = &vt.String
 	}
-	if ua.Valid {
-		resp.UpdatedAt = &ua.String
-	}
+	resp.UpdatedAt = normalizeSettingUpdatedAt(ua)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

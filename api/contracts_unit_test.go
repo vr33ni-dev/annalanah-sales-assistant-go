@@ -724,6 +724,10 @@ func TestListContracts_Handler_Success(t *testing.T) {
 		AddRow(77, 1, "tester", "note", `{"k":"v"}`, now, now)
 	mock.ExpectQuery("FROM comments").WillReturnRows(commentRows)
 
+	cashflowRows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"}).
+		AddRow(88, 1, now, 123.45, "pending", now)
+	mock.ExpectQuery("FROM cashflow_entries").WillReturnRows(cashflowRows)
+
 	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
 	w := httptest.NewRecorder()
 
@@ -746,6 +750,9 @@ func TestListContracts_Handler_Success(t *testing.T) {
 	}
 	if len(out[0].Comments) != 1 {
 		t.Fatalf("expected 1 comment, got %d", len(out[0].Comments))
+	}
+	if len(out[0].Cashflow) != 1 {
+		t.Fatalf("expected 1 cashflow entry, got %d", len(out[0].Cashflow))
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
