@@ -48,7 +48,8 @@ tools/transform_staging/*
 
 # documentation
 docs/entity-relationship-diagram.md
-docs/import-mappings.md
+docs/import-mapping_v0.md
+docs/import-mapping_v1.md
 docs/importer-logic.md
 
 # data import

@@ -48,7 +48,12 @@ type questionToSQLCache struct {
 		SQL     string
 		Expires time.Time
 	}
-	ttl time.Duration
+	ttl   time.Duration
+	group singleflight.Group
+}
+
+func normalizeQuestionCacheKey(question string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(question))), " ")
 }
 
 func NewQuestionToSQLCache(ttl time.Duration) *questionToSQLCache {
@@ -64,7 +69,7 @@ func NewQuestionToSQLCache(ttl time.Duration) *questionToSQLCache {
 func (c *questionToSQLCache) Get(question string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.data[question]
+	entry, ok := c.data[normalizeQuestionCacheKey(question)]
 	if !ok || time.Now().After(entry.Expires) {
 		return "", false
 	}
@@ -74,7 +79,7 @@ func (c *questionToSQLCache) Get(question string) (string, bool) {
 func (c *questionToSQLCache) Set(question, sql string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.data[question] = struct {
+	c.data[normalizeQuestionCacheKey(question)] = struct {
 		SQL     string
 		Expires time.Time
 	}{SQL: sql, Expires: time.Now().Add(c.ttl)}
@@ -111,6 +116,26 @@ func (c *sqlResultCache) Set(sql string, resp nlqResponse) {
 // These are stored per-process and will be lost on restart.
 var sqlCache = NewSQLResultCache(5 * time.Minute)
 var questionCache = NewQuestionToSQLCache(30 * time.Minute)
+var nlqGenerateSQL = generateSQL
+
+var (
+	openAIClientMu     sync.Mutex
+	openAIClient       *openai.Client
+	openAIClientAPIKey string
+)
+
+func getOpenAIClient(apiKey string) *openai.Client {
+	openAIClientMu.Lock()
+	defer openAIClientMu.Unlock()
+
+	if openAIClient != nil && openAIClientAPIKey == apiKey {
+		return openAIClient
+	}
+
+	openAIClient = openai.NewClient(apiKey)
+	openAIClientAPIKey = apiKey
+	return openAIClient
+}
 
 func isLikelySQLQuestion(q string) bool {
 	q = strings.ToLower(strings.TrimSpace(q))
@@ -154,15 +179,25 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 	// First, try to get SQL from questionToSQLCache
 	sqlText, found := questionCache.Get(req.Question)
 	if !found {
-		// Not cached, call OpenAI/generateSQL
-		var err error
-		sqlText, err = generateSQL(ctx, req.Question)
+		v, err, _ := questionCache.group.Do(normalizeQuestionCacheKey(req.Question), func() (interface{}, error) {
+			if cachedSQL, ok := questionCache.Get(req.Question); ok {
+				return cachedSQL, nil
+			}
+
+			generatedSQL, err := nlqGenerateSQL(ctx, req.Question)
+			if err != nil {
+				return "", err
+			}
+
+			generatedSQL = strings.TrimSpace(generatedSQL)
+			questionCache.Set(req.Question, generatedSQL)
+			return generatedSQL, nil
+		})
 		if err != nil {
 			writeJSON(w, nlqResponse{Error: err.Error()})
 			return
 		}
-		sqlText = strings.TrimSpace(sqlText)
-		questionCache.Set(req.Question, sqlText)
+		sqlText = strings.TrimSpace(v.(string))
 	}
 
 	if !isSelect(sqlText) || !isSafeSQL(sqlText) {
@@ -377,7 +412,7 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 	}
 
 	// ---------- 3) Real OpenAI-backed generation ----------
-	client := openai.NewClient(apiKey)
+	client := getOpenAIClient(apiKey)
 
 	resp, err := client.CreateChatCompletion(
 		ctx,

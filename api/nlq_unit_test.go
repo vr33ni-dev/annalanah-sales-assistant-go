@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,8 @@ import (
 func resetCaches() {
 	sqlCache = NewSQLResultCache(5 * time.Minute)
 	questionCache = NewQuestionToSQLCache(30 * time.Minute)
+	openAIClient = nil
+	openAIClientAPIKey = ""
 }
 
 func TestIsLikelySQLQuestion(t *testing.T) {
@@ -94,6 +98,19 @@ func TestQuestionCache_Expiration(t *testing.T) {
 	}
 }
 
+func TestQuestionCache_NormalizesEquivalentQuestions(t *testing.T) {
+	cache := NewQuestionToSQLCache(30 * time.Minute)
+	cache.Set("  Wie   viele   Kunden?  ", "SELECT COUNT(*) FROM clients")
+
+	sql, ok := cache.Get("wie viele kunden?")
+	if !ok {
+		t.Fatalf("expected normalized cache hit")
+	}
+	if sql != "SELECT COUNT(*) FROM clients" {
+		t.Fatalf("unexpected SQL from normalized cache: %s", sql)
+	}
+}
+
 func TestSQLCache_Expiration(t *testing.T) {
 	cache := NewSQLResultCache(10 * time.Millisecond)
 
@@ -119,6 +136,21 @@ func TestGenerateSQL_MockMode_Aggregate(t *testing.T) {
 	}
 	if sql != "SELECT COUNT(*) FROM clients" {
 		t.Fatalf("unexpected SQL: %s", sql)
+	}
+}
+
+func TestGetOpenAIClient_ReuseAndReplaceByAPIKey(t *testing.T) {
+	resetCaches()
+
+	clientA1 := getOpenAIClient("key-a")
+	clientA2 := getOpenAIClient("key-a")
+	if clientA1 != clientA2 {
+		t.Fatal("expected same OpenAI client instance for same API key")
+	}
+
+	clientB := getOpenAIClient("key-b")
+	if clientB == clientA1 {
+		t.Fatal("expected a new OpenAI client instance when API key changes")
 	}
 }
 
@@ -205,6 +237,159 @@ func TestRunNLQ_DBError(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRunNLQ_UsesNormalizedQuestionCacheKey(t *testing.T) {
+	resetCaches()
+
+	h := &Handler{DB: nil}
+	questionCache.Set("  Wie   viele   Kunden?  ", "SELECT 42 AS answer")
+
+	body := map[string]string{"question": "wie viele kunden?"}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if resp.SQL != "SELECT 42 AS answer LIMIT 100" {
+		t.Fatalf("expected cached normalized SQL, got %q", resp.SQL)
+	}
+}
+
+func TestRunNLQ_DedupesConcurrentQuestionGeneration(t *testing.T) {
+	resetCaches()
+
+	originalGenerateSQL := nlqGenerateSQL
+	defer func() { nlqGenerateSQL = originalGenerateSQL }()
+
+	var callCount int32
+	nlqGenerateSQL = func(ctx context.Context, question string) (string, error) {
+		atomic.AddInt32(&callCount, 1)
+		time.Sleep(20 * time.Millisecond)
+		return "SELECT 1 AS answer", nil
+	}
+
+	h := &Handler{DB: nil}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 5)
+
+	for _, q := range []string{
+		"Wie viele Kunden?",
+		" wie   viele kunden? ",
+		"WIE VIELE KUNDEN?",
+		"Wie viele Kunden? ",
+		"wie viele kunden?",
+	} {
+		wg.Add(1)
+		go func(question string) {
+			defer wg.Done()
+			body := map[string]string{"question": question}
+			b, _ := json.Marshal(body)
+			req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+			w := httptest.NewRecorder()
+
+			h.RunNLQ(w, req)
+
+			if w.Code != http.StatusOK {
+				errCh <- fmt.Errorf("unexpected status %d", w.Code)
+				return
+			}
+
+			var resp nlqResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				errCh <- err
+				return
+			}
+			if resp.SQL != "SELECT 1 AS answer LIMIT 100" {
+				errCh <- fmt.Errorf("unexpected SQL %q", resp.SQL)
+			}
+		}(q)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Fatalf("expected exactly one SQL generation call, got %d", got)
+	}
+}
+
+func TestRunNLQ_GenerateSQLError(t *testing.T) {
+	resetCaches()
+
+	originalGenerateSQL := nlqGenerateSQL
+	defer func() { nlqGenerateSQL = originalGenerateSQL }()
+	nlqGenerateSQL = func(ctx context.Context, question string) (string, error) {
+		return "", fmt.Errorf("openai unavailable")
+	}
+
+	h := &Handler{DB: nil}
+	body := map[string]string{"question": "Wie viele Kunden?"}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if resp.Error != "openai unavailable" {
+		t.Fatalf("expected generation error in response, got %+v", resp)
+	}
+}
+
+func TestRunNLQ_UsesSQLResultCacheFastPath(t *testing.T) {
+	resetCaches()
+
+	questionCache.Set("Wie viele Kunden?", "SELECT COUNT(*) FROM clients")
+	cached := nlqResponse{
+		SQL:     "SELECT COUNT(*) FROM clients",
+		Columns: []string{"count"},
+		Rows: []map[string]interface{}{
+			{"count": int64(12)},
+		},
+	}
+	sqlCache.Set("SELECT COUNT(*) FROM clients", cached)
+
+	h := &Handler{DB: nil}
+	body := map[string]string{"question": "Wie viele Kunden?"}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if resp.SQL != cached.SQL || len(resp.Rows) != 1 || resp.Rows[0]["count"] != float64(12) {
+		t.Fatalf("expected cached NLQ response, got %+v", resp)
 	}
 }
 
