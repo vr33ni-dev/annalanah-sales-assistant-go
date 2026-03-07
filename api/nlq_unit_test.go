@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,6 +93,19 @@ func TestQuestionCache_Expiration(t *testing.T) {
 
 	if _, ok := cache.Get("q1"); ok {
 		t.Fatalf("expected cache miss after expiration")
+	}
+}
+
+func TestQuestionCache_NormalizesEquivalentQuestions(t *testing.T) {
+	cache := NewQuestionToSQLCache(30 * time.Minute)
+	cache.Set("  Wie   viele   Kunden?  ", "SELECT COUNT(*) FROM clients")
+
+	sql, ok := cache.Get("wie viele kunden?")
+	if !ok {
+		t.Fatalf("expected normalized cache hit")
+	}
+	if sql != "SELECT COUNT(*) FROM clients" {
+		t.Fatalf("unexpected SQL from normalized cache: %s", sql)
 	}
 }
 
@@ -205,6 +220,93 @@ func TestRunNLQ_DBError(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRunNLQ_UsesNormalizedQuestionCacheKey(t *testing.T) {
+	resetCaches()
+
+	h := &Handler{DB: nil}
+	questionCache.Set("  Wie   viele   Kunden?  ", "SELECT 42 AS answer")
+
+	body := map[string]string{"question": "wie viele kunden?"}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if resp.SQL != "SELECT 42 AS answer LIMIT 100" {
+		t.Fatalf("expected cached normalized SQL, got %q", resp.SQL)
+	}
+}
+
+func TestRunNLQ_DedupesConcurrentQuestionGeneration(t *testing.T) {
+	resetCaches()
+
+	originalGenerateSQL := nlqGenerateSQL
+	defer func() { nlqGenerateSQL = originalGenerateSQL }()
+
+	var callCount int32
+	nlqGenerateSQL = func(ctx context.Context, question string) (string, error) {
+		atomic.AddInt32(&callCount, 1)
+		time.Sleep(20 * time.Millisecond)
+		return "SELECT 1 AS answer", nil
+	}
+
+	h := &Handler{DB: nil}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 5)
+
+	for _, q := range []string{
+		"Wie viele Kunden?",
+		" wie   viele kunden? ",
+		"WIE VIELE KUNDEN?",
+		"Wie viele Kunden? ",
+		"wie viele kunden?",
+	} {
+		wg.Add(1)
+		go func(question string) {
+			defer wg.Done()
+			body := map[string]string{"question": question}
+			b, _ := json.Marshal(body)
+			req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+			w := httptest.NewRecorder()
+
+			h.RunNLQ(w, req)
+
+			if w.Code != http.StatusOK {
+				errCh <- fmt.Errorf("unexpected status %d", w.Code)
+				return
+			}
+
+			var resp nlqResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				errCh <- err
+				return
+			}
+			if resp.SQL != "SELECT 1 AS answer LIMIT 100" {
+				errCh <- fmt.Errorf("unexpected SQL %q", resp.SQL)
+			}
+		}(q)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Fatalf("expected exactly one SQL generation call, got %d", got)
 	}
 }
 
