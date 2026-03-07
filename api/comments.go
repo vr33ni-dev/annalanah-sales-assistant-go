@@ -64,7 +64,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		var author sql.NullString
 		var body string
 		var metadata sql.NullString
-		var created, updated time.Time
+		var created, updated sql.NullTime
 
 		if err := rows.Scan(&id, &author, &body, &metadata, &created, &updated); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -82,6 +82,15 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			a = &s
 		}
 
+		createdAt := ""
+		if created.Valid {
+			createdAt = created.Time.Format(time.RFC3339)
+		}
+		updatedAt := ""
+		if updated.Valid {
+			updatedAt = updated.Time.Format(time.RFC3339)
+		}
+
 		out = append(out, CommentResponse{
 			ID:         id,
 			EntityType: entityType,
@@ -89,9 +98,14 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			Author:     a,
 			Body:       body,
 			Metadata:   meta,
-			CreatedAt:  created.Format(time.RFC3339),
-			UpdatedAt:  updated.Format(time.RFC3339),
+			CreatedAt:  createdAt,
+			UpdatedAt:  updatedAt,
 		})
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	if out == nil {
@@ -286,8 +300,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		author     sql.NullString
 		body       string
 		metadata   sql.NullString
-		created    time.Time
-		updated    time.Time
+		created    sql.NullTime
+		updated    sql.NullTime
 	)
 
 	row := h.DB.QueryRow(query, args...)
@@ -311,6 +325,15 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		a = &s
 	}
 
+	createdAt := ""
+	if created.Valid {
+		createdAt = created.Time.Format(time.RFC3339)
+	}
+	updatedAt := ""
+	if updated.Valid {
+		updatedAt = updated.Time.Format(time.RFC3339)
+	}
+
 	resp := CommentResponse{
 		ID:         cid,
 		EntityType: entityType,
@@ -318,8 +341,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		Author:     a,
 		Body:       body,
 		Metadata:   meta,
-		CreatedAt:  created.Format(time.RFC3339),
-		UpdatedAt:  updated.Format(time.RFC3339),
+		CreatedAt:  createdAt,
+		UpdatedAt:  updatedAt,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

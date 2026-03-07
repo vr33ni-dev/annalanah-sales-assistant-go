@@ -363,6 +363,45 @@ func TestListComments_Empty(t *testing.T) {
 	}
 }
 
+func TestListComments_NullTimestamps(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	rows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}).
+		AddRow(1, sql.NullString{String: "Sam", Valid: true}, "hi", `{"k":"v"}`, nil, nil)
+
+	mock.ExpectQuery("SELECT id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/comments?entity_type=client&entity_id=42", nil)
+	w := httptest.NewRecorder()
+
+	h.ListComments(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp []api.CommentResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(resp))
+	}
+	if resp[0].CreatedAt != "" || resp[0].UpdatedAt != "" {
+		t.Fatalf("expected empty timestamps, got created_at=%q updated_at=%q", resp[0].CreatedAt, resp[0].UpdatedAt)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestDeleteComment_DBError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

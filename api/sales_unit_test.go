@@ -140,6 +140,8 @@ func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 	end := "2026-01-31"
 	startT, _ := time.Parse("2006-01-02", start)
 	endT, _ := time.Parse("2006-01-02", end)
+	upsellDate, _ := time.Parse("2006-01-02", "2026-01-10")
+	createdAt, _ := time.Parse(time.RFC3339, "2026-01-10T10:00:00Z")
 
 	cols := []string{
 		"id",
@@ -157,7 +159,7 @@ func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 		"contract_frequency",
 	}
 	rows := sqlmock.NewRows(cols).
-		AddRow(1, 10, 100, "2026-01-10", "verlaengerung", 123.45, nil, nil, "2026-01-10T10:00:00Z", "2026-01-10T10:00:00Z", nil, nil, nil)
+		AddRow(1, 10, 100, upsellDate, "verlaengerung", 123.45, nil, nil, createdAt, createdAt, nil, nil, nil)
 
 	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(rows)
 
