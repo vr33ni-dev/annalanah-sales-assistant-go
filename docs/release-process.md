@@ -12,13 +12,13 @@ flowchart TD
   end
 
   subgraph Merge_Process[Merge & Branch Strategy]
-    E[Feature branches merged into dev] --> F[dev merged into master]
+    E[Feature branches merged into dev] --> F[dev merged into master - team convention]
   end
 
   subgraph Release_Flow[Release workflow]
-    F --> G[Checkout and build/tests]
+    F --> G[Checkout and build]
     G --> H{Triggered by tag?}
-    H -- no --> I[Determine BUMP_TYPE from merged PR labels or auto]
+    H -- no --> I[Determine BUMP_TYPE from merged PR labels or auto/fallback]
     I --> J[bump-version.sh - dry-run]
     J --> K[Parse NEW_VERSION]
     K --> L[If tag missing -> create and push annotated tag]
@@ -51,9 +51,12 @@ Key notes
 
 - PR check (`check-version-on-pr.yml`) computes a candidate using labels and posts a single marker-based comment with the computed version.
 - Release job reads the merged PR labels (if available) to set `BUMP_TYPE` before re-computing the tag on `master`.
+- If no matching PR label is found, the current bump script falls back to a patch bump unless label enforcement is explicitly enabled.
 - The release job uses `bump-version.sh --dry-run` and avoids mutating tracked files to prevent `goreleaser` "dirty" errors.
+- The release job currently runs `go build ./...` before releasing; it does not run `go test` in that workflow.
 - Tag creation is guarded: only create the annotated tag if it doesn't already exist; if a race occurs, the job tolerates existing-tag cases.
-- Recovery paths: `rerun-release.yml` lets you re-run goreleaser for a tag; `release-healthcheck.yml` surfaces missed releases.
+- `dev -> master` is a branch strategy convention, not something enforced by the release workflow itself; the workflow triggers on pushes to `master` and on version tags.
+- Recovery paths: `rerun-release.yml` lets you re-run goreleaser for a tag. A scheduled healthcheck workflow also exists, but its behavior should be treated as supplemental and verified against the current workflow file.
 
 Recommended operator actions on failure
 
@@ -68,5 +71,13 @@ Files to review
 - [`.github/scripts/bump-version.sh`](.github/scripts/bump-version.sh)
 - [`.github/workflows/rerun-release.yml`](.github/workflows/rerun-release.yml)
 - [`.github/workflows/release-healthcheck.yml`](.github/workflows/release-healthcheck.yml)
+
+Current behavior summary
+
+- PRs get a computed candidate release version comment.
+- A push to `master` triggers the release workflow.
+- If the workflow was not triggered by a tag push, it computes the next version, creates the annotated tag if missing, and then releases from that tag.
+- If no `major` / `minor` / `patch` label is found for the merged PR, the current default behavior is a patch release.
+- Direct tag pushes matching `v*.*.*` also trigger the release workflow.
 
 If you want I can also export the diagram as an SVG or add it to the repo README.

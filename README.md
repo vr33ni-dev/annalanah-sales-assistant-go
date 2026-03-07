@@ -29,20 +29,21 @@ go mod tidy
 
 ### 3. Configure .env
 
+(see env.example)
+
 Example:
 
 ```bash
 DB_URL=postgres://sales_assistant_app:sales_assistant_app@localhost:5432/sales_assistant_db?sslmode=disable
-PORT=8080
-# Optional fallback recipient for new sales-created contract notifications
+...
 NEW_CONTRACT_NOTIFY_EMAIL=ops@example.com
 ```
 
-### Contract notification recipient (Einstellungen)
+#### Email notification recipient (Settings)
 
-New contract notification emails (for sales-linked contracts) can be configured via app settings.
+New contract notification emails (for contracts created as part of a sales process) can be configured via app settings.
 
-- Preferred: setting key `new_contract_notify_email` (stored in `app_settings.value_text`)
+- Preferred: setting key `new_contract_notify_email` (stored in the DB in `app_settings.value_text`)
 - Fallback: env var `NEW_CONTRACT_NOTIFY_EMAIL`
 
 Example:
