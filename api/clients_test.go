@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,11 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			closed BOOLEAN,
 			initial_contact_date DATETIME,
 			follow_up_result BOOLEAN
+		);`,
+		`CREATE TABLE contracts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id INTEGER,
+			end_date DATE
 		);`,
 		`CREATE TABLE leads (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +92,63 @@ func TestListClients(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+}
+
+func TestListClients_ExpiredContractDoesNotStayActive(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createTestSchema(t, db)
+
+	_, err = db.Exec(`
+		INSERT INTO clients (id, name, email, phone, source, status)
+		VALUES (1, 'Expired Client', 'expired@example.com', '123', 'import', 'active')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO sales_process (client_id, stage, closed, initial_contact_date, follow_up_result)
+		VALUES (1, 'closed', 1, ?, NULL)
+	`, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO contracts (client_id, end_date)
+		VALUES (1, ?)
+	`, time.Now().AddDate(0, 0, -1).Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	w := httptest.NewRecorder()
+
+	h.ListClients(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(out))
+	}
+
+	status, _ := out[0]["status"].(string)
+	if status != "inactive" {
+		t.Fatalf("expected expired-only client to be inactive, got %q", status)
 	}
 }
 

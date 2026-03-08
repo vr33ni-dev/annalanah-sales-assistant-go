@@ -760,6 +760,55 @@ func TestListContracts_Handler_Success(t *testing.T) {
 	}
 }
 
+func TestListContracts_Handler_IncludeExpired(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mainRows := sqlmock.NewRows([]string{
+		"id", "client_id", "client_name", "sales_process_id",
+		"start_date", "end_date", "created_at", "duration_months", "revenue_total", "payment_frequency",
+		"base_monthly_amount", "next_due_date",
+	}).AddRow(
+		2, 11, "Expired Co", nil,
+		"2024-01-01", "2025-01-31", nil, 12, 1200.0, "monthly",
+		100.0, nil,
+	)
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRows)
+	mock.ExpectQuery("FROM comments").WillReturnRows(sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
+	mock.ExpectQuery("FROM cashflow_entries").WillReturnRows(sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts?include_expired=true", nil)
+	w := httptest.NewRecorder()
+
+	h.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out []ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 contract, got %d", len(out))
+	}
+	if out[0].ClientName != "Expired Co" {
+		t.Fatalf("unexpected client name: %q", out[0].ClientName)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestListContractCashflowEntries_Handler(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
