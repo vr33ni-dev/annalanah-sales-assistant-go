@@ -39,20 +39,63 @@ type UpdateContractRequest struct {
 }
 
 type ContractResponse struct {
-	ID                int               `json:"id"`
-	ClientID          int               `json:"client_id"`
-	ClientName        string            `json:"client_name"`
-	SalesProcessID    *int              `json:"sales_process_id"`
-	CreatedAt         *string           `json:"created_at,omitempty"`
-	UpdatedAt         *string           `json:"updated_at,omitempty"`
-	StartDate         string            `json:"start_date"`
-	EndDate           *string           `json:"end_date,omitempty"`
-	DurationMonths    int               `json:"duration_months"`
-	RevenueTotal      float64           `json:"revenue_total"`
-	PaymentFreq       string            `json:"payment_frequency"`
-	BaseMonthlyAmount float64           `json:"base_monthly_amount"`
-	NextDueDate       *string           `json:"next_due_date,omitempty"`
-	Comments          []CommentResponse `json:"comments,omitempty"`
+	ID                int                             `json:"id"`
+	ClientID          int                             `json:"client_id"`
+	ClientName        string                          `json:"client_name"`
+	SalesProcessID    *int                            `json:"sales_process_id"`
+	CreatedAt         *string                         `json:"created_at,omitempty"`
+	UpdatedAt         *string                         `json:"updated_at,omitempty"`
+	StartDate         string                          `json:"start_date"`
+	EndDate           *string                         `json:"end_date,omitempty"`
+	DurationMonths    int                             `json:"duration_months"`
+	RevenueTotal      float64                         `json:"revenue_total"`
+	PaymentFreq       string                          `json:"payment_frequency"`
+	BaseMonthlyAmount float64                         `json:"base_monthly_amount"`
+	NextDueDate       *string                         `json:"next_due_date,omitempty"`
+	Cashflow          []ContractCashflowEntryResponse `json:"cashflow,omitempty"`
+	Comments          []CommentResponse               `json:"comments,omitempty"`
+}
+
+type ContractCashflowEntryResponse struct {
+	ID         int     `json:"id"`
+	ContractID int     `json:"contract_id"`
+	DueDate    *string `json:"due_date"`
+	Amount     float64 `json:"amount"`
+	Status     string  `json:"status"`
+	UpdatedAt  *string `json:"updated_at,omitempty"`
+}
+
+func loadContractCashflowEntries(rows *sql.Rows) ([]ContractCashflowEntryResponse, error) {
+	defer rows.Close()
+
+	var out []ContractCashflowEntryResponse
+	for rows.Next() {
+		var e ContractCashflowEntryResponse
+		var due sql.NullTime
+		var updated sql.NullTime
+		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated); err != nil {
+			return nil, err
+		}
+		if due.Valid {
+			s := due.Time.Format(time.RFC3339)
+			e.DueDate = &s
+		}
+		if updated.Valid {
+			s := updated.Time.Format(time.RFC3339)
+			e.UpdatedAt = &s
+		}
+		out = append(out, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if out == nil {
+		out = []ContractCashflowEntryResponse{}
+	}
+
+	return out, nil
 }
 
 type ContractCreateInput struct {
@@ -294,6 +337,7 @@ ORDER BY c.id;
 		}
 
 		x.Comments = []CommentResponse{}
+		x.Cashflow = []ContractCashflowEntryResponse{}
 
 		idToIndex[x.ID] = len(out)
 		contractIDs = append(contractIDs, x.ID)
@@ -356,6 +400,25 @@ ORDER BY c.id;
 		}
 	}
 
+	if len(contractIDs) > 0 {
+		cashflowRows, err := h.DB.Query(`
+			SELECT id, contract_id, due_date, amount, status, updated_at
+			FROM cashflow_entries
+			WHERE contract_id = ANY($1)
+			ORDER BY contract_id, due_date, id
+		`, pq.Array(contractIDs))
+		if err == nil {
+			entries, err := loadContractCashflowEntries(cashflowRows)
+			if err == nil {
+				for _, entry := range entries {
+					if idx, ok := idToIndex[entry.ContractID]; ok {
+						out[idx].Cashflow = append(out[idx].Cashflow, entry)
+					}
+				}
+			}
+		}
+	}
+
 	if out == nil {
 		out = []ContractResponse{}
 	}
@@ -383,41 +446,10 @@ func (h *Handler) ListContractCashflowEntries(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
-	type Entry struct {
-		ID         int     `json:"id"`
-		ContractID int     `json:"contract_id"`
-		DueDate    *string `json:"due_date"`
-		Amount     float64 `json:"amount"`
-		Status     string  `json:"status"`
-		UpdatedAt  *string `json:"updated_at,omitempty"`
-	}
-
-	var out []Entry
-	for rows.Next() {
-		var e Entry
-		var due sql.NullTime
-		var updated sql.NullTime
-		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if due.Valid {
-			s := due.Time.Format(time.RFC3339)
-			e.DueDate = &s
-		} else {
-			e.DueDate = nil
-		}
-		if updated.Valid {
-			tu := updated.Time.Format(time.RFC3339)
-			e.UpdatedAt = &tu
-		}
-		out = append(out, e)
-	}
-
-	if out == nil {
-		out = []Entry{}
+	out, err := loadContractCashflowEntries(rows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

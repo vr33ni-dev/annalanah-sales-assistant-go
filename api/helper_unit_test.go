@@ -124,6 +124,38 @@ func TestGetTextSetting_DefaultOnNullOrBlank(t *testing.T) {
 	}
 }
 
+func TestNormalizeSettingUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name string
+		in   sql.NullString
+		want *string
+	}{
+		{name: "invalid null", in: sql.NullString{Valid: false}, want: nil},
+		{name: "blank string", in: sql.NullString{String: "   ", Valid: true}, want: nil},
+		{name: "rfc3339", in: sql.NullString{String: "2026-03-03T23:30:44Z", Valid: true}, want: strPtr("2026-03-03T23:30:44Z")},
+		{name: "postgres timestamp", in: sql.NullString{String: "2026-03-03 23:30:44", Valid: true}, want: strPtr("2026-03-03T23:30:44Z")},
+		{name: "unknown format passthrough", in: sql.NullString{String: "yesterday-ish", Valid: true}, want: strPtr("yesterday-ish")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeSettingUpdatedAt(tt.in)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("expected nil, got %v", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected %q, got nil", *tt.want)
+			}
+			if *got != *tt.want {
+				t.Fatalf("expected %q, got %q", *tt.want, *got)
+			}
+		})
+	}
+}
+
 func TestIsUniqueViolation(t *testing.T) {
 	// matching pq error
 	pe := &pq.Error{Code: "23505", Constraint: "unique_client_email"}
@@ -157,9 +189,9 @@ func TestUpsertSetting_ValidPotentialMonths(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Expect SELECT in GetSetting to return the stored value
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("potential_months").
-		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "to_char"}).AddRow(12.0, nil, nil))
+		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "updated_at"}).AddRow(12.0, nil, nil))
 
 	body := map[string]float64{"value_numeric": 12}
 	b, _ := json.Marshal(body)
@@ -225,7 +257,7 @@ func TestGetSetting_NewContractNotifyEmail_NoRow_UsesEnvFallback(t *testing.T) {
 
 	h := &Handler{DB: db}
 
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("new_contract_notify_email").
 		WillReturnError(sql.ErrNoRows)
 
@@ -269,7 +301,7 @@ func TestGetSetting_NewContractNotifyEmail_NoRow_NoEnv_ReturnsEmptyPayload(t *te
 
 	h := &Handler{DB: db}
 
-	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+to_char\(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'\)\s+FROM app_settings\s+WHERE key = \$1`).
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
 		WithArgs("new_contract_notify_email").
 		WillReturnError(sql.ErrNoRows)
 
@@ -302,3 +334,86 @@ func TestGetSetting_NewContractNotifyEmail_NoRow_NoEnv_ReturnsEmptyPayload(t *te
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestGetSetting_NormalizesUpdatedAt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
+		WithArgs("avg_revenue_per_contract").
+		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "updated_at"}).AddRow(600.0, nil, "2026-03-03 23:30:44"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/avg_revenue_per_contract", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "avg_revenue_per_contract")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.GetSetting(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp AppSetting
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.UpdatedAt == nil || *resp.UpdatedAt != "2026-03-03T23:30:44Z" {
+		t.Fatalf("expected normalized updated_at, got %v", resp.UpdatedAt)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListSettings_NormalizesUpdatedAt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to open sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	rows := sqlmock.NewRows([]string{"key", "value_numeric", "value_text", "updated_at"}).
+		AddRow("avg_revenue_per_contract", 600.0, nil, "2026-03-03 23:30:44").
+		AddRow("new_contract_notify_email", nil, "ops@example.com", "weird-but-keep")
+	mock.ExpectQuery(`SELECT key,\s+value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+ORDER BY key`).
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+
+	h.ListSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []AppSetting
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 settings, got %d", len(resp))
+	}
+	if resp[0].UpdatedAt == nil || *resp[0].UpdatedAt != "2026-03-03T23:30:44Z" {
+		t.Fatalf("expected first updated_at normalized, got %v", resp[0].UpdatedAt)
+	}
+	if resp[1].UpdatedAt == nil || *resp[1].UpdatedAt != "weird-but-keep" {
+		t.Fatalf("expected second updated_at passthrough, got %v", resp[1].UpdatedAt)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func strPtr(s string) *string { return &s }

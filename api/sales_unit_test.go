@@ -127,6 +127,39 @@ func TestListSalesProcesses_WithComments(t *testing.T) {
 	}
 }
 
+func TestListSalesProcesses_ExcludesImportedPlaceholders(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	salesRows := sqlmock.NewRows([]string{"id", "client_id", "client_name", "client_email", "client_phone", "client_source", "completed_at", "stage", "created_at", "initial_contact_date", "follow_up_date", "follow_up_result", "closed", "revenue", "stage_id", "lead_id"})
+	mock.ExpectQuery(`WHERE COALESCE\(sp\.is_imported_placeholder, false\) = false`).WillReturnRows(salesRows)
+
+	req := httptest.NewRequest("GET", "/api/sales", nil)
+	w := httptest.NewRecorder()
+	h.ListSalesProcesses(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Fatalf("expected 200, got %d; body=%s", w.Result().StatusCode, w.Body.String())
+	}
+
+	var resp []SalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("expected 0 processes, got %d", len(resp))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -140,6 +173,8 @@ func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 	end := "2026-01-31"
 	startT, _ := time.Parse("2006-01-02", start)
 	endT, _ := time.Parse("2006-01-02", end)
+	upsellDate, _ := time.Parse("2006-01-02", "2026-01-10")
+	createdAt, _ := time.Parse(time.RFC3339, "2026-01-10T10:00:00Z")
 
 	cols := []string{
 		"id",
@@ -157,7 +192,7 @@ func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 		"contract_frequency",
 	}
 	rows := sqlmock.NewRows(cols).
-		AddRow(1, 10, 100, "2026-01-10", "verlaengerung", 123.45, nil, nil, "2026-01-10T10:00:00Z", "2026-01-10T10:00:00Z", nil, nil, nil)
+		AddRow(1, 10, 100, upsellDate, "verlaengerung", 123.45, nil, nil, createdAt, createdAt, nil, nil, nil)
 
 	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(rows)
 

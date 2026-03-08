@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -178,6 +179,7 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 	for rows.Next() {
 		var p StageParticipant
 		var nb sql.NullBool
+		var createdAt sql.NullTime
 		if err := rows.Scan(
 			&p.ID,
 			&p.StageID,
@@ -187,7 +189,7 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 			&p.ParticipantEmail,
 			&p.ParticipantPhone,
 			&nb,
-			&p.CreatedAt,
+			&createdAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -198,7 +200,18 @@ func (h *Handler) ListStageParticipants(w http.ResponseWriter, r *http.Request) 
 		} else {
 			p.Attended = nil
 		}
+		if createdAt.Valid {
+			s := createdAt.Time.Format(time.RFC3339)
+			p.CreatedAt = &s
+		} else {
+			p.CreatedAt = nil
+		}
 		out = append(out, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	if out == nil {

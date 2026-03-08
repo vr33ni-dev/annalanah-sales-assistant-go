@@ -85,6 +85,12 @@ maria AS (
   FROM s
   RETURNING id
 ),
+imported_fixture AS (
+  INSERT INTO clients (name, email, phone, source, status)
+  -- Imported-like active client with placeholder sales process for quick upsell testing.
+  VALUES ('Imported Test Client', 'imported.fixture@example.com', '777888999', 'organic', 'active')
+  RETURNING id
+),
 
 -- 2b) Leads (dev seed)
 leads_ins AS (
@@ -179,6 +185,32 @@ sp_maria AS (
   FROM maria ma, s
   RETURNING id, client_id
 ),
+sp_imported_fixture AS (
+  INSERT INTO sales_process (
+    client_id,
+    stage,
+    follow_up_date,
+    follow_up_result,
+    closed,
+    revenue,
+    stage_id,
+    created_at,
+    updated_at,
+    is_imported_placeholder
+  )
+  SELECT ifx.id,
+         NULL,
+         NULL,
+         NULL,
+         NULL,
+         NULL,
+         NULL,
+         ((CURRENT_DATE - INTERVAL '45 days')::timestamp),
+         ((CURRENT_DATE - INTERVAL '45 days')::timestamp),
+         TRUE
+  FROM imported_fixture ifx
+  RETURNING id, client_id
+),
 
 -- Contract with explicit end_date (not matching start + duration)
 contract_explicit_enddate AS (
@@ -242,6 +274,18 @@ contract_moritz_ext AS (
          (CURRENT_DATE::timestamp)
   FROM sp_moritz sm, seed_dates sd
   RETURNING id
+      ),
+      contract_imported_fixture AS (
+        INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
+        SELECT spif.client_id,
+          spif.id,
+          (CURRENT_DATE - INTERVAL '45 days')::date,
+          6,
+          1800,
+          'monthly',
+          ((CURRENT_DATE - INTERVAL '46 days')::timestamptz)
+        FROM sp_imported_fixture spif
+        RETURNING id
 ),
 
 -- 6) Stage assignments & participants
@@ -363,7 +407,7 @@ FROM (
     WHERE co.client_id IN (
       SELECT id
       FROM clients
-      WHERE email IN ('anna@example.com', 'max@example.com', 'mo@example.com', 'explicit@enddate.com')
+      WHERE email IN ('anna@example.com', 'max@example.com', 'mo@example.com', 'explicit@enddate.com', 'imported.fixture@example.com')
     )
   ) c
   JOIN LATERAL generate_series(
@@ -402,4 +446,19 @@ WHERE cl.email = 'mo@example.com'
   AND sp.stage IN ('follow_up','closed')
   AND NOT EXISTS (
     SELECT 1 FROM contract_upsells cu WHERE cu.sales_process_id = sp.id AND cu.new_contract_id = nc.id
+  );
+
+-- Add one importer-style note to the imported fixture contract for quick UI recognition (idempotent)
+INSERT INTO comments (entity_type, entity_id, body, author)
+SELECT 'contract', c.id, '2025-11: imported fixture note', 'importer'
+FROM contracts c
+JOIN clients cl ON cl.id = c.client_id
+WHERE cl.email = 'imported.fixture@example.com'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM comments cm
+    WHERE cm.entity_type = 'contract'
+      AND cm.entity_id = c.id
+      AND cm.author = 'importer'
+      AND cm.body = '2025-11: imported fixture note'
   );

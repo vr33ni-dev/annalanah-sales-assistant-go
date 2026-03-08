@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"log"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -21,6 +22,10 @@ func ConnectDSN(dsn string) *sql.DB {
 	if err != nil {
 		fatalFn("Cannot open DB:", err)
 	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	if err := pingFn(db); err != nil {
 		fatalFn("Cannot reach DB:", err)
 	}

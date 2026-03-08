@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
@@ -419,6 +421,57 @@ func TestAddStageParticipant_MissingLeadAndClient(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing linked_client_id/participant_name, got %d", resp.StatusCode)
+	}
+}
+
+func TestListStageParticipants_RealTimestampRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+	createdAt, _ := time.Parse(time.RFC3339, "2026-03-07T15:33:08Z")
+	rows := sqlmock.NewRows([]string{
+		"id",
+		"stage_id",
+		"linked_client_id",
+		"linked_lead_id",
+		"name",
+		"email",
+		"phone",
+		"attended",
+		"created_at",
+	}).AddRow(1, 1, nil, nil, "Jane Doe", "jane@example.com", "+491234", true, createdAt)
+
+	mock.ExpectQuery("FROM stage_participants sp").WithArgs(1, 25, 0).WillReturnRows(rows)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req := httptest.NewRequest(http.MethodGet, "/api/stages/1/participants", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.ListStageParticipants(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
+	}
+
+	var got []api.StageParticipant
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 participant, got %d", len(got))
+	}
+	if got[0].CreatedAt == nil || *got[0].CreatedAt != "2026-03-07T15:33:08Z" {
+		t.Fatalf("unexpected created_at: %#v", got[0].CreatedAt)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 

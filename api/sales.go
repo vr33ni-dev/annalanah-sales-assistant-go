@@ -85,6 +85,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		sp.lead_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
+	WHERE COALESCE(sp.is_imported_placeholder, false) = false
 	ORDER BY sp.created_at DESC, sp.id DESC
 `)
 	if err != nil {
@@ -626,6 +627,116 @@ type ContractUpsell struct {
 	CreatedAt              *string    `json:"created_at"`
 	UpdatedAt              *string    `json:"updated_at"`
 }
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanContractUpsell(scanner rowScanner, u *ContractUpsell) error {
+	var (
+		upsellDate             sql.NullTime
+		upsellResult           sql.NullString
+		upsellRevenue          sql.NullFloat64
+		previousContractID     sql.NullInt64
+		newContractID          sql.NullInt64
+		createdAt              sql.NullTime
+		updatedAt              sql.NullTime
+		contractStartDate      sql.NullTime
+		contractDurationMonths sql.NullInt64
+		contractFrequency      sql.NullString
+	)
+
+	if err := scanner.Scan(
+		&u.ID,
+		&u.SalesProcessID,
+		&u.ClientID,
+		&upsellDate,
+		&upsellResult,
+		&upsellRevenue,
+		&previousContractID,
+		&newContractID,
+		&createdAt,
+		&updatedAt,
+		&contractStartDate,
+		&contractDurationMonths,
+		&contractFrequency,
+	); err != nil {
+		return err
+	}
+
+	if upsellDate.Valid {
+		s := upsellDate.Time.Format("2006-01-02")
+		u.UpsellDate = &s
+	} else {
+		u.UpsellDate = nil
+	}
+
+	if upsellResult.Valid {
+		s := upsellResult.String
+		u.UpsellResult = &s
+	} else {
+		u.UpsellResult = nil
+	}
+
+	if upsellRevenue.Valid {
+		f := upsellRevenue.Float64
+		u.UpsellRevenue = &f
+	} else {
+		u.UpsellRevenue = nil
+	}
+
+	if previousContractID.Valid {
+		id := int(previousContractID.Int64)
+		u.PreviousContractID = &id
+	} else {
+		u.PreviousContractID = nil
+	}
+
+	if newContractID.Valid {
+		id := int(newContractID.Int64)
+		u.NewContractID = &id
+	} else {
+		u.NewContractID = nil
+	}
+
+	if createdAt.Valid {
+		s := createdAt.Time.Format(time.RFC3339)
+		u.CreatedAt = &s
+	} else {
+		u.CreatedAt = nil
+	}
+
+	if updatedAt.Valid {
+		s := updatedAt.Time.Format(time.RFC3339)
+		u.UpdatedAt = &s
+	} else {
+		u.UpdatedAt = nil
+	}
+
+	if contractStartDate.Valid {
+		t := contractStartDate.Time
+		u.ContractStartDate = &t
+	} else {
+		u.ContractStartDate = nil
+	}
+
+	if contractDurationMonths.Valid {
+		months := int(contractDurationMonths.Int64)
+		u.ContractDurationMonths = &months
+	} else {
+		u.ContractDurationMonths = nil
+	}
+
+	if contractFrequency.Valid {
+		s := contractFrequency.String
+		u.ContractFrequency = &s
+	} else {
+		u.ContractFrequency = nil
+	}
+
+	return nil
+}
+
 type CreateUpsellRequest struct {
 	UpsellDate             *string  `json:"upsell_date,omitempty"`
 	UpsellResult           *string  `json:"upsell_result,omitempty"`
@@ -674,25 +785,16 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 
 	for rows.Next() {
 		var u ContractUpsell
-		if err := rows.Scan(
-			&u.ID,
-			&u.SalesProcessID,
-			&u.ClientID,
-			&u.UpsellDate,
-			&u.UpsellResult,
-			&u.UpsellRevenue,
-			&u.PreviousContractID,
-			&u.NewContractID,
-			&u.CreatedAt,
-			&u.UpdatedAt,
-			&u.ContractStartDate,
-			&u.ContractDurationMonths,
-			&u.ContractFrequency,
-		); err != nil {
+		if err := scanContractUpsell(rows, &u); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 		list = append(list, u)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 
 	if list == nil {
@@ -770,21 +872,7 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 
 	for rows.Next() {
 		var u ContractUpsell
-		if err := rows.Scan(
-			&u.ID,
-			&u.SalesProcessID,
-			&u.ClientID,
-			&u.UpsellDate,
-			&u.UpsellResult,
-			&u.UpsellRevenue,
-			&u.PreviousContractID,
-			&u.NewContractID,
-			&u.CreatedAt,
-			&u.UpdatedAt,
-			&u.ContractStartDate,
-			&u.ContractDurationMonths,
-			&u.ContractFrequency,
-		); err != nil {
+		if err := scanContractUpsell(rows, &u); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -796,6 +884,11 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 		} else if *u.UpsellResult == "keine_verlaengerung" {
 			unsuccessful = append(unsuccessful, u)
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 
 	resp := map[string]any{
