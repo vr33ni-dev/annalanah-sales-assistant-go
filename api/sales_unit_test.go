@@ -127,6 +127,39 @@ func TestListSalesProcesses_WithComments(t *testing.T) {
 	}
 }
 
+func TestListSalesProcesses_ExcludesImportedPlaceholders(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	salesRows := sqlmock.NewRows([]string{"id", "client_id", "client_name", "client_email", "client_phone", "client_source", "completed_at", "stage", "created_at", "initial_contact_date", "follow_up_date", "follow_up_result", "closed", "revenue", "stage_id", "lead_id"})
+	mock.ExpectQuery(`WHERE COALESCE\(sp\.is_imported_placeholder, false\) = false`).WillReturnRows(salesRows)
+
+	req := httptest.NewRequest("GET", "/api/sales", nil)
+	w := httptest.NewRecorder()
+	h.ListSalesProcesses(w, req)
+
+	if w.Result().StatusCode != 200 {
+		t.Fatalf("expected 200, got %d; body=%s", w.Result().StatusCode, w.Body.String())
+	}
+
+	var resp []SalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("expected 0 processes, got %d", len(resp))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestListUpsellCategories_DateRangeFiltersQuery(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

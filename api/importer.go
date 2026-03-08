@@ -140,6 +140,38 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// -------------------------
+		// Insert placeholder Sales Process
+		// -------------------------
+		var salesProcessID int
+		err = tx.QueryRow(`
+			INSERT INTO sales_process (
+				client_id,
+				stage,
+				follow_up_date,
+				follow_up_result,
+				closed,
+				revenue,
+				stage_id,
+				created_at,
+				updated_at,
+				is_imported_placeholder
+			)
+			VALUES ($1, NULL, NULL, NULL, NULL, NULL, NULL, $2, $2, TRUE)
+			RETURNING id
+		`, clientID, createdAt).Scan(&salesProcessID)
+
+		if err != nil {
+			tx.Rollback()
+			if c.IsFormer {
+				log.Printf("Skipping former client %s (placeholder sales_process insert failed)", c.Name)
+				skipped = append(skipped, c.Name)
+				continue
+			}
+			http.Error(w, err.Error(), 500)
+			return
+		}
+
+		// -------------------------
 		// Derive revenue + due dates
 		// -------------------------
 		var dueDates []time.Time
@@ -197,6 +229,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		// -------------------------
 		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
 			ClientID:          clientID,
+			SalesProcessID:    &salesProcessID,
 			StartDate:         start,
 			EndDate:           &end,
 			DurationMonths:    durationMonths,

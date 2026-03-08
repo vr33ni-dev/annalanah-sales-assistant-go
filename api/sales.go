@@ -85,6 +85,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		sp.lead_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
+	WHERE COALESCE(sp.is_imported_placeholder, false) = false
 	ORDER BY sp.created_at DESC, sp.id DESC
 `)
 	if err != nil {
