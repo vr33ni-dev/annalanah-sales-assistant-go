@@ -271,50 +271,60 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.DB.Query(`
+	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
+
+	query := `
 
 WITH overdue AS (
-  SELECT
-    contract_id,
-    MIN(due_date)::date AS overdue_due_date
-  FROM cashflow_entries
-  WHERE status = 'overdue'
-  GROUP BY contract_id
+	SELECT
+		contract_id,
+		MIN(due_date)::date AS overdue_due_date
+	FROM cashflow_entries
+	WHERE status = 'overdue'
+	GROUP BY contract_id
 ),
 upcoming AS (
-  SELECT
-    contract_id,
-    MIN(due_date)::date AS upcoming_due_date
-  FROM cashflow_entries
-  WHERE due_date >= CURRENT_DATE
-  GROUP BY contract_id
+	SELECT
+		contract_id,
+		MIN(due_date)::date AS upcoming_due_date
+	FROM cashflow_entries
+	WHERE due_date >= CURRENT_DATE
+	GROUP BY contract_id
 )
 SELECT
-  c.id,
-  c.client_id,
-  cl.name AS client_name,
-  c.sales_process_id,
-  c.start_date,
-  c.end_date,
-  c.created_at,
-  c.duration_months,
-  c.revenue_total,
-  c.payment_frequency,
-  CASE 
-    WHEN c.duration_months > 0
-      THEN (c.revenue_total / c.duration_months)
-    ELSE 0
-  END AS base_monthly_amount,
-  COALESCE(
-    o.overdue_due_date,
-    u.upcoming_due_date
-  ) AS next_due_date
+	c.id,
+	c.client_id,
+	cl.name AS client_name,
+	c.sales_process_id,
+	c.start_date,
+	c.end_date,
+	c.created_at,
+	c.duration_months,
+	c.revenue_total,
+	c.payment_frequency,
+	CASE 
+		WHEN c.duration_months > 0
+			THEN (c.revenue_total / c.duration_months)
+		ELSE 0
+	END AS base_monthly_amount,
+	COALESCE(
+		o.overdue_due_date,
+		u.upcoming_due_date
+	) AS next_due_date
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
 LEFT JOIN overdue  o ON o.contract_id = c.id
-LEFT JOIN upcoming u ON u.contract_id = c.id
-ORDER BY c.id;
-`)
+LEFT JOIN upcoming u ON u.contract_id = c.id`
+
+	if !includeExpired {
+		query += `
+WHERE c.end_date IS NULL OR c.end_date >= CURRENT_DATE`
+	}
+
+	query += `
+ORDER BY c.id;`
+
+	rows, err := h.DB.Query(query)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

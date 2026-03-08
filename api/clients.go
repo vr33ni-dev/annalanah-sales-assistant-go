@@ -50,10 +50,18 @@ SELECT
   c.phone,
   c.source,
   COALESCE(s.name, '') AS source_stage_name,
-	COALESCE(
-		c.status,
+	CASE
+		WHEN EXISTS (
+			SELECT 1
+			FROM contracts ct
+			WHERE ct.client_id = c.id
+			  AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
+		) THEN 'active'
+		WHEN c.status = 'lost' THEN 'lost'
+		WHEN c.status IS NOT NULL AND c.status <> 'active' THEN c.status
+		ELSE
 		CASE
-			WHEN sp.stage = 'closed' AND COALESCE(sp.closed, FALSE) = TRUE THEN 'active'
+			WHEN sp.stage = 'closed' AND COALESCE(sp.closed, FALSE) = TRUE THEN 'inactive'
 			WHEN sp.stage = 'lost' THEN 'lost'
 			WHEN sp.stage = 'initial_contact'
 				AND sp.initial_contact_date IS NOT NULL
@@ -67,7 +75,7 @@ SELECT
 				THEN 'awaiting_response'
 			ELSE 'inactive'
 		END
-	) AS status,
+	END AS status,
   c.completed_at
 FROM clients c
 LEFT JOIN stages s ON s.id = c.source_stage_id

@@ -62,6 +62,55 @@ func TestListContracts_Integration(t *testing.T) {
 
 }
 
+func TestListContracts_Integration_HidesExpiredByDefault(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	testhelpers.TruncateAll(t, suite.DB)
+
+	clientA := suite.CreateClient()
+	spA := suite.CreateSalesProcessForClient(clientA.ID)
+	activeContract := suite.CreateContract(clientA.ID, spA.ID)
+
+	clientB := suite.CreateClient()
+	spB := suite.CreateSalesProcessForClient(clientB.ID)
+	expiredContract := suite.CreateContract(clientB.ID, spB.ID)
+
+	_, err := suite.DB.DB.Exec(`
+		UPDATE contracts
+		SET end_date = CASE
+			WHEN id = $1 THEN CURRENT_DATE + INTERVAL '5 days'
+			WHEN id = $2 THEN CURRENT_DATE - INTERVAL '1 day'
+		END
+		WHERE id IN ($1, $2)
+	`, activeContract.ID, expiredContract.ID)
+	if err != nil {
+		t.Fatalf("failed to set contract end dates: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+
+	handler.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	var out []api.ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 visible contract, got %d", len(out))
+	}
+
+	if out[0].ID != activeContract.ID {
+		t.Fatalf("expected active contract ID %d, got %d", activeContract.ID, out[0].ID)
+	}
+}
+
 func TestCreateContract_Integration(t *testing.T) {
 	suite := factory.NewSuiteFromTestDB(t, testDB)
 	handler := &api.Handler{DB: suite.DB.DB}
