@@ -123,12 +123,14 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		// Contracts
 		pr.Get("/contracts", h.ListContracts)
 		pr.Post("/contracts", h.CreateContract)
+		pr.Get("/contracts/{id}", h.GetContract)
 		pr.Patch("/contracts/{id}", h.UpdateContract)
 		pr.Get("/contracts/{id}/cashflow", h.ListContractCashflowEntries)
 
 		// Stages
 		pr.Get("/stages", h.ListStages)
 		pr.Post("/stages", h.CreateStage)
+		pr.Delete("/stages/{id}", h.DeleteStage)
 		pr.Patch("/stages/{id}/stats", h.UpdateStageStats)
 		pr.Patch("/stages/{id}", h.UpdateStageInfo)
 

@@ -220,6 +220,79 @@ func TestCreateStage(t *testing.T) {
 	}
 }
 
+func TestDeleteStage(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createStageSchema(db, t)
+	_, _ = db.Exec(`INSERT INTO stage_participants (stage_id, participant_name) VALUES (1, 'Laura Beispiel')`)
+	_, _ = db.Exec(`INSERT INTO stage_client_assignments (client_id, stage_id) VALUES (99, 1)`)
+
+	h := &api.Handler{DB: db}
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req := httptest.NewRequest(http.MethodDelete, "/api/stages/1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.DeleteStage(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stagesCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM stages WHERE id = 1`).Scan(&stagesCount)
+	if stagesCount != 0 {
+		t.Fatalf("expected stage to be deleted, got %d rows", stagesCount)
+	}
+
+	var participantsCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM stage_participants WHERE stage_id = 1`).Scan(&participantsCount)
+	if participantsCount != 0 {
+		t.Fatalf("expected stage participants to be deleted, got %d rows", participantsCount)
+	}
+
+	var assignmentsCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM stage_client_assignments WHERE stage_id = 1`).Scan(&assignmentsCount)
+	if assignmentsCount != 0 {
+		t.Fatalf("expected stage assignments to be deleted, got %d rows", assignmentsCount)
+	}
+}
+
+func TestDeleteStage_InvalidID(t *testing.T) {
+	h := &api.Handler{}
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "abc")
+	req := httptest.NewRequest(http.MethodDelete, "/api/stages/abc", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.DeleteStage(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteStage_NotFound(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createStageSchema(db, t)
+	h := &api.Handler{DB: db}
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "999")
+	req := httptest.NewRequest(http.MethodDelete, "/api/stages/999", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.DeleteStage(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAddStageParticipant_NewLead(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()

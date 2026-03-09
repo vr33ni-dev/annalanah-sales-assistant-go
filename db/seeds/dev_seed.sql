@@ -63,20 +63,20 @@ anna AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
   SELECT 'Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', sd.anna_completed_at
   FROM seed_dates sd
-  RETURNING id
+  RETURNING id, name, email, phone, source, source_stage_id
 ),
 maxc AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
   SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', sd.max_completed_at
   FROM s, seed_dates sd
-  RETURNING id
+  RETURNING id, name, email, phone, source, source_stage_id
 ),
 moritz AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
   -- Moritz represents a completed upsell/extension sale in the seed
   SELECT 'Moritz Mustermann', 'mo@example.com', '912345', 'paid', s.id, 'active', sd.moritz_completed_at
   FROM s, seed_dates sd
-  RETURNING id
+  RETURNING id, name, email, phone, source, source_stage_id
 ),
 maria AS (
   INSERT INTO clients (name, email, phone, source, source_stage_id, status)
@@ -103,10 +103,17 @@ leads_ins AS (
   RETURNING id
 ),
 
--- optional: a lead already converted and linked to Anna
-converted_lead AS (
+-- optional: original lead records already converted and linked to seeded clients
+converted_leads AS (
   INSERT INTO leads (name, email, phone, source, source_stage_id, converted, converted_at, converted_client_id)
-  SELECT 'Converted Lead', 'conv@example.com', '111222333', 'organic', NULL, TRUE, now(), (SELECT id FROM anna)
+  SELECT c.name, c.email, c.phone, c.source, c.source_stage_id, TRUE, now(), c.id
+  FROM (
+    SELECT id, name, email, phone, source, source_stage_id FROM anna
+    UNION ALL
+    SELECT id, name, email, phone, source, source_stage_id FROM maxc
+    UNION ALL
+    SELECT id, name, email, phone, source, source_stage_id FROM moritz
+  ) c
   RETURNING id
 ),
 
@@ -359,8 +366,8 @@ part_max AS (
 )
 
 
--- Final confirmation
-SELECT 'ok';
+-- Final confirmation (also references converted_leads so the CTE is executed)
+SELECT 'ok', (SELECT COUNT(*) FROM converted_leads) AS converted_leads_seeded;
 
 -- Ensure unique constraint so seed can be re-run idempotently
 CREATE UNIQUE INDEX IF NOT EXISTS ux_cashflow_contract_due ON cashflow_entries (contract_id, due_date);
