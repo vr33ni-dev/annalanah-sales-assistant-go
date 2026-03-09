@@ -272,6 +272,9 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 // GET /api/contracts
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
+	compact := strings.EqualFold(r.URL.Query().Get("compact"), "true")
+	includeComments := !compact && !strings.EqualFold(r.URL.Query().Get("include_comments"), "false")
+	includeCashflow := !compact && !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
 
 	query := `
 
@@ -346,17 +349,23 @@ ORDER BY c.id;`
 			return
 		}
 
-		x.Comments = []CommentResponse{}
-		x.Cashflow = []ContractCashflowEntryResponse{}
+		if includeComments {
+			x.Comments = []CommentResponse{}
+		}
+		if includeCashflow {
+			x.Cashflow = []ContractCashflowEntryResponse{}
+		}
 
-		idToIndex[x.ID] = len(out)
-		contractIDs = append(contractIDs, x.ID)
+		if includeComments || includeCashflow {
+			idToIndex[x.ID] = len(out)
+			contractIDs = append(contractIDs, x.ID)
+		}
 
 		out = append(out, x)
 	}
 
 	// 🔥 Batch load contract comments (NO N+1)
-	if len(contractIDs) > 0 {
+	if includeComments && len(contractIDs) > 0 {
 		commentRows, err := h.DB.Query(`
 			SELECT id, entity_id, author, body, metadata, created_at, updated_at
 			FROM comments
@@ -410,7 +419,7 @@ ORDER BY c.id;`
 		}
 	}
 
-	if len(contractIDs) > 0 {
+	if includeCashflow && len(contractIDs) > 0 {
 		cashflowRows, err := h.DB.Query(`
 			SELECT id, contract_id, due_date, amount, status, updated_at
 			FROM cashflow_entries
@@ -431,6 +440,181 @@ ORDER BY c.id;`
 
 	if out == nil {
 		out = []ContractResponse{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// GET /api/contracts/{id}
+func (h *Handler) GetContract(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid contract id", http.StatusBadRequest)
+		return
+	}
+
+	var out ContractResponse
+	var createdAt sql.NullTime
+	var updatedAt sql.NullTime
+	var endDate sql.NullTime
+	var nextDueDate sql.NullTime
+
+	err = h.DB.QueryRow(`
+WITH overdue AS (
+	SELECT
+		contract_id,
+		MIN(due_date)::date AS overdue_due_date
+	FROM cashflow_entries
+	WHERE status = 'overdue'
+	GROUP BY contract_id
+),
+upcoming AS (
+	SELECT
+		contract_id,
+		MIN(due_date)::date AS upcoming_due_date
+	FROM cashflow_entries
+	WHERE due_date >= CURRENT_DATE
+	GROUP BY contract_id
+)
+SELECT
+	c.id,
+	c.client_id,
+	cl.name AS client_name,
+	c.sales_process_id,
+	c.start_date,
+	c.end_date,
+	c.created_at,
+	c.updated_at,
+	c.duration_months,
+	c.revenue_total,
+	c.payment_frequency,
+	CASE
+		WHEN c.duration_months > 0
+			THEN (c.revenue_total / c.duration_months)
+		ELSE 0
+	END AS base_monthly_amount,
+	COALESCE(
+		o.overdue_due_date,
+		u.upcoming_due_date
+	) AS next_due_date
+FROM contracts c
+JOIN clients cl ON cl.id = c.client_id
+LEFT JOIN overdue  o ON o.contract_id = c.id
+LEFT JOIN upcoming u ON u.contract_id = c.id
+WHERE c.id = $1
+`, id).Scan(
+		&out.ID,
+		&out.ClientID,
+		&out.ClientName,
+		&out.SalesProcessID,
+		&out.StartDate,
+		&endDate,
+		&createdAt,
+		&updatedAt,
+		&out.DurationMonths,
+		&out.RevenueTotal,
+		&out.PaymentFreq,
+		&out.BaseMonthlyAmount,
+		&nextDueDate,
+	)
+	if err == sql.ErrNoRows {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if createdAt.Valid {
+		s := createdAt.Time.Format(time.RFC3339)
+		out.CreatedAt = &s
+	}
+	if updatedAt.Valid {
+		s := updatedAt.Time.Format(time.RFC3339)
+		out.UpdatedAt = &s
+	}
+	if endDate.Valid {
+		s := endDate.Time.Format(time.RFC3339)
+		out.EndDate = &s
+	}
+	if nextDueDate.Valid {
+		s := nextDueDate.Time.Format(time.RFC3339)
+		out.NextDueDate = &s
+	}
+
+	out.Comments = []CommentResponse{}
+	out.Cashflow = []ContractCashflowEntryResponse{}
+
+	commentRows, err := h.DB.Query(`
+		SELECT id, entity_id, author, body, metadata, created_at, updated_at
+		FROM comments
+		WHERE entity_type = 'contract'
+		  AND entity_id = $1
+		ORDER BY created_at DESC
+	`, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer commentRows.Close()
+
+	for commentRows.Next() {
+		var commentID int
+		var entityID int
+		var author sql.NullString
+		var body string
+		var metadata sql.NullString
+		var created, updated time.Time
+
+		if err := commentRows.Scan(&commentID, &entityID, &author, &body, &metadata, &created, &updated); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var meta map[string]interface{}
+		if metadata.Valid && metadata.String != "" {
+			_ = json.Unmarshal([]byte(metadata.String), &meta)
+		}
+
+		var a *string
+		if author.Valid {
+			s := author.String
+			a = &s
+		}
+
+		out.Comments = append(out.Comments, CommentResponse{
+			ID:         commentID,
+			EntityType: "contract",
+			EntityID:   entityID,
+			Author:     a,
+			Body:       body,
+			Metadata:   meta,
+			CreatedAt:  created.Format(time.RFC3339),
+			UpdatedAt:  updated.Format(time.RFC3339),
+		})
+	}
+	if err := commentRows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	cashflowRows, err := h.DB.Query(`
+		SELECT id, contract_id, due_date, amount, status, updated_at
+		FROM cashflow_entries
+		WHERE contract_id = $1
+		ORDER BY due_date, id
+	`, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out.Cashflow, err = loadContractCashflowEntries(cashflowRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
