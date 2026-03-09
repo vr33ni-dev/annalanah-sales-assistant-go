@@ -427,6 +427,29 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sync the same contact fields to the linked converted lead (if any).
+	// Uses COALESCE so only non-empty values overwrite; blank fields are ignored.
+	if _, err := h.DB.Exec(`
+		UPDATE leads
+		SET
+			name            = COALESCE(NULLIF($1,''), name),
+			email           = COALESCE(NULLIF($2,''), email),
+			phone           = COALESCE(NULLIF($3,''), phone),
+			source          = COALESCE(NULLIF($4,''), source),
+			source_stage_id = COALESCE($5, source_stage_id)
+		WHERE converted_client_id = $6
+	`,
+		updated.Name,
+		updated.Email,
+		updated.Phone,
+		updated.Source,
+		nullInt(updated.SourceStageID),
+		id,
+	); err != nil {
+		log.Printf("❌ lead sync failed for client %d: %v", id, err)
+		// non-fatal — client was updated successfully
+	}
+
 	// optionally insert comments provided in the patch
 	if updated.Comments != nil && len(updated.Comments) > 0 {
 		if err := h.insertCommentsForEntity("client", id, updated.Comments); err != nil {

@@ -655,6 +655,55 @@ func TestUpdateClient_CompletedAtValid(t *testing.T) {
 	}
 }
 
+func TestUpdateClient_SyncsEmailAndNameToLinkedLead(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+
+	// Seed client
+	if _, err := db.Exec(`
+		INSERT INTO clients (id, name, email, phone, source, status, created_at)
+		VALUES (1, 'Old Name', 'old@email.com', '111', 'organic', 'active', '2026-01-01 12:00:00')
+	`); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a converted lead pointing to client 1
+	if _, err := db.Exec(`
+		INSERT INTO leads (id, name, email, phone, source, converted, converted_client_id)
+		VALUES (10, 'Old Name', 'old@email.com', '111', 'organic', 1, 1)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	body := strings.NewReader(`{"name":"New Name","email":"new@email.com","phone":"999","source":"paid"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var leadName, leadEmail, leadPhone, leadSource string
+	if err := db.QueryRow(`SELECT name, email, phone, source FROM leads WHERE id = 10`).
+		Scan(&leadName, &leadEmail, &leadPhone, &leadSource); err != nil {
+		t.Fatal(err)
+	}
+	if leadEmail != "new@email.com" {
+		t.Errorf("expected lead email=new@email.com, got %q", leadEmail)
+	}
+	if leadName != "New Name" {
+		t.Errorf("expected lead name=New Name, got %q", leadName)
+	}
+	if leadPhone != "999" {
+		t.Errorf("expected lead phone=999, got %q", leadPhone)
+	}
+	if leadSource != "paid" {
+		t.Errorf("expected lead source=paid, got %q", leadSource)
+	}
+}
+
 func TestNullHelpers(t *testing.T) {
 	if s := api.NullStrForTest(""); s.Valid {
 		t.Fatal("empty string should be invalid")

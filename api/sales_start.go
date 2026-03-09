@@ -79,12 +79,13 @@ func deriveStartSalesStageAndStatus(req StartSalesProcessRequest) (string, strin
 	return stage, desiredClientStatus
 }
 
-func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProcessRequest, existingClientID *int, foundLeadID *int) (int, int, string, error) {
+func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProcessRequest, existingClientID *int, foundLeadID *int) (int, int, string, *int, error) {
 	stage, desiredClientStatus := deriveStartSalesStageAndStatus(req)
+	effectiveLeadID := foundLeadID
 
 	tx, err := h.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, "", fmt.Errorf("tx begin failed: %w", err)
+		return 0, 0, "", nil, fmt.Errorf("tx begin failed: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -101,7 +102,7 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 					source = COALESCE(NULLIF($3,''), source)
 				WHERE id = $4
 			`, req.Name, req.Phone, req.Source, clientID); err != nil {
-				return 0, 0, "", fmt.Errorf("client overwrite failed: %w", err)
+				return 0, 0, "", nil, fmt.Errorf("client overwrite failed: %w", err)
 			}
 		}
 	} else {
@@ -112,7 +113,42 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 		`,
 			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID, desiredClientStatus,
 		).Scan(&clientID); err != nil {
-			return 0, 0, "", fmt.Errorf("client insert failed: %w", err)
+			return 0, 0, "", nil, fmt.Errorf("client insert failed: %w", err)
+		}
+
+		// Wire the new client to a lead record.
+		if foundLeadID != nil {
+			// A pre-existing lead was matched (by lead_id or email). Link it to the new client
+			// without marking it converted — that only happens when a contract is signed.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE leads
+				SET converted_client_id = $1
+				WHERE id = $2
+			`, clientID, *foundLeadID); err != nil {
+				return 0, 0, "", nil, fmt.Errorf("lead link failed: %w", err)
+			}
+		} else {
+			// No pre-existing lead — create a tracker lead linked to this client.
+			// converted stays FALSE; it becomes TRUE only when a contract is signed.
+			var newLeadID int
+			leadInsertErr := tx.QueryRowContext(ctx, `
+				INSERT INTO leads (name, email, phone, source, source_stage_id, converted, converted_client_id)
+				VALUES ($1,$2,$3,$4,$5,FALSE,$6)
+				ON CONFLICT (email) DO NOTHING
+				RETURNING id
+			`, req.Name, req.Email, req.Phone, req.Source, req.SourceStageID, clientID).Scan(&newLeadID)
+			if leadInsertErr == nil {
+				effectiveLeadID = &newLeadID
+			} else if leadInsertErr == sql.ErrNoRows && strings.TrimSpace(req.Email) != "" {
+				// Email already exists in leads (conflict) — link to that existing lead
+				_ = tx.QueryRowContext(ctx,
+					`SELECT id FROM leads WHERE LOWER(email) = LOWER($1) ORDER BY id DESC LIMIT 1`,
+					req.Email,
+				).Scan(&newLeadID)
+				if newLeadID > 0 {
+					effectiveLeadID = &newLeadID
+				}
+			}
 		}
 	}
 
@@ -122,7 +158,7 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 		WHERE id = $2
 		  AND status IS NULL
 	`, desiredClientStatus, clientID); err != nil {
-		return 0, 0, "", fmt.Errorf("client status backfill failed: %w", err)
+		return 0, 0, "", nil, fmt.Errorf("client status backfill failed: %w", err)
 	}
 
 	if req.MergeStrategy != nil && *req.MergeStrategy == "overwrite" && foundLeadID != nil {
@@ -144,7 +180,7 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 			req.SourceStageID,
 			*foundLeadID,
 		); err != nil {
-			return 0, 0, "", fmt.Errorf("lead overwrite failed: %w", err)
+			return 0, 0, "", nil, fmt.Errorf("lead overwrite failed: %w", err)
 		}
 	}
 
@@ -161,7 +197,7 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 		req.FollowUpDate,
 		stage,
 		req.SourceStageID,
-		foundLeadID,
+		effectiveLeadID,
 	).Scan(&salesID)
 
 	if err == sql.ErrNoRows {
@@ -169,17 +205,17 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 			`SELECT id FROM sales_process WHERE client_id = $1`,
 			clientID,
 		).Scan(&salesID); err != nil {
-			return 0, 0, "", fmt.Errorf("sales_process reuse failed: %w", err)
+			return 0, 0, "", nil, fmt.Errorf("sales_process reuse failed: %w", err)
 		}
 	} else if err != nil {
-		return 0, 0, "", fmt.Errorf("sales_process insert failed: %w", err)
+		return 0, 0, "", nil, fmt.Errorf("sales_process insert failed: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, 0, "", fmt.Errorf("commit failed: %w", err)
+		return 0, 0, "", nil, fmt.Errorf("commit failed: %w", err)
 	}
 
-	return clientID, salesID, stage, nil
+	return clientID, salesID, stage, effectiveLeadID, nil
 }
 
 func (h *Handler) resolveLeadForSalesStart(ctx context.Context, req *StartSalesProcessRequest) (*int, error) {

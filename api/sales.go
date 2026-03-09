@@ -446,7 +446,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 				"error":     "client_has_active_contract",
 				"client_id": *existingClientID,
 			})
-			return // ⛔ ABSOLUTE STOP
+			return // ABSOLUTE STOP
 		}
 
 	}
@@ -481,7 +481,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID, salesID, stage, err := h.runStartSalesProcessTx(ctx, req, existingClientID, foundLeadID)
+	clientID, salesID, stage, effectiveLeadID, err := h.runStartSalesProcessTx(ctx, req, existingClientID, foundLeadID)
 	if err != nil {
 		if isUniqueViolation(err, "unique_client_email") {
 			writeJSONError(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits. Bitte den bestehenden Kunden auswählen.", http.StatusConflict)
@@ -499,7 +499,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := h.loadStartSalesProcessResponse(ctx, salesID, clientID, stage, req, foundLeadID)
+	resp, err := h.loadStartSalesProcessResponse(ctx, salesID, clientID, stage, req, effectiveLeadID)
 	if err != nil {
 		http.Error(w, "start sales response load failed: "+err.Error(), http.StatusInternalServerError)
 		return
