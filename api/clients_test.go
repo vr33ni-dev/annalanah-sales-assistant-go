@@ -25,17 +25,20 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			source TEXT,
 			source_stage_id INTEGER,
 			status TEXT,
-			completed_at DATETIME
+			completed_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE TABLE stages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT
 		);`,
 		`CREATE TABLE sales_process (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			client_id INTEGER,
 			stage TEXT,
 			closed BOOLEAN,
 			initial_contact_date DATETIME,
+			follow_up_date DATETIME,
 			follow_up_result BOOLEAN
 		);`,
 		`CREATE TABLE contracts (
@@ -149,6 +152,58 @@ func TestListClients_ExpiredContractDoesNotStayActive(t *testing.T) {
 	status, _ := out[0]["status"].(string)
 	if status != "inactive" {
 		t.Fatalf("expected expired-only client to be inactive, got %q", status)
+	}
+}
+
+func TestListClients_ReturnsLeadIDWhenClientWasConvertedFromLead(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createTestSchema(t, db)
+
+	_, err = db.Exec(`
+		INSERT INTO clients (id, name, email, phone, source, status)
+		VALUES (1, 'Converted Client', 'converted@example.com', '123', 'web', 'active')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO leads (id, name, email, phone, source, converted, converted_at, converted_client_id)
+		VALUES (10, 'Original Lead', 'lead@example.com', '456', 'web', 1, '2026-03-01 00:00:00', 1)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	w := httptest.NewRecorder()
+
+	h.ListClients(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(out))
+	}
+
+	leadID, ok := out[0]["lead_id"].(float64)
+	if !ok {
+		t.Fatalf("expected lead_id in response, got %#v", out[0]["lead_id"])
+	}
+	if int(leadID) != 10 {
+		t.Fatalf("expected lead_id 10, got %v", leadID)
 	}
 }
 
@@ -500,6 +555,103 @@ func TestUpdateClient_DBError(t *testing.T) {
 
 	if w.Result().StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected 500 update failed")
+	}
+}
+
+func TestUpdateClient_CompletedAtBeforeCreatedAt(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+	_, err := db.Exec(`
+		INSERT INTO clients (id, name, status, created_at)
+		VALUES (1, 'Bob', 'active', '2026-03-01 12:00:00')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-01"}`))
+	w := httptest.NewRecorder()
+
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "client creation") {
+		t.Fatalf("expected creation-date validation message, got %q", w.Body.String())
+	}
+}
+
+func TestUpdateClient_CompletedAtBeforeFollowUpDate(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+	_, err := db.Exec(`
+		INSERT INTO clients (id, name, status, created_at)
+		VALUES (1, 'Bob', 'active', '2026-01-01 12:00:00')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sales_process (client_id, stage, closed, initial_contact_date, follow_up_date, follow_up_result)
+		VALUES (1, 'follow_up', 0, '2026-01-10 00:00:00', '2026-02-15 00:00:00', NULL)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-01"}`))
+	w := httptest.NewRecorder()
+
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "follow_up_date") {
+		t.Fatalf("expected follow_up_date validation message, got %q", w.Body.String())
+	}
+}
+
+func TestUpdateClient_CompletedAtValid(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+	_, err := db.Exec(`
+		INSERT INTO clients (id, name, status, created_at)
+		VALUES (1, 'Bob', 'active', '2026-01-01 12:00:00')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO sales_process (client_id, stage, closed, initial_contact_date, follow_up_date, follow_up_result)
+		VALUES (1, 'follow_up', 0, '2026-01-10 00:00:00', '2026-02-01 00:00:00', NULL)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-15"}`))
+	w := httptest.NewRecorder()
+
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var completedAt sql.NullString
+	if err := db.QueryRow(`SELECT completed_at FROM clients WHERE id = 1`).Scan(&completedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !completedAt.Valid || !strings.Contains(completedAt.String, "2026-02-15") {
+		t.Fatalf("expected completed_at to be saved, got %#v", completedAt)
 	}
 }
 

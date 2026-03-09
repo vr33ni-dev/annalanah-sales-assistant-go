@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -25,6 +26,47 @@ type Client struct {
 	Comments      []CommentCreateRequest `json:"comments,omitempty"`
 }
 
+func (h *Handler) validateClientCompletedAt(ctx context.Context, clientID int, completedAt *time.Time) error {
+	if completedAt == nil {
+		return nil
+	}
+
+	completedDay := completedAt.UTC().Truncate(24 * time.Hour)
+
+	var clientCreatedAt sql.NullTime
+	if err := h.DB.QueryRowContext(ctx, `SELECT created_at FROM clients WHERE id = $1`, clientID).Scan(&clientCreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("client not found")
+		}
+		return err
+	}
+	if clientCreatedAt.Valid {
+		createdDay := clientCreatedAt.Time.UTC().Truncate(24 * time.Hour)
+		if completedDay.Before(createdDay) {
+			return fmt.Errorf("completed_at cannot be before client creation date")
+		}
+	}
+
+	var followUpDate sql.NullTime
+	if err := h.DB.QueryRowContext(ctx, `
+		SELECT follow_up_date
+		FROM sales_process
+		WHERE client_id = $1
+		ORDER BY id DESC
+		LIMIT 1
+	`, clientID).Scan(&followUpDate); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if followUpDate.Valid {
+		followUpDay := followUpDate.Time.UTC().Truncate(24 * time.Hour)
+		if completedDay.Before(followUpDay) {
+			return fmt.Errorf("completed_at cannot be before follow_up_date")
+		}
+	}
+
+	return nil
+}
+
 // GET /api/clients
 func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -32,6 +74,7 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 
 	type ClientResponse struct {
 		ID              int64             `json:"id"`
+		LeadID          *int64            `json:"lead_id,omitempty"`
 		Name            string            `json:"name"`
 		Email           string            `json:"email"`
 		Phone           string            `json:"phone"`
@@ -45,6 +88,13 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.QueryContext(ctx, `
 SELECT 
   c.id,
+	(
+	SELECT l.id
+	FROM leads l
+	WHERE l.converted_client_id = c.id
+	ORDER BY l.converted_at DESC NULLS LAST, l.id DESC
+	LIMIT 1
+	) AS lead_id,
   c.name,
   c.email,
   c.phone,
@@ -94,15 +144,21 @@ ORDER BY c.id
 
 	for rows.Next() {
 		var c ClientResponse
+		var leadID sql.NullInt64
 		var completedAt sql.NullTime
 		var emailNS, phoneNS, sourceNS sql.NullString
 
 		if err := rows.Scan(
-			&c.ID, &c.Name, &emailNS,
+			&c.ID, &leadID, &c.Name, &emailNS,
 			&phoneNS, &sourceNS, &c.SourceStageName, &c.Status, &completedAt,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		if leadID.Valid {
+			id := leadID.Int64
+			c.LeadID = &id
 		}
 
 		if emailNS.Valid {
@@ -332,8 +388,14 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		if t, err := time.Parse("2006-01-02", *updated.CompletedAt); err == nil {
 			completedAt = &t
 		} else {
-			log.Printf("⚠️ could not parse completed_at: %v", err)
+			http.Error(w, "invalid completed_at, expected YYYY-MM-DD", http.StatusBadRequest)
+			return
 		}
+	}
+
+	if err := h.validateClientCompletedAt(r.Context(), id, completedAt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	query := `
