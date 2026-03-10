@@ -393,9 +393,24 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.validateClientCompletedAt(r.Context(), id, completedAt); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	// Only validate completed_at if the value is actually changing.
+	// Frontends often echo back the existing value; re-validating it would incorrectly
+	// reject seeded or historically-set dates that pre-date created_at.
+	var existingCompletedAt sql.NullTime
+	_ = h.DB.QueryRowContext(r.Context(), `SELECT completed_at FROM clients WHERE id = $1`, id).Scan(&existingCompletedAt)
+	existingDateStr := ""
+	if existingCompletedAt.Valid {
+		existingDateStr = existingCompletedAt.Time.Format("2006-01-02")
+	}
+	incomingDateStr := ""
+	if updated.CompletedAt != nil {
+		incomingDateStr = *updated.CompletedAt
+	}
+	if incomingDateStr != existingDateStr {
+		if err := h.validateClientCompletedAt(r.Context(), id, completedAt); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	query := `

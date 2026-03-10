@@ -47,34 +47,38 @@ s AS (
 
 -- 2c) Client for explicit end_date test
 explicit_enddate_client AS (
-  INSERT INTO clients (name, email, phone, source, status, completed_at)
-  -- Closed deal: completion should be before contract start.
+  INSERT INTO clients (name, email, phone, source, status, completed_at, created_at)
+  -- Closed deal: completion should be before contract start. set created_at before completed_at
   SELECT
     'Explicit Enddate Client',
     'explicit@enddate.com',
     '555000111',
     'organic',
     'active',
-    sd.explicit_completed_at
+    sd.explicit_completed_at,
+    ((sd.explicit_completed_at - INTERVAL '1 day')::timestamp)
   FROM seed_dates sd
   RETURNING id
 ),
 anna AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  SELECT 'Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', sd.anna_completed_at
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at, created_at)
+  SELECT 'Anna Schmidt', 'anna@example.com', '123456', 'organic', NULL, 'active', sd.anna_completed_at,
+         ((sd.anna_completed_at - INTERVAL '1 day')::timestamp)
   FROM seed_dates sd
   RETURNING id, name, email, phone, source, source_stage_id
 ),
 maxc AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
-  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', sd.max_completed_at
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at, created_at)
+  SELECT 'Max Müller', 'max@example.com', '987654', 'paid', s.id, 'active', sd.max_completed_at,
+         ((sd.max_completed_at - INTERVAL '1 day')::timestamp)
   FROM s, seed_dates sd
   RETURNING id, name, email, phone, source, source_stage_id
 ),
 moritz AS (
-  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at)
+  INSERT INTO clients (name, email, phone, source, source_stage_id, status, completed_at, created_at)
   -- Moritz represents a completed upsell/extension sale in the seed
-  SELECT 'Moritz Mustermann', 'mo@example.com', '912345', 'paid', s.id, 'active', sd.moritz_completed_at
+  SELECT 'Moritz Mustermann', 'mo@example.com', '912345', 'paid', s.id, 'active', sd.moritz_completed_at,
+         ((sd.moritz_completed_at - INTERVAL '1 day')::timestamp)
   FROM s, seed_dates sd
   RETURNING id, name, email, phone, source, source_stage_id
 ),
