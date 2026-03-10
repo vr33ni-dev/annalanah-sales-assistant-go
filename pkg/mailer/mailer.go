@@ -24,9 +24,31 @@ func SendMail(to, subject, body string) error {
 		from = "no-reply@localhost"
 	}
 
+	// Normalize recipient list: accept comma-separated or a Go-like array string
+	// e.g. "[a@x.com,b@y.com]" or "a@x.com,b@y.com" -> []string{"a@x.com","b@y.com"}
+	cleaned := strings.TrimSpace(to)
+	cleaned = strings.TrimPrefix(cleaned, "[")
+	cleaned = strings.TrimSuffix(cleaned, "]")
+	// split on commas and semicolons
+	parts := strings.FieldsFunc(cleaned, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+	var recipients []string
+	for _, p := range parts {
+		addr := strings.TrimSpace(p)
+		if addr != "" {
+			recipients = append(recipients, addr)
+		}
+	}
+	if len(recipients) == 0 {
+		return fmt.Errorf("no recipient addresses provided")
+	}
+
+	// Build headers using a comma-separated To header
+	toHeader := strings.Join(recipients, ", ")
 	msg := []string{
 		fmt.Sprintf("From: %s", from),
-		fmt.Sprintf("To: %s", to),
+		fmt.Sprintf("To: %s", toHeader),
 		fmt.Sprintf("Subject: %s", subject),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
@@ -44,7 +66,7 @@ func SendMail(to, subject, body string) error {
 		auth = smtp.PlainAuth("", user, pass, host)
 	}
 
-	return smtp.SendMail(addr, auth, from, []string{to}, []byte(payload))
+	return smtp.SendMail(addr, auth, from, recipients, []byte(payload))
 }
 
 // SendNewContractNotification composes a German notification for new contracts.
