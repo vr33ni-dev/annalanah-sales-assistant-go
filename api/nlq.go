@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	openai "github.com/sashabaranov/go-openai"
+	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -112,29 +113,30 @@ func (c *sqlResultCache) Set(sql string, resp nlqResponse) {
 
 // In-memory process-local caches (not persisted).
 // - `sqlCache`: caches SQL query results (keyed by exact SQL string). TTL: 5 minutes.
-// - `questionCache`: caches NLQ question -> SQL mappings to avoid repeated OpenAI calls. TTL: 30 minutes.
+// - `questionCache`: caches NLQ question -> SQL mappings to avoid repeated Anthropic calls. TTL: 30 minutes.
 // These are stored per-process and will be lost on restart.
 var sqlCache = NewSQLResultCache(5 * time.Minute)
 var questionCache = NewQuestionToSQLCache(30 * time.Minute)
 var nlqGenerateSQL = generateSQL
 
 var (
-	openAIClientMu     sync.Mutex
-	openAIClient       *openai.Client
-	openAIClientAPIKey string
+	anthropicClientMu     sync.Mutex
+	anthropicClient       *anthropic.Client
+	anthropicClientAPIKey string
 )
 
-func getOpenAIClient(apiKey string) *openai.Client {
-	openAIClientMu.Lock()
-	defer openAIClientMu.Unlock()
+func getAnthropicClient(apiKey string) *anthropic.Client {
+	anthropicClientMu.Lock()
+	defer anthropicClientMu.Unlock()
 
-	if openAIClient != nil && openAIClientAPIKey == apiKey {
-		return openAIClient
+	if anthropicClient != nil && anthropicClientAPIKey == apiKey {
+		return anthropicClient
 	}
 
-	openAIClient = openai.NewClient(apiKey)
-	openAIClientAPIKey = apiKey
-	return openAIClient
+	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	anthropicClient = &client
+	anthropicClientAPIKey = apiKey
+	return anthropicClient
 }
 
 func isLikelySQLQuestion(q string) bool {
@@ -361,8 +363,8 @@ func isAggregateQuery(sql string) bool {
 
 // generateSQL uses three modes:
 // 1) NLQ_MOCK=1  -> deterministic for tests
-// 2) no OPENAI key -> simple hardcoded fallback
-// 3) OPENAI key set -> use OpenAI with schemaDoc
+// 2) no ANTHROPIC_API_KEY -> simple hardcoded fallback
+// 3) ANTHROPIC_API_KEY set -> use Claude with schemaDoc
 func generateSQL(ctx context.Context, question string) (string, error) {
 	q := strings.ToLower(strings.TrimSpace(question))
 
@@ -393,7 +395,7 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 	}
 
 	// ---------- 2) Offline fallback (no API key) ----------
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		switch {
 		case strings.Contains(q, "zweitgespräch"):
@@ -411,29 +413,31 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 		}
 	}
 
-	// ---------- 3) Real OpenAI-backed generation ----------
-	client := getOpenAIClient(apiKey)
+	// ---------- 3) Real Anthropic-backed generation ----------
+	client := getAnthropicClient(apiKey)
 
-	resp, err := client.CreateChatCompletion(
+	msg, err := client.Messages.New(
 		ctx,
-		openai.ChatCompletionRequest{
-			Model: "gpt-4o-mini",
-			Messages: []openai.ChatCompletionMessage{
-				{Role: "system", Content: schemaDoc}, // defined in nlq_schema.go (same package)
-				{Role: "user", Content: question},
+		anthropic.MessageNewParams{
+			Model:     anthropic.ModelClaudeHaiku4_5,
+			MaxTokens: 1024,
+			System: []anthropic.TextBlockParam{
+				{Text: schemaDoc},
 			},
-			Temperature: 0,
+			Messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock(question)),
+			},
 		},
 	)
 	if err != nil {
 		return "", err
 	}
 
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("no choices from OpenAI")
+	if len(msg.Content) == 0 {
+		return "", fmt.Errorf("no response from Anthropic")
 	}
 
-	txt := strings.TrimSpace(resp.Choices[0].Message.Content)
+	txt := strings.TrimSpace(msg.Content[0].AsText().Text)
 	txt = strings.ReplaceAll(txt, "```sql", "")
 	txt = strings.ReplaceAll(txt, "```", "")
 	txt = strings.TrimSpace(txt)

@@ -231,9 +231,9 @@ func TestRunNLQ_AddsLimit(t *testing.T) {
 
 func TestGenerateSQL_WithKeyAndMock(t *testing.T) {
 	os.Setenv("NLQ_MOCK", "1")
-	os.Setenv("OPENAI_API_KEY", "fake")
+	os.Setenv("ANTHROPIC_API_KEY", "fake")
 	defer os.Unsetenv("NLQ_MOCK")
-	defer os.Unsetenv("OPENAI_API_KEY")
+	defer os.Unsetenv("ANTHROPIC_API_KEY")
 
 	sql, err := generateSQL(context.Background(), "Wie viele Kunden?")
 	if err != nil {

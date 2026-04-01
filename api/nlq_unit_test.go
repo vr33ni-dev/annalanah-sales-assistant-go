@@ -19,8 +19,8 @@ import (
 func resetCaches() {
 	sqlCache = NewSQLResultCache(5 * time.Minute)
 	questionCache = NewQuestionToSQLCache(30 * time.Minute)
-	openAIClient = nil
-	openAIClientAPIKey = ""
+	anthropicClient = nil
+	anthropicClientAPIKey = ""
 }
 
 func TestIsLikelySQLQuestion(t *testing.T) {
@@ -139,18 +139,18 @@ func TestGenerateSQL_MockMode_Aggregate(t *testing.T) {
 	}
 }
 
-func TestGetOpenAIClient_ReuseAndReplaceByAPIKey(t *testing.T) {
+func TestGetAnthropicClient_ReuseAndReplaceByAPIKey(t *testing.T) {
 	resetCaches()
 
-	clientA1 := getOpenAIClient("key-a")
-	clientA2 := getOpenAIClient("key-a")
+	clientA1 := getAnthropicClient("key-a")
+	clientA2 := getAnthropicClient("key-a")
 	if clientA1 != clientA2 {
-		t.Fatal("expected same OpenAI client instance for same API key")
+		t.Fatal("expected same Anthropic client instance for same API key")
 	}
 
-	clientB := getOpenAIClient("key-b")
+	clientB := getAnthropicClient("key-b")
 	if clientB == clientA1 {
-		t.Fatal("expected a new OpenAI client instance when API key changes")
+		t.Fatal("expected a new Anthropic client instance when API key changes")
 	}
 }
 
@@ -333,7 +333,7 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	originalGenerateSQL := nlqGenerateSQL
 	defer func() { nlqGenerateSQL = originalGenerateSQL }()
 	nlqGenerateSQL = func(ctx context.Context, question string) (string, error) {
-		return "", fmt.Errorf("openai unavailable")
+		return "", fmt.Errorf("anthropic unavailable")
 	}
 
 	h := &Handler{DB: nil}
@@ -353,7 +353,7 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
-	if resp.Error != "openai unavailable" {
+	if resp.Error != "anthropic unavailable" {
 		t.Fatalf("expected generation error in response, got %+v", resp)
 	}
 }
@@ -395,7 +395,7 @@ func TestRunNLQ_UsesSQLResultCacheFastPath(t *testing.T) {
 
 func TestGenerateSQL_OfflineFallback(t *testing.T) {
 	t.Setenv("NLQ_MOCK", "")
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	sql, err := generateSQL(context.Background(), "zeige mir zweitgespräch")
 	if err != nil {
@@ -410,7 +410,7 @@ func TestGenerateSQL_OfflineFallback(t *testing.T) {
 // covers if !isSelect(txt)
 func TestGenerateSQL_NonSelectRejected(t *testing.T) {
 	t.Setenv("NLQ_MOCK", "")
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	// simulate weird fallback
 	sql, err := generateSQL(context.Background(), "something random")
