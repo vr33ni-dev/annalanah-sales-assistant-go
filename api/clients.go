@@ -129,7 +129,13 @@ SELECT
   c.completed_at
 FROM clients c
 LEFT JOIN stages s ON s.id = c.source_stage_id
-LEFT JOIN sales_process sp ON sp.client_id = c.id
+LEFT JOIN sales_process sp ON sp.id = (
+	SELECT sp2.id
+	FROM sales_process sp2
+	WHERE sp2.client_id = c.id
+	ORDER BY sp2.id DESC
+	LIMIT 1
+)
 ORDER BY c.id
 `)
 	if err != nil {
@@ -184,7 +190,7 @@ ORDER BY c.id
 	}
 
 	// ------------------------------------------------------------
-	// 🔥 Batch load comments (fixes N+1 problem)
+	// Batch load comments (fixes N+1 problem)
 	// ------------------------------------------------------------
 	if len(clientIDs) > 0 {
 		commentRows, err := h.DB.QueryContext(ctx, `
@@ -241,8 +247,196 @@ ORDER BY c.id
 		clients = []ClientResponse{}
 	}
 
+	activeCount := 0
+	for _, c := range clients {
+		if c.Status == "active" {
+			activeCount++
+		}
+	}
+
+	log.Printf("ListClients: returning %d clients (active=%d)", len(clients), activeCount)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(clients)
+}
+
+// DEBUG: GET /api/debug/active-clients
+// Returns names and end dates of all active clients for reconciliation with import file
+func (h *Handler) DebugActiveClients(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	type ActiveClientDebug struct {
+		Name            string  `json:"name"`
+		Email           *string `json:"email,omitempty"`
+		ContractEndDate *string `json:"contract_end_date,omitempty"`
+	}
+
+	rows, err := h.DB.QueryContext(ctx, `
+SELECT 
+	c.name,
+	c.email,
+	MAX(ct.end_date)::text AS end_date
+FROM clients c
+LEFT JOIN contracts ct ON ct.client_id = c.id
+	AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
+GROUP BY c.id, c.name, c.email
+HAVING EXISTS (
+	SELECT 1
+	FROM contracts ct2
+	WHERE ct2.client_id = c.id
+	  AND (ct2.end_date IS NULL OR ct2.end_date >= CURRENT_DATE)
+)
+ORDER BY c.name ASC
+`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var activeClients []ActiveClientDebug
+	for rows.Next() {
+		var client ActiveClientDebug
+		var email sql.NullString
+		var endDate sql.NullString
+		if err := rows.Scan(&client.Name, &email, &endDate); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if email.Valid {
+			client.Email = &email.String
+		}
+		if endDate.Valid {
+			client.ContractEndDate = &endDate.String
+		}
+		activeClients = append(activeClients, client)
+	}
+
+	log.Printf("DebugActiveClients: found %d active clients", len(activeClients))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":   len(activeClients),
+		"clients": activeClients,
+	})
+}
+
+// DEBUG: GET /api/debug/expired-but-active
+// Returns clients with status='active' but all contracts expired (end_date < today)
+func (h *Handler) DebugExpiredButActive(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	type ExpiredClientDebug struct {
+		Name              string  `json:"name"`
+		Email             *string `json:"email,omitempty"`
+		LatestContractEnd *string `json:"latest_contract_end,omitempty"`
+	}
+
+	rows, err := h.DB.QueryContext(ctx, `
+SELECT 
+	c.id,
+	c.name,
+	c.email,
+	MAX(ct.end_date)::text AS latest_end_date
+FROM clients c
+LEFT JOIN contracts ct ON ct.client_id = c.id
+WHERE c.status = 'active'
+GROUP BY c.id, c.name, c.email
+HAVING (
+	SELECT COUNT(1) FROM contracts ct2
+	WHERE ct2.client_id = c.id
+	  AND (ct2.end_date IS NULL OR ct2.end_date >= CURRENT_DATE)
+) = 0
+ORDER BY c.name ASC
+`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var expiredClients []ExpiredClientDebug
+	for rows.Next() {
+		var id int
+		var client ExpiredClientDebug
+		var email sql.NullString
+		var latestEnd sql.NullString
+		if err := rows.Scan(&id, &client.Name, &email, &latestEnd); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if email.Valid {
+			client.Email = &email.String
+		}
+		if latestEnd.Valid {
+			client.LatestContractEnd = &latestEnd.String
+		}
+		expiredClients = append(expiredClients, client)
+	}
+
+	log.Printf("DebugExpiredButActive: found %d expired-but-active clients", len(expiredClients))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":   len(expiredClients),
+		"clients": expiredClients,
+	})
+}
+
+// DEBUG: GET /api/debug/no-contracts
+// Returns clients with no contracts at all
+func (h *Handler) DebugNoContracts(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	type NoContractClientDebug struct {
+		ID     int     `json:"id"`
+		Name   string  `json:"name"`
+		Email  *string `json:"email,omitempty"`
+		Status string  `json:"status"`
+	}
+
+	rows, err := h.DB.QueryContext(ctx, `
+SELECT 
+	c.id,
+	c.name,
+	c.email,
+	c.status
+FROM clients c
+WHERE NOT EXISTS (
+	SELECT 1 FROM contracts ct WHERE ct.client_id = c.id
+)
+ORDER BY c.name ASC
+`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var noContractClients []NoContractClientDebug
+	for rows.Next() {
+		var client NoContractClientDebug
+		var email sql.NullString
+		if err := rows.Scan(&client.ID, &client.Name, &email, &client.Status); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if email.Valid {
+			client.Email = &email.String
+		}
+		noContractClients = append(noContractClients, client)
+	}
+
+	log.Printf("DebugNoContracts: found %d clients with no contracts", len(noContractClients))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"count":   len(noContractClients),
+		"clients": noContractClients,
+	})
 }
 
 // POST /api/clients

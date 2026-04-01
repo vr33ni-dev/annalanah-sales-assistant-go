@@ -267,6 +267,8 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		imported++
 	}
 
+	log.Printf("ImportContracts: imported=%d skipped=%d", imported, len(skipped))
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":   "import completed",
