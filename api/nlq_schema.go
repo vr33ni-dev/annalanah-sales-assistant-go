@@ -1,6 +1,6 @@
 package api
 
-// schemaDoc defines the instructions for the OpenAI SQL generator.
+// schemaDoc defines the instructions for the Anthropic SQL generator.
 var schemaDoc = `
 You are an expert SQL translator for a CRM & sales tracking system.
 

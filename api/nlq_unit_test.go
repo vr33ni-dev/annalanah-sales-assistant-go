@@ -14,13 +14,14 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
 
 func resetCaches() {
 	sqlCache = NewSQLResultCache(5 * time.Minute)
 	questionCache = NewQuestionToSQLCache(30 * time.Minute)
-	openAIClient = nil
-	openAIClientAPIKey = ""
+	anthropicClient = nil
+	anthropicClientAPIKey = ""
 }
 
 func TestIsLikelySQLQuestion(t *testing.T) {
@@ -139,18 +140,18 @@ func TestGenerateSQL_MockMode_Aggregate(t *testing.T) {
 	}
 }
 
-func TestGetOpenAIClient_ReuseAndReplaceByAPIKey(t *testing.T) {
+func TestGetAnthropicClient_ReuseAndReplaceByAPIKey(t *testing.T) {
 	resetCaches()
 
-	clientA1 := getOpenAIClient("key-a")
-	clientA2 := getOpenAIClient("key-a")
+	clientA1 := getAnthropicClient("key-a")
+	clientA2 := getAnthropicClient("key-a")
 	if clientA1 != clientA2 {
-		t.Fatal("expected same OpenAI client instance for same API key")
+		t.Fatal("expected same Anthropic client instance for same API key")
 	}
 
-	clientB := getOpenAIClient("key-b")
+	clientB := getAnthropicClient("key-b")
 	if clientB == clientA1 {
-		t.Fatal("expected a new OpenAI client instance when API key changes")
+		t.Fatal("expected a new Anthropic client instance when API key changes")
 	}
 }
 
@@ -333,7 +334,7 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	originalGenerateSQL := nlqGenerateSQL
 	defer func() { nlqGenerateSQL = originalGenerateSQL }()
 	nlqGenerateSQL = func(ctx context.Context, question string) (string, error) {
-		return "", fmt.Errorf("openai unavailable")
+		return "", fmt.Errorf("anthropic unavailable")
 	}
 
 	h := &Handler{DB: nil}
@@ -353,7 +354,7 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
-	if resp.Error != "openai unavailable" {
+	if resp.Error != "anthropic unavailable" {
 		t.Fatalf("expected generation error in response, got %+v", resp)
 	}
 }
@@ -395,7 +396,7 @@ func TestRunNLQ_UsesSQLResultCacheFastPath(t *testing.T) {
 
 func TestGenerateSQL_OfflineFallback(t *testing.T) {
 	t.Setenv("NLQ_MOCK", "")
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	sql, err := generateSQL(context.Background(), "zeige mir zweitgespräch")
 	if err != nil {
@@ -410,7 +411,7 @@ func TestGenerateSQL_OfflineFallback(t *testing.T) {
 // covers if !isSelect(txt)
 func TestGenerateSQL_NonSelectRejected(t *testing.T) {
 	t.Setenv("NLQ_MOCK", "")
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	// simulate weird fallback
 	sql, err := generateSQL(context.Background(), "something random")
@@ -570,5 +571,223 @@ func TestHasLimit_CaseInsensitive(t *testing.T) {
 	}
 	if !hasLimit("select * from clients LiMiT 5") {
 		t.Fatalf("case insensitive limit detection failed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// normalizeQuestionCacheKey
+// ---------------------------------------------------------------------------
+
+func TestNormalizeQuestionCacheKey(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"  Wie   viele   Kunden?  ", "wie viele kunden?"},
+		{"WIE VIELE KUNDEN?", "wie viele kunden?"},
+		{"wie viele kunden?", "wie viele kunden?"},
+		{"   ", ""},
+	}
+	for _, c := range cases {
+		got := normalizeQuestionCacheKey(c.input)
+		if got != c.want {
+			t.Fatalf("normalizeQuestionCacheKey(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isSafeSQL – additional forbidden patterns
+// ---------------------------------------------------------------------------
+
+func TestIsSafeSQL_AdditionalForbiddenPatterns(t *testing.T) {
+	cases := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1 /* comment */", false},         // block comment open
+		{"SELECT 1 */ FROM clients", false},       // block comment close
+		{"SELECT pg_terminate_backend(1)", false}, // pg_terminate
+		{"SELECT * FROM clients LIMIT 10", true},  // clean
+	}
+	for _, c := range cases {
+		got := isSafeSQL(c.sql)
+		if got != c.want {
+			t.Fatalf("isSafeSQL(%q) = %v, want %v", c.sql, got, c.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// generateSQL – uncovered mock mode branches
+// ---------------------------------------------------------------------------
+
+func TestGenerateSQL_MockMode_AktiveKunden(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "Zeige mir alle aktive Kunden")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "status = 'active'") {
+		t.Fatalf("expected active-clients SQL, got: %s", sql)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// generateSQL – offline fallback branches
+// ---------------------------------------------------------------------------
+
+func TestGenerateSQL_OfflineFallback_Stages(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	sql, err := generateSQL(context.Background(), "wie viele stages gibt es?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "stages") {
+		t.Fatalf("expected stages fallback SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_OfflineFallback_Default(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	sql, err := generateSQL(context.Background(), "etwas völlig anderes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isSelect(sql) {
+		t.Fatalf("expected SELECT fallback SQL, got: %s", sql)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getAnthropicClient – concurrent initialization with the same new key
+// ---------------------------------------------------------------------------
+
+func TestGetAnthropicClient_ConcurrentInit(t *testing.T) {
+	resetCaches()
+
+	const n = 10
+	results := make([]*anthropic.Client, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = getAnthropicClient("concurrent-key")
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 1; i < n; i++ {
+		if results[i] != results[0] {
+			t.Fatalf("expected all goroutines to receive the same client instance")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunNLQ – rows.Columns() error path
+// ---------------------------------------------------------------------------
+
+func TestRunNLQ_ColumnsError(t *testing.T) {
+	resetCaches()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+	question := "Zeige mir Kunden"
+	questionCache.Set(question, "SELECT id FROM clients")
+
+	// Return rows that produce a Columns() error by closing them immediately.
+	rows := sqlmock.NewRows([]string{}).CloseError(fmt.Errorf("columns error"))
+	mock.ExpectQuery("^SELECT id FROM clients LIMIT 100$").WillReturnRows(rows)
+
+	body := map[string]string{"question": question}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	var resp nlqResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
+	// Either an error is set, or we get an empty result — both are acceptable; we
+	// mainly care that the handler does not panic and returns 200.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunNLQ – successful DB execution populates SQL result cache
+// ---------------------------------------------------------------------------
+
+func TestRunNLQ_DBSuccessPopulatesSQLCache(t *testing.T) {
+	resetCaches()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+	question := "Zeige Kunden Status"
+	questionCache.Set(question, "SELECT id, name FROM clients")
+
+	mock.ExpectQuery("^SELECT id, name FROM clients LIMIT 100$").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "Jane Doe"))
+
+	body := map[string]string{"question": question}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(resp.Rows))
+	}
+	if resp.Rows[0]["name"] != "Jane Doe" {
+		t.Fatalf("expected Jane Doe, got %v", resp.Rows[0]["name"])
+	}
+
+	// Second request should be served from the SQL cache (no DB expectation set).
+	req2 := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w2 := httptest.NewRecorder()
+	h.RunNLQ(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("cache path: expected 200, got %d", w2.Code)
+	}
+	var resp2 nlqResponse
+	if err := json.NewDecoder(w2.Body).Decode(&resp2); err != nil {
+		t.Fatalf("cache decode: %v", err)
+	}
+	if len(resp2.Rows) != 1 || resp2.Rows[0]["name"] != "Jane Doe" {
+		t.Fatalf("expected cached row, got %+v", resp2)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet mock expectations: %v", err)
 	}
 }

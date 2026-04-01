@@ -103,7 +103,10 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Patch("/clients/{id}", h.UpdateClient)
 		pr.Delete("/clients/{id}", h.DeleteClient)
 
-		// Leads
+		// Debug endpoints
+		pr.Get("/debug/active-clients", h.DebugActiveClients)
+		pr.Get("/debug/expired-but-active", h.DebugExpiredButActive)
+		pr.Get("/debug/no-contracts", h.DebugNoContracts)
 		pr.Get("/leads", h.ListLeads)
 		pr.Post("/leads", h.CreateLead)
 		pr.Patch("/leads/{id}", h.UpdateLead)

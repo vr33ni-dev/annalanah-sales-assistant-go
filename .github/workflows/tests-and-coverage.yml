@@ -77,12 +77,6 @@ jobs:
         run: |
           docker info
 
-      - name: Install gocovmerge (optional, for merging)
-        run: |
-          go install github.com/wadey/gocovmerge@latest
-        env:
-          GOBIN: ${{ runner.tool_cache }}/go/bin
-
       - name: Download unit coverage artifact
         uses: actions/download-artifact@v4
         with:
@@ -97,13 +91,15 @@ jobs:
 
       - name: Merge unit + integration coverage
         run: |
-          # gocovmerge was installed into runner.tool_cache/go/bin per earlier step
-          GOCOVMERGE=${{ runner.tool_cache }}/go/bin/gocovmerge
+          # Merge by concatenating data lines under a single mode header.
+          # gocovmerge was dropped because it rejects overlapping-but-non-identical
+          # blocks produced by newer Go compilers. go tool cover handles them fine.
           UNIT=./artifacts/coverage-unit.out
           INTEG=coverage-integration.out
           if [ -f "$UNIT" ] && [ -f "$INTEG" ]; then
             echo "Merging $UNIT + $INTEG -> coverage-all.out"
-            $GOCOVMERGE "$UNIT" "$INTEG" > coverage-all.out
+            head -1 "$UNIT" > coverage-all.out
+            grep -hv "^mode:" "$UNIT" "$INTEG" >> coverage-all.out
           elif [ -f "$UNIT" ]; then
             echo "Using unit only -> coverage-all.out"
             cp "$UNIT" coverage-all.out
