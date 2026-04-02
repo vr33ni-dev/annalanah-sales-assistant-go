@@ -9,6 +9,7 @@ class GoImportAdapter:
         response = requests.post(
             self.endpoint_url,
             json=records,
+            headers={"X-Migration-Key": "ALLOW_MIGRATION"},
             timeout=30,
         )
         response.raise_for_status()
