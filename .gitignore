@@ -59,7 +59,8 @@ tools/importsales/*
 tools/__pycache__/*
 *.csv
 Cashflow.json
- 
+tools/README_internal.md
+
 # local make overrides (ignored)
 Makefile
 
