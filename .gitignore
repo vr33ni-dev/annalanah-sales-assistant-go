@@ -56,8 +56,10 @@ tools/importcashflow/*
 tools/importcsv/*
 tools/extract_sales_names/*
 tools/importsales/*
+tools/__pycache__/*
 *.csv
-
+Cashflow.json
+ 
 # local make overrides (ignored)
 Makefile
 
