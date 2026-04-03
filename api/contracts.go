@@ -322,7 +322,8 @@ LEFT JOIN upcoming u ON u.contract_id = c.id`
 	if !includeExpired {
 		query += `
 WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
-  AND c.id NOT IN (SELECT previous_contract_id FROM contract_upsells WHERE previous_contract_id IS NOT NULL)`
+  AND cl.status = 'active'
+  AND c.id NOT IN (SELECT previous_contract_id FROM contract_upsells WHERE previous_contract_id IS NOT NULL AND upsell_result = 'verlaengerung')`
 	}
 
 	query += `

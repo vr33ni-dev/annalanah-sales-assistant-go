@@ -101,6 +101,7 @@ SELECT
   c.source,
   COALESCE(s.name, '') AS source_stage_name,
 	CASE
+		WHEN c.status = 'inactive' THEN 'inactive'
 		WHEN EXISTS (
 			SELECT 1
 			FROM contracts ct

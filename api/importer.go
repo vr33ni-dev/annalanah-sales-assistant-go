@@ -64,11 +64,6 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 
 	for _, c := range payload {
 
-		if c.IsFormer {
-			skipped = append(skipped, c.Name)
-			continue
-		}
-
 		tx, err := h.DB.Begin()
 		if err != nil {
 			http.Error(w, err.Error(), 500)
