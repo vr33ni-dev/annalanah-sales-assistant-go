@@ -10,7 +10,7 @@ settings_months AS (
 ),
 settings_avg_rev AS (
   INSERT INTO app_settings (key, value_numeric)
-  VALUES ('avg_revenue_per_contract', 600)
+  VALUES ('avg_revenue_per_contract', 300)
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
