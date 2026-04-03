@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,8 +18,8 @@ type ContractImport struct {
 	ContractEnd   string                 `json:"contract_end"`
 	Cashflows     map[string]interface{} `json:"cashflows"`
 	IsFormer      bool                   `json:"is_former"`
-	//CLV           float64                `json:"clv"`
-
+	IsRenewalRaw  string                 `json:"is_renewal_raw"`
+	CLV           string                 `json:"clv"`
 }
 
 func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +63,11 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 	skipped := []string{}
 
 	for _, c := range payload {
+
+		if c.IsFormer {
+			skipped = append(skipped, c.Name)
+			continue
+		}
 
 		tx, err := h.DB.Begin()
 		if err != nil {
@@ -172,20 +179,19 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// -------------------------
-		// Derive revenue + due dates
+		// Derive revenue from CLV (format: "€7.20" = 7200)
 		// -------------------------
-		var dueDates []time.Time
-		var revenueTotal float64
+		revenueTotal := parseCLV(c.CLV)
 
+		// Still collect due dates for payment frequency detection
+		var dueDates []time.Time
 		for ym, value := range c.Cashflows {
 			date, err := time.Parse("2006-01", ym)
 			if err != nil {
 				continue
 			}
-
 			if v, ok := value.(float64); ok && v > 0 {
 				dueDates = append(dueDates, date)
-				revenueTotal += v
 			}
 		}
 
@@ -200,63 +206,135 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		// -------------------------
 		// Detect payment frequency
 		// -------------------------
-		paymentFreq := "monthly"
+		paymentFreq := detectPaymentFreq(c.Cashflows)
 
-		if len(dueDates) == 1 {
-			paymentFreq = "one-time"
-		} else if len(dueDates) >= 2 {
-			sort.Slice(dueDates, func(i, j int) bool {
-				return dueDates[i].Before(dueDates[j])
+		// -------------------------
+		// Renewal: split into 6-month periods with upsells
+		// -------------------------
+		isRenewal := strings.EqualFold(c.IsRenewalRaw, "ja")
+		numPeriods := durationMonths / 6
+
+		if isRenewal && numPeriods >= 2 {
+			// Split the contract into 6-month periods.
+			// Period 0 = original contract; periods 1..n-1 = upsells (verlaengerung).
+			prevContractID := 0
+			// Split CLV evenly across periods
+			periodRevenueSplit := revenueTotal / float64(numPeriods)
+
+			for i := 0; i < numPeriods; i++ {
+				periodStart := start.AddDate(0, i*6, 0)
+				periodEnd := start.AddDate(0, (i+1)*6, 0)
+				if i == numPeriods-1 {
+					periodEnd = end
+				}
+
+				// Filter cashflows that fall within this period [periodStart, periodEnd)
+				periodCashflows := map[string]interface{}{}
+				for ym, val := range c.Cashflows {
+					date, err := time.Parse("2006-01", ym)
+					if err != nil {
+						continue
+					}
+					if !date.Before(periodStart) && date.Before(periodEnd) {
+						periodCashflows[ym] = val
+					}
+				}
+
+				periodDurationMonths := 6
+				if i == numPeriods-1 {
+					periodDurationMonths = (periodEnd.Year()-periodStart.Year())*12 + int(periodEnd.Month()-periodStart.Month())
+					if periodDurationMonths <= 0 {
+						periodDurationMonths = 6
+					}
+				}
+
+				periodPaymentFreq := detectPaymentFreq(periodCashflows)
+				contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
+					ClientID:          clientID,
+					SalesProcessID:    &salesProcessID,
+					StartDate:         periodStart,
+					EndDate:           &periodEnd,
+					DurationMonths:    periodDurationMonths,
+					RevenueTotal:      periodRevenueSplit,
+					PaymentFreq:       periodPaymentFreq,
+					CreatedAtOverride: &createdAt,
+					GenerateSchedule:  false,
+				})
+				if err != nil {
+					tx.Rollback()
+					if c.IsFormer {
+						log.Printf("Skipping former client %s (contract insert failed period %d)", c.Name, i)
+						skipped = append(skipped, c.Name)
+						goto nextRecord
+					}
+					http.Error(w, err.Error(), 500)
+					return
+				}
+
+				if err := insertImportedCashflowEntriesTx(tx, contractID, periodCashflows); err != nil {
+					tx.Rollback()
+					http.Error(w, err.Error(), 500)
+					return
+				}
+
+				if i > 0 {
+					// Link previous period to this one via an upsell record
+					if _, err := tx.Exec(`
+						INSERT INTO contract_upsells
+							(sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
+						VALUES ($1, $2, $3, 'verlaengerung', $4, $5, $6)
+					`, salesProcessID, clientID, periodStart, periodRevenueSplit, prevContractID, contractID); err != nil {
+						tx.Rollback()
+						http.Error(w, "upsell insert failed: "+err.Error(), 500)
+						return
+					}
+				}
+
+				prevContractID = contractID
+			}
+		} else {
+			// Single contract (not a renewal, or duration < 12 months)
+			contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
+				ClientID:          clientID,
+				SalesProcessID:    &salesProcessID,
+				StartDate:         start,
+				EndDate:           &end,
+				DurationMonths:    durationMonths,
+				RevenueTotal:      revenueTotal,
+				PaymentFreq:       paymentFreq,
+				CreatedAtOverride: &createdAt,
+				GenerateSchedule:  false,
 			})
 
-			diff := (dueDates[1].Year()-dueDates[0].Year())*12 +
-				int(dueDates[1].Month()-dueDates[0].Month())
-
-			switch {
-			case diff >= 6:
-				paymentFreq = "bi-yearly"
-			case diff >= 3:
-				paymentFreq = "quarterly"
-			case diff >= 2:
-				paymentFreq = "bi-monthly"
-			default:
-				paymentFreq = "monthly"
+			if err != nil {
+				tx.Rollback()
+				if c.IsFormer {
+					log.Printf("Skipping former client %s (contract insert failed)", c.Name)
+					skipped = append(skipped, c.Name)
+					continue
+				}
+				http.Error(w, err.Error(), 500)
+				return
 			}
-		}
 
-		// -------------------------
-		// Insert Contract
-		// -------------------------
-		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
-			ClientID:          clientID,
-			SalesProcessID:    &salesProcessID,
-			StartDate:         start,
-			EndDate:           &end,
-			DurationMonths:    durationMonths,
-			RevenueTotal:      revenueTotal,
-			PaymentFreq:       paymentFreq,
-			CreatedAtOverride: &createdAt,
-			GenerateSchedule:  false,
-		})
-
-		if err != nil {
-			tx.Rollback()
-			if c.IsFormer {
-				log.Printf("Skipping former client %s (contract insert failed)", c.Name)
-				skipped = append(skipped, c.Name)
-				continue
+			if err := insertImportedCashflowEntriesTx(tx, contractID, c.Cashflows); err != nil {
+				tx.Rollback()
+				http.Error(w, err.Error(), 500)
+				return
 			}
-			http.Error(w, err.Error(), 500)
-			return
-		}
 
-		// -------------------------
-		// Insert Cashflows + Comments
-		// -------------------------
-		if err := insertImportedCashflowEntriesTx(tx, contractID, c.Cashflows); err != nil {
-			tx.Rollback()
-			http.Error(w, err.Error(), 500)
-			return
+			// Non-renewal: record a keine_verlaengerung upsell so it appears in analytics
+			if !isRenewal {
+				if _, err := tx.Exec(`
+					INSERT INTO contract_upsells
+						(sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
+					VALUES ($1, $2, $3, 'keine_verlaengerung', $4, $5, NULL)
+				`, salesProcessID, clientID, end, revenueTotal, contractID); err != nil {
+					tx.Rollback()
+					http.Error(w, "keine_verlaengerung insert failed: "+err.Error(), 500)
+					return
+				}
+			}
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -265,6 +343,10 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		imported++
+		continue
+
+	nextRecord:
+		// jumped here when a former-client record was skipped mid-loop
 	}
 
 	log.Printf("ImportContracts: imported=%d skipped=%d", imported, len(skipped))
@@ -291,4 +373,61 @@ func parseISO(value string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("invalid date: %s", value)
+}
+
+func detectPaymentFreq(cashflows map[string]interface{}) string {
+	var dueDates []time.Time
+	for ym, value := range cashflows {
+		date, err := time.Parse("2006-01", ym)
+		if err != nil {
+			continue
+		}
+		if v, ok := value.(float64); ok && v > 0 {
+			dueDates = append(dueDates, date)
+		}
+	}
+
+	if len(dueDates) == 0 {
+		return "monthly"
+	}
+	if len(dueDates) == 1 {
+		return "one-time"
+	}
+
+	sort.Slice(dueDates, func(i, j int) bool {
+		return dueDates[i].Before(dueDates[j])
+	})
+
+	diff := (dueDates[1].Year()-dueDates[0].Year())*12 +
+		int(dueDates[1].Month()-dueDates[0].Month())
+
+	switch {
+	case diff >= 6:
+		return "bi-yearly"
+	case diff >= 3:
+		return "quarterly"
+	case diff >= 2:
+		return "bi-monthly"
+	default:
+		return "monthly"
+	}
+}
+
+// parseCLV converts the CLV string (e.g. "€7.20") to a float64 in EUR.
+// Values < 100 are stored in kEUR and are multiplied by 1000 ("€7.20" → 7200).
+// Values >= 100 are already in EUR and are used as-is ("€900.00" → 900).
+func parseCLV(raw string) float64 {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, "€", "")
+	s = strings.TrimSpace(s)
+	// European decimal: replace comma with dot
+	s = strings.ReplaceAll(s, ",", ".")
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	if v < 100 {
+		return v * 1000
+	}
+	return v
 }

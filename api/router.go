@@ -117,11 +117,12 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/sales", h.ListSalesProcesses)
 		pr.Patch("/sales/{id}", h.UpdateSalesProcess)
 		pr.Post("/sales/start", h.StartSalesProcess)
-		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
-		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 
 		pr.Get("/sales/upsells/list", h.ListUpsellCategories) // all upsells (3 categories)
 		pr.Get("/sales/upsells/analytics", h.GetUpsellAnalytics)
+
+		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
+		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 
 		// Contracts
 		pr.Get("/contracts", h.ListContracts)

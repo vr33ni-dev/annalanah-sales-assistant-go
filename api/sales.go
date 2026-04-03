@@ -1136,17 +1136,17 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stats struct {
-		VerlaengerungCount      int      `json:"verlangerung_count"`
-		KeineVerlaengerungCount int      `json:"keine_verlangerung_count"`
+		VerlaengerungCount      int      `json:"verlaengerung_count"`
+		KeineVerlaengerungCount int      `json:"keine_verlaengerung_count"`
 		ScheduledCount          int      `json:"scheduled_count"`
-		Verlaengerungsquote     *float64 `json:"verlangerungsquote"`
+		Verlaengerungsquote     *float64 `json:"verlaengerungsquote"`
 		UmsatzSum               float64  `json:"umsatz_sum"`
 	}
 
 	query := `
         SELECT
-			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlangerung_count,
-			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlangerung_count,
+			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlaengerung_count,
+			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlaengerung_count,
 			COUNT(*) FILTER (WHERE upsell_result IS NULL)                  AS scheduled_count,
 
 			ROUND(
@@ -1156,7 +1156,7 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 					0
 				),
 				1
-			) AS verlangerungsquote,
+			) AS verlaengerungsquote,
 
 			COALESCE(SUM(upsell_revenue), 0) AS umsatz_sum
 		FROM contract_upsells cu
@@ -1176,6 +1176,53 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Monthly renewal revenue breakdown
+	renewalWhere := append(where, "cu.upsell_result = 'verlaengerung'", "cu.upsell_date IS NOT NULL")
+	renewalWhereSQL := "WHERE " + strings.Join(renewalWhere, " AND ")
+
+	monthlyQuery := `
+		SELECT
+			TO_CHAR(cu.upsell_date, 'YYYY-MM') AS month,
+			COALESCE(SUM(cu.upsell_revenue), 0) AS revenue
+		FROM contract_upsells cu
+		` + renewalWhereSQL + `
+		GROUP BY month
+		ORDER BY month
+	`
+
+	type monthlyRevenue struct {
+		Month   string  `json:"month"`
+		Revenue float64 `json:"revenue"`
+	}
+
+	rows, err := h.DB.Query(monthlyQuery, args...)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	revenueByMonth := []monthlyRevenue{}
+	for rows.Next() {
+		var row monthlyRevenue
+		if err := rows.Scan(&row.Month, &row.Revenue); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		revenueByMonth = append(revenueByMonth, row)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	json.NewEncoder(w).Encode(map[string]any{
+		"verlaengerung_count":       stats.VerlaengerungCount,
+		"keine_verlaengerung_count": stats.KeineVerlaengerungCount,
+		"scheduled_count":           stats.ScheduledCount,
+		"verlaengerungsquote":       stats.Verlaengerungsquote,
+		"umsatz_sum":                stats.UmsatzSum,
+		"revenue_by_month":          revenueByMonth,
+	})
 }

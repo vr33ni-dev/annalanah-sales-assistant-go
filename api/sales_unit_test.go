@@ -232,7 +232,7 @@ func TestGetUpsellAnalytics_DateRangeFiltersQuery(t *testing.T) {
 	endT, _ := time.Parse("2006-01-02", end)
 
 	// query row result columns correspond to Scan order in handler
-	result := sqlmock.NewRows([]string{"verlangerung_count", "keine_verlangerung_count", "scheduled_count", "verlangerungsquote", "umsatz_sum"}).
+	result := sqlmock.NewRows([]string{"verlaengerung_count", "keine_verlaengerung_count", "scheduled_count", "verlaengerungsquote", "umsatz_sum"}).
 		AddRow(2, 1, 3, 66.7, 1000.0)
 
 	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(result)
@@ -249,8 +249,8 @@ func TestGetUpsellAnalytics_DateRangeFiltersQuery(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body["verlangerung_count"] != float64(2) {
-		t.Fatalf("expected verlangerung_count=2, got %#v", body["verlangerung_count"])
+	if body["verlaengerung_count"] != float64(2) {
+		t.Fatalf("expected verlaengerung_count=2, got %#v", body["verlaengerung_count"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
