@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type CashflowRow struct {
@@ -364,6 +366,45 @@ ORDER BY month;
 
 func (h *Handler) GetNumericSettingForTest(key string, def float64) float64 {
 	return h.getNumericSetting(key, def)
+}
+
+// PATCH /api/cashflow/entries/{id}/status
+func (h *Handler) UpdateCashflowEntryStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	switch body.Status {
+	case "confirmed", "overdue":
+	default:
+		http.Error(w, "invalid status: must be one of confirmed, overdue", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.DB.Exec(
+		`UPDATE cashflow_entries SET status = $1, updated_at = NOW() WHERE id = $2`,
+		body.Status, id,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/cashflow/dashboard

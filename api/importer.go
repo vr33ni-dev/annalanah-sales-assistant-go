@@ -209,12 +209,39 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		isRenewal := strings.EqualFold(c.IsRenewalRaw, "ja")
 		numPeriods := durationMonths / 6
 
+		// If the last period has started but contains no confirmed payments (only "?"),
+		// absorb it into the previous period so the visible contract always has real history.
+		if isRenewal && numPeriods >= 2 {
+			for numPeriods > 2 {
+				lastPeriodStart := start.AddDate(0, (numPeriods-1)*6, 0)
+				// Only absorb periods that have already started
+				if !lastPeriodStart.Before(time.Now()) {
+					break
+				}
+				lastPeriodStartMonth := time.Date(lastPeriodStart.Year(), lastPeriodStart.Month(), 1, 0, 0, 0, 0, time.UTC)
+				hasPayment := false
+				for ym, val := range c.Cashflows {
+					t, err := time.Parse("2006-01", ym)
+					if err != nil {
+						continue
+					}
+					if v, ok := val.(float64); ok && v > 0 && !t.Before(lastPeriodStartMonth) {
+						hasPayment = true
+						break
+					}
+				}
+				if !hasPayment {
+					numPeriods--
+				} else {
+					break
+				}
+			}
+		}
+
 		if isRenewal && numPeriods >= 2 {
 			// Split the contract into 6-month periods.
 			// Period 0 = original contract; periods 1..n-1 = upsells (verlaengerung).
 			prevContractID := 0
-			// Split CLV evenly across periods
-			periodRevenueSplit := revenueTotal / float64(numPeriods)
 
 			for i := 0; i < numPeriods; i++ {
 				periodStart := start.AddDate(0, i*6, 0)
@@ -224,13 +251,19 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Filter cashflows that fall within this period [periodStart, periodEnd)
+				// Use month-level comparison: cashflows are month-granular (first of month),
+				// but period boundaries may fall mid-month (e.g. Sep 3). Truncating to
+				// first-of-month ensures "2025-09" goes to the period whose start month is Sep,
+				// not the one that ends on Sep 3.
+				periodStartMonth := time.Date(periodStart.Year(), periodStart.Month(), 1, 0, 0, 0, 0, time.UTC)
+				periodEndMonth := time.Date(periodEnd.Year(), periodEnd.Month(), 1, 0, 0, 0, 0, time.UTC)
 				periodCashflows := map[string]interface{}{}
 				for ym, val := range c.Cashflows {
 					date, err := time.Parse("2006-01", ym)
 					if err != nil {
 						continue
 					}
-					if !date.Before(periodStart) && date.Before(periodEnd) {
+					if !date.Before(periodStartMonth) && date.Before(periodEndMonth) {
 						periodCashflows[ym] = val
 					}
 				}
@@ -243,6 +276,22 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+				// Derive per-period revenue from actual cashflow values (kEUR scaling)
+				periodRevenue := 0.0
+				for _, val := range periodCashflows {
+					if v, ok := val.(float64); ok && v > 0 {
+						if v < 100 {
+							periodRevenue += v * 1000
+						} else {
+							periodRevenue += v
+						}
+					}
+				}
+				// No confirmed cashflows (e.g. future "?" period): fall back to CLV/numPeriods
+				if periodRevenue == 0 {
+					periodRevenue = revenueTotal / float64(numPeriods)
+				}
+
 				periodPaymentFreq := detectPaymentFreq(periodCashflows)
 				contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
 					ClientID:          clientID,
@@ -250,7 +299,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					StartDate:         periodStart,
 					EndDate:           &periodEnd,
 					DurationMonths:    periodDurationMonths,
-					RevenueTotal:      periodRevenueSplit,
+					RevenueTotal:      periodRevenue,
 					PaymentFreq:       periodPaymentFreq,
 					CreatedAtOverride: &createdAt,
 					GenerateSchedule:  false,
@@ -278,7 +327,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 						INSERT INTO contract_upsells
 							(sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
 						VALUES ($1, $2, $3, 'verlaengerung', $4, $5, $6)
-					`, salesProcessID, clientID, periodStart, periodRevenueSplit, prevContractID, contractID); err != nil {
+					`, salesProcessID, clientID, periodStart, periodRevenue, prevContractID, contractID); err != nil {
 						tx.Rollback()
 						http.Error(w, "upsell insert failed: "+err.Error(), 500)
 						return
@@ -318,13 +367,14 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Non-renewal: record a keine_verlaengerung upsell so it appears in analytics
+			// Non-renewal: record a keine_verlaengerung upsell so it appears in analytics.
+			// upsell_date is NULL because the importer doesn't provide a renewal date.
 			if !isRenewal {
 				if _, err := tx.Exec(`
 					INSERT INTO contract_upsells
 						(sales_process_id, client_id, upsell_date, upsell_result, upsell_revenue, previous_contract_id, new_contract_id)
-					VALUES ($1, $2, $3, 'keine_verlaengerung', $4, $5, NULL)
-				`, salesProcessID, clientID, end, revenueTotal, contractID); err != nil {
+					VALUES ($1, $2, NULL, 'keine_verlaengerung', $3, $4, NULL)
+				`, salesProcessID, clientID, revenueTotal, contractID); err != nil {
 					tx.Rollback()
 					http.Error(w, "keine_verlaengerung insert failed: "+err.Error(), 500)
 					return

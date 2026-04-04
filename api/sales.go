@@ -738,12 +738,12 @@ func scanContractUpsell(scanner rowScanner, u *ContractUpsell) error {
 }
 
 type CreateUpsellRequest struct {
-	UpsellDate             *string  `json:"upsell_date,omitempty"`
-	UpsellResult           *string  `json:"upsell_result,omitempty"`
-	UpsellRevenue          *float64 `json:"upsell_revenue,omitempty"`
-	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
-	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
-	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
+	UpsellDate             json.RawMessage `json:"upsell_date"`
+	UpsellResult           *string         `json:"upsell_result,omitempty"`
+	UpsellRevenue          *float64        `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *string         `json:"contract_start_date,omitempty"`
+	ContractDurationMonths *int            `json:"contract_duration_months,omitempty"`
+	ContractFrequency      *string         `json:"contract_frequency,omitempty"`
 }
 
 func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Request) {
@@ -915,6 +915,19 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve upsell_date: nil RawMessage = field absent (don't touch on UPDATE);
+	// RawMessage "null" = explicit clear; otherwise parse as date string.
+	var resolvedUpsellDate *string
+	upsellDateProvided := req.UpsellDate != nil
+	if upsellDateProvided && string(req.UpsellDate) != "null" {
+		var d string
+		if err := json.Unmarshal(req.UpsellDate, &d); err != nil {
+			http.Error(w, "invalid upsell_date", http.StatusBadRequest)
+			return
+		}
+		resolvedUpsellDate = &d
+	}
+
 	// -----------------------
 	// VALIDATION
 	// -----------------------
@@ -1055,9 +1068,9 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
         `,
 			salesID,
 			clientID,
-			req.UpsellDate,    // may be NULL
-			req.UpsellResult,  // may be NULL
-			req.UpsellRevenue, // may be NULL
+			resolvedUpsellDate, // nil if absent or explicit null
+			req.UpsellResult,
+			req.UpsellRevenue,
 			prevContractID,
 			newContractID,
 		).Scan(&upsellID)
@@ -1066,15 +1079,16 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow(`
             UPDATE contract_upsells
             SET
-                upsell_date   = COALESCE($2, upsell_date),
-                upsell_result = COALESCE($3, upsell_result),
-                upsell_revenue = COALESCE($4, upsell_revenue),
-                new_contract_id = COALESCE($5, new_contract_id)
+                upsell_date     = CASE WHEN $2 THEN $3 ELSE upsell_date END,
+                upsell_result   = COALESCE($4, upsell_result),
+                upsell_revenue  = COALESCE($5, upsell_revenue),
+                new_contract_id = COALESCE($6, new_contract_id)
             WHERE id = $1
             RETURNING id
         `,
 			*existingUpsellID,
-			req.UpsellDate,
+			upsellDateProvided, // true = apply $3; false = keep existing
+			resolvedUpsellDate, // nil clears the date, string sets it
 			req.UpsellResult,
 			req.UpsellRevenue,
 			newContractID,

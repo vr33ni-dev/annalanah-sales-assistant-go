@@ -45,7 +45,7 @@ func insertCashflowEntriesTx(
 	stmt := `
 		INSERT INTO cashflow_entries 
 			(contract_id, due_date, amount, status) 
-		VALUES ($1, $2::date, $3, 'pending')
+		VALUES ($1, $2::date, $3, 'confirmed')
 		ON CONFLICT (contract_id, due_date) DO NOTHING
 	`
 
@@ -140,10 +140,14 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			if v == 0 {
 				continue
 			}
+			// kEUR scaling: values < 100 are in kEUR (e.g. 1.8 = €1800)
+			if v < 100 {
+				v *= 1000
+			}
 			if _, err := tx.Exec(`
 				INSERT INTO cashflow_entries
 					(contract_id, due_date, amount, status)
-				VALUES ($1, $2::date, $3, 'pending')
+				VALUES ($1, $2::date, $3, 'confirmed')
 			`, contractID, date, v); err != nil {
 				return err
 			}
@@ -160,10 +164,14 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			numStr := numRe.FindString(trimmed)
 			if numStr != "" {
 				if n, err := strconv.ParseFloat(numStr, 64); err == nil && n != 0 {
+					// kEUR scaling: values < 100 are in kEUR
+					if n < 100 {
+						n *= 1000
+					}
 					if _, err := tx.Exec(`
 						INSERT INTO cashflow_entries
 							(contract_id, due_date, amount, status)
-						VALUES ($1, $2::date, $3, 'pending')
+					VALUES ($1, $2::date, $3, 'confirmed')
 					`, contractID, date, n); err != nil {
 						return err
 					}

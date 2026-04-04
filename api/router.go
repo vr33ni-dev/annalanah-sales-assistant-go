@@ -151,6 +151,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/cashflow/forecast", h.CashflowForecast)
 		pr.Get("/cashflow/metrics", h.CashflowMetrics)
 		pr.Get("/cashflow/entries", h.ListCashflowEntries)
+		pr.Patch("/cashflow/entries/{id}/status", h.UpdateCashflowEntryStatus)
 
 		// Exports
 		pr.Get("/exports/raw/clients.csv", h.ExportRawClientsCSV)
