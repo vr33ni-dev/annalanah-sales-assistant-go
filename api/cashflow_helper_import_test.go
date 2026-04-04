@@ -27,7 +27,7 @@ func TestInsertImportedCashflowEntriesTx_FloatValue_InsertsCashflowEntry(t *test
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
-	err = insertImportedCashflowEntriesTx(tx, 7, map[string]interface{}{
+	err = insertImportedCashflowEntriesTx(tx, 7, 1, map[string]any{
 		"2025-03": 250.0,
 	})
 	if err != nil {
@@ -61,11 +61,11 @@ func TestInsertImportedCashflowEntriesTx_MixedString_InsertsCashflowAndComment(t
 		WithArgs(9, dueDate, 190.0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO comments").
-		WithArgs(9, "2025-04: ? 190").
+		WithArgs(3, "2025-04: ? 190").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
-	err = insertImportedCashflowEntriesTx(tx, 9, map[string]interface{}{
+	err = insertImportedCashflowEntriesTx(tx, 9, 3, map[string]any{
 		"2025-04": "? 190",
 	})
 	if err != nil {
@@ -95,11 +95,11 @@ func TestInsertImportedCashflowEntriesTx_TextOnly_InsertsCommentOnly(t *testing.
 	}
 
 	mock.ExpectExec("INSERT INTO comments").
-		WithArgs(11, "2025-05: delayed invoice").
+		WithArgs(5, "2025-05: delayed invoice").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
-	err = insertImportedCashflowEntriesTx(tx, 11, map[string]interface{}{
+	err = insertImportedCashflowEntriesTx(tx, 11, 5, map[string]any{
 		"2025-05": "delayed invoice",
 	})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestInsertImportedCashflowEntriesTx_PlaceholderAndInvalidDate_NoWrites(t *t
 	}
 	mock.ExpectRollback()
 
-	err = insertImportedCashflowEntriesTx(tx, 12, map[string]interface{}{
+	err = insertImportedCashflowEntriesTx(tx, 12, 6, map[string]any{
 		"invalid": "text",
 		"2025-06": "-",
 	})
@@ -161,11 +161,11 @@ func TestInsertImportedCashflowEntriesTx_ReturnsErrorOnCashflowInsertFailure(t *
 
 	dueDate, _ := time.Parse("2006-01", "2025-07")
 	mock.ExpectExec("INSERT INTO cashflow_entries").
-		WithArgs(21, dueDate, 99.0).
+		WithArgs(21, dueDate, 99000.0).
 		WillReturnError(errors.New("insert failed"))
 	mock.ExpectRollback()
 
-	err = insertImportedCashflowEntriesTx(tx, 21, map[string]interface{}{
+	err = insertImportedCashflowEntriesTx(tx, 21, 8, map[string]any{
 		"2025-07": 99.0,
 	})
 	if err == nil {

@@ -278,7 +278,34 @@ func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 
-WITH overdue AS (
+WITH RECURSIVE upsell_chain(terminal_id, node_id) AS (
+	-- Anchor: contracts NOT replaced by any renewal (they are the active/terminal end of a chain)
+	SELECT c.id, c.id
+	FROM contracts c
+	WHERE c.id NOT IN (
+		SELECT previous_contract_id FROM contract_upsells
+		WHERE previous_contract_id IS NOT NULL AND upsell_result = 'verlaengerung'
+	)
+	UNION ALL
+	-- Walk backwards: find the predecessor of each node via upsell chain
+	SELECT uc.terminal_id, cu.previous_contract_id
+	FROM upsell_chain uc
+	JOIN contract_upsells cu
+		ON cu.new_contract_id = uc.node_id
+		AND cu.upsell_result = 'verlaengerung'
+		AND cu.previous_contract_id IS NOT NULL
+),
+chain_stats AS (
+	SELECT
+		uc.terminal_id,
+		SUM(c2.revenue_total)   AS total_revenue,
+		SUM(c2.duration_months) AS total_duration_months,
+		MIN(c2.start_date)      AS chain_start_date
+	FROM upsell_chain uc
+	JOIN contracts c2 ON c2.id = uc.node_id
+	GROUP BY uc.terminal_id
+),
+overdue AS (
 	SELECT
 		contract_id,
 		MIN(due_date)::date AS overdue_due_date
@@ -299,15 +326,15 @@ SELECT
 	c.client_id,
 	cl.name AS client_name,
 	c.sales_process_id,
-	c.start_date,
+	cs.chain_start_date AS start_date,
 	c.end_date,
 	c.created_at,
-	c.duration_months,
-	c.revenue_total,
+	cs.total_duration_months AS duration_months,
+	cs.total_revenue AS revenue_total,
 	c.payment_frequency,
-	CASE 
-		WHEN c.duration_months > 0
-			THEN (c.revenue_total / c.duration_months)
+	CASE
+		WHEN cs.total_duration_months > 0
+			THEN (cs.total_revenue / cs.total_duration_months)
 		ELSE 0
 	END AS base_monthly_amount,
 	COALESCE(
@@ -316,14 +343,18 @@ SELECT
 	) AS next_due_date
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
+JOIN chain_stats cs ON cs.terminal_id = c.id
 LEFT JOIN overdue  o ON o.contract_id = c.id
 LEFT JOIN upcoming u ON u.contract_id = c.id`
 
 	if !includeExpired {
 		query += `
 WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
-  AND cl.status = 'active'
-  AND c.id NOT IN (SELECT previous_contract_id FROM contract_upsells WHERE previous_contract_id IS NOT NULL AND upsell_result = 'verlaengerung')`
+  AND cl.status = 'active'`
+	} else {
+		query += `
+WHERE cl.status = 'inactive'
+   OR c.end_date < CURRENT_DATE`
 	}
 
 	query += `

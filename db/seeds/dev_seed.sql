@@ -387,7 +387,7 @@ SELECT
     WHEN sr.payment_frequency = 'one-time' THEN sr.revenue_total
     ELSE ROUND((sr.revenue_total::numeric / NULLIF(sr.periods, 0)), 2)
   END AS amount,
-  'pending'
+  'confirmed'
 FROM (
   SELECT
     c.id AS contract_id,

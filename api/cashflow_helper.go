@@ -126,7 +126,7 @@ func addMonthClamped(t time.Time, months int) time.Time {
 // insertImportedCashflowEntriesTx inserts imported contract cashflow rows and notes as comments.
 // It preserves importer semantics: numeric values become cashflow entries, mixed/non-numeric
 // strings become comments, and placeholders like "-" are ignored.
-func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[string]interface{}) error {
+func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, clientID int, cashflows map[string]interface{}) error {
 	numRe := regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
 
 	for ym, value := range cashflows {
@@ -182,8 +182,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 					commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 					if _, err := tx.Exec(`
 						INSERT INTO comments (entity_type, entity_id, body, author)
-						VALUES ('contract', $1, $2, 'importer')
-					`, contractID, commentBody); err != nil {
+						VALUES ('client', $1, $2, 'importer')
+					`, clientID, commentBody); err != nil {
 						return err
 					}
 				}
@@ -193,8 +193,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 			if _, err := tx.Exec(`
 				INSERT INTO comments (entity_type, entity_id, body, author)
-				VALUES ('contract', $1, $2, 'importer')
-			`, contractID, commentBody); err != nil {
+				VALUES ('client', $1, $2, 'importer')
+			`, clientID, commentBody); err != nil {
 				return err
 			}
 		}

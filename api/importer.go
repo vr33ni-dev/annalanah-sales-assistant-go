@@ -209,14 +209,16 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		isRenewal := strings.EqualFold(c.IsRenewalRaw, "ja")
 		numPeriods := durationMonths / 6
 
-		// If the last period has started but contains no confirmed payments (only "?"),
-		// absorb it into the previous period so the visible contract always has real history.
+		// If the last period hasn't started yet OR has started but contains no confirmed
+		// payments (only "?"), absorb it into the previous period so the visible contract
+		// always has real history and future-only contracts are not shown prematurely.
 		if isRenewal && numPeriods >= 2 {
 			for numPeriods > 2 {
 				lastPeriodStart := start.AddDate(0, (numPeriods-1)*6, 0)
-				// Only absorb periods that have already started
+				// Future period: absorb unconditionally (it hasn't started yet)
 				if !lastPeriodStart.Before(time.Now()) {
-					break
+					numPeriods--
+					continue
 				}
 				lastPeriodStartMonth := time.Date(lastPeriodStart.Year(), lastPeriodStart.Month(), 1, 0, 0, 0, 0, time.UTC)
 				hasPayment := false
@@ -276,21 +278,8 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				// Derive per-period revenue from actual cashflow values (kEUR scaling)
-				periodRevenue := 0.0
-				for _, val := range periodCashflows {
-					if v, ok := val.(float64); ok && v > 0 {
-						if v < 100 {
-							periodRevenue += v * 1000
-						} else {
-							periodRevenue += v
-						}
-					}
-				}
-				// No confirmed cashflows (e.g. future "?" period): fall back to CLV/numPeriods
-				if periodRevenue == 0 {
-					periodRevenue = revenueTotal / float64(numPeriods)
-				}
+				// Revenue per period is CLV split evenly. Cashflow entries track actual payments separately.
+				periodRevenue := revenueTotal / float64(numPeriods)
 
 				periodPaymentFreq := detectPaymentFreq(periodCashflows)
 				contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
@@ -315,7 +304,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				if err := insertImportedCashflowEntriesTx(tx, contractID, periodCashflows); err != nil {
+				if err := insertImportedCashflowEntriesTx(tx, contractID, clientID, periodCashflows); err != nil {
 					tx.Rollback()
 					http.Error(w, err.Error(), 500)
 					return
@@ -361,7 +350,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			if err := insertImportedCashflowEntriesTx(tx, contractID, c.Cashflows); err != nil {
+			if err := insertImportedCashflowEntriesTx(tx, contractID, clientID, c.Cashflows); err != nil {
 				tx.Rollback()
 				http.Error(w, err.Error(), 500)
 				return

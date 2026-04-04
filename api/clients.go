@@ -85,60 +85,69 @@ func (h *Handler) ListClients(w http.ResponseWriter, r *http.Request) {
 		Comments        []CommentResponse `json:"comments,omitempty"`
 	}
 
+	includeInactive := r.URL.Query().Get("include_inactive") == "true"
+
 	rows, err := h.DB.QueryContext(ctx, `
-SELECT 
-  c.id,
-	(
-	SELECT l.id
-	FROM leads l
-	WHERE l.converted_client_id = c.id
-	ORDER BY l.converted_at DESC NULLS LAST, l.id DESC
-	LIMIT 1
-	) AS lead_id,
-  c.name,
-  c.email,
-  c.phone,
-  c.source,
-  COALESCE(s.name, '') AS source_stage_name,
-	CASE
-		WHEN c.status = 'inactive' THEN 'inactive'
-		WHEN EXISTS (
-			SELECT 1
-			FROM contracts ct
-			WHERE ct.client_id = c.id
-			  AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
-		) THEN 'active'
-		WHEN c.status = 'lost' THEN 'lost'
-		WHEN c.status IS NOT NULL AND c.status <> 'active' THEN c.status
-		ELSE
-		CASE
-			WHEN sp.stage = 'closed' AND COALESCE(sp.closed, FALSE) = TRUE THEN 'inactive'
-			WHEN sp.stage = 'lost' THEN 'lost'
-			WHEN sp.stage = 'initial_contact'
-				AND sp.initial_contact_date IS NOT NULL
-				AND sp.follow_up_result IS NULL
-				THEN 'initial_call_scheduled'
-			WHEN sp.stage = 'follow_up'
-				AND sp.follow_up_result IS NULL
-				THEN 'follow_up_scheduled'
-			WHEN sp.stage = 'follow_up'
-				AND sp.follow_up_result IS TRUE
-				THEN 'awaiting_response'
-			ELSE 'inactive'
-		END
-	END AS status,
-  c.completed_at
-FROM clients c
-LEFT JOIN stages s ON s.id = c.source_stage_id
-LEFT JOIN sales_process sp ON sp.id = (
-	SELECT sp2.id
-	FROM sales_process sp2
-	WHERE sp2.client_id = c.id
-	ORDER BY sp2.id DESC
-	LIMIT 1
+WITH client_status AS (
+  SELECT
+    c.id,
+    (
+      SELECT l.id
+      FROM leads l
+      WHERE l.converted_client_id = c.id
+      ORDER BY l.converted_at DESC NULLS LAST, l.id DESC
+      LIMIT 1
+    ) AS lead_id,
+    c.name,
+    c.email,
+    c.phone,
+    c.source,
+    COALESCE(s.name, '') AS source_stage_name,
+    CASE
+      WHEN c.status = 'inactive' THEN 'inactive'
+      WHEN EXISTS (
+        SELECT 1
+        FROM contracts ct
+        WHERE ct.client_id = c.id
+          AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
+      ) THEN 'active'
+      WHEN EXISTS (
+        SELECT 1 FROM contracts ct WHERE ct.client_id = c.id
+      ) THEN 'inactive'
+      WHEN c.status = 'lost' THEN 'lost'
+      WHEN c.status IS NOT NULL AND c.status <> 'active' THEN c.status
+      ELSE
+        CASE
+          WHEN sp.stage = 'closed' AND COALESCE(sp.closed, FALSE) = TRUE THEN 'inactive'
+          WHEN sp.stage = 'lost' THEN 'lost'
+          WHEN sp.stage = 'initial_contact'
+            AND sp.initial_contact_date IS NOT NULL
+            AND sp.follow_up_result IS NULL
+            THEN 'initial_call_scheduled'
+          WHEN sp.stage = 'follow_up'
+            AND sp.follow_up_result IS NULL
+            THEN 'follow_up_scheduled'
+          WHEN sp.stage = 'follow_up'
+            AND sp.follow_up_result IS TRUE
+            THEN 'awaiting_response'
+          ELSE 'inactive'
+        END
+    END AS status,
+    c.completed_at
+  FROM clients c
+  LEFT JOIN stages s ON s.id = c.source_stage_id
+  LEFT JOIN sales_process sp ON sp.id = (
+    SELECT sp2.id
+    FROM sales_process sp2
+    WHERE sp2.client_id = c.id
+    ORDER BY sp2.id DESC
+    LIMIT 1
+  )
 )
-ORDER BY c.id
-`)
+SELECT * FROM client_status
+WHERE ($1 = (status IN ('inactive', 'lost')))
+ORDER BY id
+`, includeInactive)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
