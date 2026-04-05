@@ -278,7 +278,8 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
-				// Revenue per period is CLV split evenly. Cashflow entries track actual payments separately.
+				// Revenue per period: CLV split evenly across periods.
+				// Cashflow entries track observed payments separately and may be incomplete.
 				periodRevenue := revenueTotal / float64(numPeriods)
 
 				periodPaymentFreq := detectPaymentFreq(periodCashflows)
@@ -292,6 +293,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 					PaymentFreq:       periodPaymentFreq,
 					CreatedAtOverride: &createdAt,
 					GenerateSchedule:  false,
+					Source:            "imported",
 				})
 				if err != nil {
 					tx.Rollback()
@@ -337,6 +339,7 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 				PaymentFreq:       paymentFreq,
 				CreatedAtOverride: &createdAt,
 				GenerateSchedule:  false,
+				Source:            "imported",
 			})
 
 			if err != nil {

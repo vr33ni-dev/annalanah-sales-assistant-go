@@ -994,8 +994,8 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var prevContractID *int
 	_ = tx.QueryRow(`
         SELECT id FROM contracts
-        WHERE client_id = $1 AND end_date IS NULL
-        ORDER BY id DESC LIMIT 1
+        WHERE client_id = $1
+        ORDER BY start_date DESC, id DESC LIMIT 1
     `, clientID).Scan(&prevContractID)
 
 	// -----------------------
