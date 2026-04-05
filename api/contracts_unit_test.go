@@ -76,6 +76,7 @@ func TestCreateContract_Success(t *testing.T) {
 			c.DurationMonths,
 			c.RevenueTotal,
 			c.PaymentFreq,
+			"manual",
 		).
 		WillReturnRows(rows)
 
@@ -132,6 +133,7 @@ func TestCreateContract_TriggersMailer(t *testing.T) {
 			c.DurationMonths,
 			c.RevenueTotal,
 			c.PaymentFreq,
+			"manual",
 		).WillReturnRows(rows)
 
 	mock.ExpectCommit()
@@ -181,11 +183,11 @@ func TestGetContract_Handler(t *testing.T) {
 	mainRow := sqlmock.NewRows([]string{
 		"id", "client_id", "client_name", "sales_process_id",
 		"start_date", "end_date", "created_at", "updated_at", "duration_months", "revenue_total", "payment_frequency",
-		"base_monthly_amount", "next_due_date",
+		"base_monthly_amount", "next_due_date", "source",
 	}).AddRow(
 		118, 5, "Acme GmbH", 44,
 		now, now.AddDate(0, 6, 0), now, now, 6, 1200.0, "monthly",
-		200.0, now.AddDate(0, 1, 0),
+		200.0, now.AddDate(0, 1, 0), "manual",
 	)
 
 	mock.ExpectQuery("WITH overdue AS").WithArgs(118).WillReturnRows(mainRow)
@@ -309,6 +311,7 @@ func TestCreateContract_NoNotifyEnv_NoMailerCalled(t *testing.T) {
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
+		"manual",
 	).WillReturnRows(rows)
 
 	mock.ExpectCommit()
@@ -373,6 +376,7 @@ func TestCreateContract_MailerReturnsError_HandlerStillSucceeds(t *testing.T) {
 		c.DurationMonths,
 		c.RevenueTotal,
 		c.PaymentFreq,
+		"manual",
 	).WillReturnRows(rows)
 
 	mock.ExpectCommit()
@@ -814,14 +818,14 @@ func TestListContracts_Handler_Success(t *testing.T) {
 	mainRows := sqlmock.NewRows([]string{
 		"id", "client_id", "client_name", "sales_process_id",
 		"start_date", "end_date", "created_at", "duration_months", "revenue_total", "payment_frequency",
-		"base_monthly_amount", "next_due_date",
+		"base_monthly_amount", "next_due_date", "source",
 	}).AddRow(
 		1, 10, "Acme GmbH", nil,
 		"2025-01-01", nil, nil, 12, 1200.0, "monthly",
-		100.0, nil,
+		100.0, nil, "manual",
 	)
 
-	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRows)
+	mock.ExpectQuery("WITH RECURSIVE upsell_chain").WillReturnRows(mainRows)
 
 	now := time.Now()
 	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
@@ -876,14 +880,14 @@ func TestListContracts_Handler_CompactOmitsRelations(t *testing.T) {
 	mainRows := sqlmock.NewRows([]string{
 		"id", "client_id", "client_name", "sales_process_id",
 		"start_date", "end_date", "created_at", "duration_months", "revenue_total", "payment_frequency",
-		"base_monthly_amount", "next_due_date",
+		"base_monthly_amount", "next_due_date", "source",
 	}).AddRow(
 		1, 10, "Acme GmbH", nil,
 		"2025-01-01", nil, nil, 12, 1200.0, "monthly",
-		100.0, nil,
+		100.0, nil, "manual",
 	)
 
-	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRows)
+	mock.ExpectQuery("WITH RECURSIVE upsell_chain").WillReturnRows(mainRows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/contracts?compact=true", nil)
 	w := httptest.NewRecorder()
@@ -926,14 +930,14 @@ func TestListContracts_Handler_IncludeExpired(t *testing.T) {
 	mainRows := sqlmock.NewRows([]string{
 		"id", "client_id", "client_name", "sales_process_id",
 		"start_date", "end_date", "created_at", "duration_months", "revenue_total", "payment_frequency",
-		"base_monthly_amount", "next_due_date",
+		"base_monthly_amount", "next_due_date", "source",
 	}).AddRow(
 		2, 11, "Expired Co", nil,
 		"2024-01-01", "2025-01-31", nil, 12, 1200.0, "monthly",
-		100.0, nil,
+		100.0, nil, "manual",
 	)
 
-	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRows)
+	mock.ExpectQuery("WITH RECURSIVE upsell_chain").WillReturnRows(mainRows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/contracts?include_expired=true", nil)
 	w := httptest.NewRecorder()

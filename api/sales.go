@@ -412,6 +412,13 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// At least one contact identifier is required so deduplication works
+	// and we can contact the lead. Imported clients are exempt (they use client_id).
+	if req.ClientID == nil && strings.TrimSpace(req.Email) == "" && strings.TrimSpace(req.Phone) == "" {
+		http.Error(w, "email or phone is required", http.StatusBadRequest)
+		return
+	}
+
 	// ------------------------------------------------
 	// 1) Resolve lead (ignore converted)
 	// ------------------------------------------------
@@ -1069,17 +1076,26 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var upsellID int
 
 	if existingUpsellID == nil {
-		// CREATE
+		// CREATE — use ON CONFLICT to handle the race where two concurrent requests
+		// both see no open upsell and both try to INSERT simultaneously.
+		// The partial unique index (upsell_result IS NULL) ensures only one row wins;
+		// the loser merges its payload into the winner via DO UPDATE.
 		err = tx.QueryRow(`
             INSERT INTO contract_upsells
                 (sales_process_id, client_id, upsell_date, upsell_result,
                  upsell_revenue, previous_contract_id, new_contract_id)
             VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (sales_process_id) WHERE upsell_result IS NULL
+            DO UPDATE SET
+                upsell_date     = COALESCE(EXCLUDED.upsell_date, contract_upsells.upsell_date),
+                upsell_result   = COALESCE(EXCLUDED.upsell_result, contract_upsells.upsell_result),
+                upsell_revenue  = COALESCE(EXCLUDED.upsell_revenue, contract_upsells.upsell_revenue),
+                new_contract_id = COALESCE(EXCLUDED.new_contract_id, contract_upsells.new_contract_id)
             RETURNING id
         `,
 			salesID,
 			clientID,
-			resolvedUpsellDate, // nil if absent or explicit null
+			resolvedUpsellDate,
 			req.UpsellResult,
 			req.UpsellRevenue,
 			prevContractID,

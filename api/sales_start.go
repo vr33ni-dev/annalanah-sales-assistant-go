@@ -106,14 +106,26 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 			}
 		}
 	} else {
-		if err := tx.QueryRowContext(ctx, `
+		insertErr := tx.QueryRowContext(ctx, `
 			INSERT INTO clients (name, email, phone, source, source_stage_id, status)
 			VALUES ($1,$2,$3,$4,$5,$6)
+			ON CONFLICT (email) DO NOTHING
 			RETURNING id
 		`,
 			req.Name, req.Email, req.Phone, req.Source, req.SourceStageID, desiredClientStatus,
-		).Scan(&clientID); err != nil {
-			return 0, 0, "", nil, fmt.Errorf("client insert failed: %w", err)
+		).Scan(&clientID)
+
+		if insertErr == sql.ErrNoRows && strings.TrimSpace(req.Email) != "" {
+			// Duplicate email race: another concurrent request committed first.
+			// Re-use the existing client so this request produces the same result.
+			if err := tx.QueryRowContext(ctx,
+				`SELECT id FROM clients WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+				req.Email,
+			).Scan(&clientID); err != nil {
+				return 0, 0, "", nil, fmt.Errorf("client dedup lookup failed: %w", err)
+			}
+		} else if insertErr != nil {
+			return 0, 0, "", nil, fmt.Errorf("client insert failed: %w", insertErr)
 		}
 
 		// Wire the new client to a lead record.

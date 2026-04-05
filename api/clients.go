@@ -104,7 +104,6 @@ WITH client_status AS (
     c.source,
     COALESCE(s.name, '') AS source_stage_name,
     CASE
-      WHEN c.status = 'inactive' THEN 'inactive'
       WHEN EXISTS (
         SELECT 1
         FROM contracts ct
@@ -114,6 +113,7 @@ WITH client_status AS (
       WHEN EXISTS (
         SELECT 1 FROM contracts ct WHERE ct.client_id = c.id
       ) THEN 'inactive'
+      WHEN c.status = 'inactive' THEN 'inactive'
       WHEN c.status = 'lost' THEN 'lost'
       WHEN c.status IS NOT NULL AND c.status <> 'active' THEN c.status
       ELSE

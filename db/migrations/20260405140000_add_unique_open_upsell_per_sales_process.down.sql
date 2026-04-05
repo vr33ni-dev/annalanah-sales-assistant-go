@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_contract_upsells_one_open_per_sp;

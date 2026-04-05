@@ -151,6 +151,8 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 	INSERT INTO contracts
 		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, source, created_at)
 	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8, $9)
+	ON CONFLICT (sales_process_id, start_date) WHERE sales_process_id IS NOT NULL
+	DO NOTHING
 	RETURNING id, created_at
 	`,
 			in.ClientID,
@@ -168,6 +170,8 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 	INSERT INTO contracts
 		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, source)
 	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8)
+	ON CONFLICT (sales_process_id, start_date) WHERE sales_process_id IS NOT NULL
+	DO NOTHING
 	RETURNING id, created_at
 	`,
 			in.ClientID,
@@ -179,6 +183,19 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 			pf,
 			source,
 		).Scan(&contractID, &createdAt)
+	}
+
+	if err == sql.ErrNoRows {
+		// Duplicate contract (same sales_process_id + start_date already exists);
+		// return the existing record so the caller gets a valid ID without creating a second row.
+		var existingCreatedAt sql.NullTime
+		if in.SalesProcessID != nil {
+			err = tx.QueryRowContext(ctx,
+				`SELECT id, created_at FROM contracts WHERE sales_process_id = $1 AND start_date = $2::date LIMIT 1`,
+				in.SalesProcessID, in.StartDate,
+			).Scan(&contractID, &existingCreatedAt)
+			createdAt = existingCreatedAt
+		}
 	}
 	if err != nil {
 		return 0, nil, err

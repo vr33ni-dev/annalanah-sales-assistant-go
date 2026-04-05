@@ -131,7 +131,7 @@ func TestListClients_ExpiredContractDoesNotStayActive(t *testing.T) {
 	}
 
 	h := &api.Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
 	h.ListClients(w, req)
@@ -180,7 +180,7 @@ func TestListClients_ReturnsLeadIDWhenClientWasConvertedFromLead(t *testing.T) {
 	}
 
 	h := &api.Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
 	h.ListClients(w, req)
@@ -217,7 +217,7 @@ func TestListClients_ActiveContractKeepsClientActive(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO clients (id, name, email, phone, source, status)
-		VALUES (1, 'Mixed Client', 'mixed@example.com', '123', 'import', 'inactive')
+		VALUES (1, 'Mixed Client', 'mixed@example.com', '123', 'import', 'active')
 	`)
 	if err != nil {
 		t.Fatal(err)
