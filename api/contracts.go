@@ -301,7 +301,7 @@ func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
 	compact := strings.EqualFold(r.URL.Query().Get("compact"), "true")
 	includeComments := !compact && !strings.EqualFold(r.URL.Query().Get("include_comments"), "false")
-	includeCashflow := !compact && !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
+	includeCashflow := !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
 
 	query := `
 
