@@ -52,12 +52,14 @@ tools/transform_staging/*
 # data import
 tools/mappings/salesprocess.json
 pkg/importer/salesprocess.go
+tools/merge_truecoach.py
 tools/importcashflow/*
 tools/importcsv/*
 tools/extract_sales_names/*
 tools/importsales/*
 tools/__pycache__/*
 *.csv
+*.txt
 Cashflow.json
 tools/README_internal.md
 

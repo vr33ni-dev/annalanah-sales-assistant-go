@@ -121,6 +121,9 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/sales/upsells/list", h.ListUpsellCategories) // all upsells (3 categories)
 		pr.Get("/sales/upsells/analytics", h.GetUpsellAnalytics)
 
+		// Dashboard KPIs (aggregated — replaces heavy frontend cross-referencing)
+		pr.Get("/dashboard/kpis", h.GetDashboardKPIs)
+
 		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
 		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 

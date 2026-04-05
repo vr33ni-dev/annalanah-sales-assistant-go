@@ -14,6 +14,7 @@ import (
 
 type ContractImport struct {
 	Name          string                 `json:"name"`
+	Email         string                 `json:"email"`
 	ContractStart string                 `json:"contract_start"`
 	ContractEnd   string                 `json:"contract_end"`
 	Cashflows     map[string]interface{} `json:"cashflows"`
@@ -124,11 +125,15 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		createdAt := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 
 		var clientID int
+		var emailArg interface{}
+		if c.Email != "" {
+			emailArg = c.Email
+		}
 		err = tx.QueryRow(`
-			INSERT INTO clients (name, status, created_at)
-			VALUES ($1, $2, $3)
+			INSERT INTO clients (name, email, status, created_at)
+			VALUES ($1, $2, $3, $4)
 			RETURNING id
-		`, c.Name, status, createdAt).Scan(&clientID)
+		`, c.Name, emailArg, status, createdAt).Scan(&clientID)
 
 		if err != nil {
 			tx.Rollback()
@@ -209,16 +214,16 @@ func (h *Handler) ImportContracts(w http.ResponseWriter, r *http.Request) {
 		isRenewal := strings.EqualFold(c.IsRenewalRaw, "ja")
 		numPeriods := durationMonths / 6
 
-		// If the last period hasn't started yet OR has started but contains no confirmed
-		// payments (only "?"), absorb it into the previous period so the visible contract
-		// always has real history and future-only contracts are not shown prematurely.
+		// If the last period has started but contains no confirmed payments (only "?"),
+		// absorb it into the previous period so the visible contract always has real history.
+		// We do NOT absorb future periods that haven't started yet — those represent planned
+		// revenue and should appear as separate chain entries.
 		if isRenewal && numPeriods >= 2 {
 			for numPeriods > 2 {
 				lastPeriodStart := start.AddDate(0, (numPeriods-1)*6, 0)
-				// Future period: absorb unconditionally (it hasn't started yet)
+				// Future period: keep it — it's legitimate planned revenue
 				if !lastPeriodStart.Before(time.Now()) {
-					numPeriods--
-					continue
+					break
 				}
 				lastPeriodStartMonth := time.Date(lastPeriodStart.Year(), lastPeriodStart.Month(), 1, 0, 0, 0, 0, time.UTC)
 				hasPayment := false

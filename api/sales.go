@@ -1030,6 +1030,17 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Validate: new contract must not start before the previous contract ends
+		if prevContractID != nil {
+			var prevEndDate time.Time
+			if scanErr := tx.QueryRow(`SELECT end_date FROM contracts WHERE id = $1`, *prevContractID).Scan(&prevEndDate); scanErr == nil {
+				if sd.Before(prevEndDate) {
+					http.Error(w, "contract_start_date cannot be before the current contract's end date", http.StatusUnprocessableEntity)
+					return
+				}
+			}
+		}
+
 		spID := salesID
 		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
 			ClientID:         clientID,
