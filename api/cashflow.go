@@ -84,7 +84,7 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// count total
-	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce LEFT JOIN contracts c ON c.id = ce.contract_id " + whereSQL
+	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce INNER JOIN contracts c ON c.id = ce.contract_id INNER JOIN clients cl ON c.client_id = cl.id " + whereSQL
 	var total int
 	if err := h.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -93,12 +93,13 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 
 	offset := (page - 1) * perPage
 
-	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date, ce.amount, ce.status, ce.updated_at
-        FROM cashflow_entries ce
-        LEFT JOIN contracts c ON c.id = ce.contract_id
-        ` + whereSQL + `
-        ORDER BY ce.due_date ASC, ce.id ASC
-        LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
+	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at
+	FROM cashflow_entries ce
+	INNER JOIN contracts c ON c.id = ce.contract_id
+	INNER JOIN clients cl ON c.client_id = cl.id
+	` + whereSQL + `
+	ORDER BY ce.due_date ASC, ce.id ASC
+	LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
 
 	args = append(args, perPage, offset)
 
