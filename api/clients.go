@@ -635,6 +635,10 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		id,
 	)
 	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			http.Error(w, "Ein Kunde mit dieser E-Mail-Adresse existiert bereits", http.StatusConflict)
+			return
+		}
 		log.Printf("❌ update failed: %v", err)
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
