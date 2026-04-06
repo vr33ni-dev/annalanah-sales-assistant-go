@@ -704,6 +704,30 @@ func TestUpdateClient_SyncsEmailAndNameToLinkedLead(t *testing.T) {
 	}
 }
 
+func TestUpdateClient_InvalidCompletedAtFormat(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO clients (id, name, status, created_at)
+		VALUES (1, 'Bob', 'active', '2026-01-01 12:00:00')
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"not-a-date"}`))
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "YYYY-MM-DD") {
+		t.Fatalf("expected format hint in error, got %q", w.Body.String())
+	}
+}
+
 func TestNullHelpers(t *testing.T) {
 	if s := api.NullStrForTest(""); s.Valid {
 		t.Fatal("empty string should be invalid")

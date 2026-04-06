@@ -183,3 +183,109 @@ func TestInsertImportedCashflowEntriesTx_ReturnsErrorOnCashflowInsertFailure(t *
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestInsertImportedCashflowEntriesTx_ZeroFloat_Skipped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+	mock.ExpectRollback()
+
+	// Zero float value must be skipped — no DB writes expected.
+	err = insertImportedCashflowEntriesTx(tx, 30, 10, map[string]any{
+		"2025-08": 0.0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tx.Rollback()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInsertImportedCashflowEntriesTx_EmptyString_Skipped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+	mock.ExpectRollback()
+
+	// Empty string must be skipped — no DB writes.
+	err = insertImportedCashflowEntriesTx(tx, 31, 11, map[string]any{
+		"2025-09": "   ",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tx.Rollback()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInsertImportedCashflowEntriesTx_StringZeroNumber_Skipped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+	mock.ExpectRollback()
+
+	// A string whose extracted number is 0 must be skipped.
+	err = insertImportedCashflowEntriesTx(tx, 32, 12, map[string]any{
+		"2025-10": "0",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tx.Rollback()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestInsertImportedCashflowEntriesTx_CommentInsertError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+	mock.ExpectExec("INSERT INTO comments").
+		WithArgs(20, "2025-11: some note").
+		WillReturnError(errors.New("comment insert failed"))
+	mock.ExpectRollback()
+
+	err = insertImportedCashflowEntriesTx(tx, 40, 20, map[string]any{
+		"2025-11": "some note",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	tx.Rollback()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

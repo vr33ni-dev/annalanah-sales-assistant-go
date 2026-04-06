@@ -137,6 +137,109 @@ func TestImportContracts_CreatesPlaceholderSalesProcess(t *testing.T) {
 	}
 }
 
+func TestDetectPaymentFreq(t *testing.T) {
+	cases := []struct {
+		name      string
+		cashflows map[string]interface{}
+		want      string
+	}{
+		{
+			name:      "empty cashflows → monthly",
+			cashflows: map[string]interface{}{},
+			want:      "monthly",
+		},
+		{
+			name:      "single payment → one-time",
+			cashflows: map[string]interface{}{"2025-03": 500.0},
+			want:      "one-time",
+		},
+		{
+			name: "diff >= 6 → bi-yearly",
+			cashflows: map[string]interface{}{
+				"2025-01": 500.0,
+				"2025-07": 500.0,
+			},
+			want: "bi-yearly",
+		},
+		{
+			name: "diff >= 3 → quarterly",
+			cashflows: map[string]interface{}{
+				"2025-01": 500.0,
+				"2025-04": 500.0,
+			},
+			want: "quarterly",
+		},
+		{
+			name: "diff >= 2 → bi-monthly",
+			cashflows: map[string]interface{}{
+				"2025-01": 500.0,
+				"2025-03": 500.0,
+			},
+			want: "bi-monthly",
+		},
+		{
+			name: "diff 1 → monthly",
+			cashflows: map[string]interface{}{
+				"2025-01": 500.0,
+				"2025-02": 500.0,
+			},
+			want: "monthly",
+		},
+		{
+			name: "zero values ignored → one-time (only one positive)",
+			cashflows: map[string]interface{}{
+				"2025-01": 0.0,
+				"2025-02": 500.0,
+			},
+			want: "one-time",
+		},
+		{
+			name: "invalid date key ignored",
+			cashflows: map[string]interface{}{
+				"not-a-date": 100.0,
+				"2025-06":    100.0,
+			},
+			want: "one-time",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectPaymentFreq(tc.cashflows)
+			if got != tc.want {
+				t.Errorf("detectPaymentFreq() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseISO(t *testing.T) {
+	cases := []struct {
+		input   string
+		wantErr bool
+		wantDay int
+	}{
+		{"2025-01-15", false, 15},
+		{"2025-01-15T10:30:00", false, 15},
+		{"2025-01-15T10:30:00Z", false, 15},
+		{"", true, 0},
+		{"not-a-date", true, 0},
+		{"01/15/2025", true, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := parseISO(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseISO(%q) error = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr && got.Day() != tc.wantDay {
+				t.Errorf("parseISO(%q).Day() = %d, want %d", tc.input, got.Day(), tc.wantDay)
+			}
+		})
+	}
+}
+
 func TestParseCLV(t *testing.T) {
 	cases := []struct {
 		input string
@@ -231,6 +334,132 @@ func TestImportContracts_EmailFieldPropagated(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestImportContracts_InvalidStartDate_Returns400(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	payload := `[{"name":"Bad Start","contract_start":"not-a-date","contract_end":"2025-07-01","cashflows":{}}]`
+
+	mock.ExpectExec("TRUNCATE TABLE").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/import/contracts", bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Migration-Key", "ALLOW_MIGRATION")
+	w := httptest.NewRecorder()
+
+	h.ImportContracts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestImportContracts_InvalidEndDate_Returns400(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	payload := `[{"name":"Bad End","contract_start":"2025-01-01","contract_end":"not-a-date","cashflows":{}}]`
+
+	mock.ExpectExec("TRUNCATE TABLE").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/import/contracts", bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Migration-Key", "ALLOW_MIGRATION")
+	w := httptest.NewRecorder()
+
+	h.ImportContracts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestImportContracts_EndBeforeStart_Returns400(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	payload := `[{"name":"Reversed Dates","contract_start":"2025-07-01","contract_end":"2025-01-01","cashflows":{}}]`
+
+	mock.ExpectExec("TRUNCATE TABLE").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/import/contracts", bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Migration-Key", "ALLOW_MIGRATION")
+	w := httptest.NewRecorder()
+
+	h.ImportContracts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestImportContracts_FormerClientInvalidDates_Skipped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	// Three former clients with bad dates — all skipped, result is 200 with skipped list.
+	payload := `[
+		{"name":"Former Bad Start","is_former":true,"contract_start":"not-a-date","contract_end":"2025-07-01","cashflows":{}},
+		{"name":"Former Bad End","is_former":true,"contract_start":"2025-01-01","contract_end":"not-a-date","cashflows":{}},
+		{"name":"Former Reversed","is_former":true,"contract_start":"2025-07-01","contract_end":"2025-01-01","cashflows":{}}
+	]`
+
+	mock.ExpectExec("TRUNCATE TABLE").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Each former client opens a tx then rolls back on parse failure.
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/import/contracts", bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Migration-Key", "ALLOW_MIGRATION")
+	w := httptest.NewRecorder()
+
+	h.ImportContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
 	}
