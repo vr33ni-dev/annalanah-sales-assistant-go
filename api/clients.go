@@ -136,13 +136,7 @@ WITH client_status AS (
     c.completed_at
   FROM clients c
   LEFT JOIN stages s ON s.id = c.source_stage_id
-  LEFT JOIN sales_process sp ON sp.id = (
-    SELECT sp2.id
-    FROM sales_process sp2
-    WHERE sp2.client_id = c.id
-    ORDER BY sp2.id DESC
-    LIMIT 1
-  )
+  LEFT JOIN sales_process sp ON sp.client_id = c.id
 )
 SELECT * FROM client_status
 WHERE ($1 = (status IN ('inactive', 'lost')))
