@@ -1067,6 +1067,14 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		notifyStartDate = &sd
 		notifySalesProcessID = &spID
 
+		// Flip client status back to active on renewal
+		if _, err := tx.ExecContext(r.Context(), `
+			UPDATE clients SET status = 'active' WHERE id = $1
+		`, clientID); err != nil {
+			http.Error(w, "failed to update client status: "+err.Error(), 500)
+			return
+		}
+
 	}
 
 	// -----------------------

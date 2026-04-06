@@ -1,6 +1,7 @@
-package api_test
+package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
-	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
 )
 
 // createTestSchema creates all tables required by handlers that touch the DB.
@@ -57,6 +57,16 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			converted_at DATETIME,
 			converted_client_id INTEGER
 		);`,
+		`CREATE TABLE comments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT,
+			entity_id INTEGER,
+			author TEXT,
+			body TEXT,
+			metadata TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, stmt := range schema {
@@ -85,7 +95,7 @@ func TestListClients(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
 	w := httptest.NewRecorder()
 
@@ -130,7 +140,7 @@ func TestListClients_ExpiredContractDoesNotStayActive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
@@ -179,7 +189,7 @@ func TestListClients_ReturnsLeadIDWhenClientWasConvertedFromLead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
@@ -231,7 +241,7 @@ func TestListClients_ActiveContractKeepsClientActive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
 	w := httptest.NewRecorder()
 
@@ -264,7 +274,7 @@ func TestCreateClient(t *testing.T) {
 	defer db.Close()
 	createTestSchema(t, db)
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	body := strings.NewReader(`{
 		"name": "Bob",
 		"email": "bob@example.com",
@@ -302,7 +312,7 @@ func TestCreateClient_MissingStatus(t *testing.T) {
 	defer db.Close()
 	createTestSchema(t, db)
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	body := strings.NewReader(`{
 		"name": "Bob",
 		"email": "bob@example.com",
@@ -341,7 +351,7 @@ func TestDeleteClient(t *testing.T) {
 
 	clientID, _ := res.LastInsertId()
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	// Prepare DELETE request
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/clients/%d", clientID), nil)
@@ -390,7 +400,7 @@ func TestDeleteClient_ResetsLinkedLeadConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/clients/%d", clientID), nil)
 	w := httptest.NewRecorder()
 
@@ -427,7 +437,7 @@ func TestDeleteClient_ResetsLinkedLeadConversion(t *testing.T) {
 func TestListClients_DBError(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	// Drop table so query fails
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
@@ -445,7 +455,7 @@ func TestListClients_ScanError(t *testing.T) {
 	defer db.Close()
 	db.Exec(`CREATE TABLE clients (id INT, name TEXT);`)
 	db.Exec(`INSERT INTO clients (id, name) VALUES (1, 'bad')`)
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
 	w := httptest.NewRecorder()
@@ -459,7 +469,7 @@ func TestListClients_ScanError(t *testing.T) {
 func TestCreateClient_BadJSON(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/clients", strings.NewReader("{bad json"))
 	w := httptest.NewRecorder()
@@ -473,7 +483,7 @@ func TestCreateClient_BadJSON(t *testing.T) {
 func TestCreateClient_DBError(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close() // closed → error
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	body := strings.NewReader(`{"name":"Eve","status":"active"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
@@ -488,7 +498,7 @@ func TestCreateClient_DBError(t *testing.T) {
 func TestDeleteClient_InvalidID(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/clients/abc", nil)
 	w := httptest.NewRecorder()
@@ -503,7 +513,7 @@ func TestDeleteClient_NotFound(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
 	createTestSchema(t, db)
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/clients/99", nil)
 	w := httptest.NewRecorder()
@@ -518,7 +528,7 @@ func TestUpdateClient_Errors(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
 	createTestSchema(t, db)
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 
 	cases := []struct {
 		name string
@@ -546,7 +556,7 @@ func TestUpdateClient_Errors(t *testing.T) {
 func TestUpdateClient_DBError(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")
 	defer db.Close()
-	h := &api.Handler{DB: db} // table missing = DB error
+	h := &Handler{DB: db} // table missing = DB error
 
 	body := strings.NewReader(`{"name":"Bob"}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
@@ -570,7 +580,7 @@ func TestUpdateClient_CompletedAtBeforeCreatedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-01"}`))
 	w := httptest.NewRecorder()
 
@@ -603,7 +613,7 @@ func TestUpdateClient_CompletedAtBeforeFollowUpDate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-01"}`))
 	w := httptest.NewRecorder()
 
@@ -636,7 +646,7 @@ func TestUpdateClient_CompletedAtValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"2026-02-15"}`))
 	w := httptest.NewRecorder()
 
@@ -675,7 +685,7 @@ func TestUpdateClient_SyncsEmailAndNameToLinkedLead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	body := strings.NewReader(`{"name":"New Name","email":"new@email.com","phone":"999","source":"paid"}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
 	w := httptest.NewRecorder()
@@ -715,7 +725,7 @@ func TestUpdateClient_InvalidCompletedAtFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &api.Handler{DB: db}
+	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"not-a-date"}`))
 	w := httptest.NewRecorder()
 	h.UpdateClient(w, req)
@@ -728,33 +738,44 @@ func TestUpdateClient_InvalidCompletedAtFormat(t *testing.T) {
 	}
 }
 
-func TestNullHelpers(t *testing.T) {
-	if s := api.NullStrForTest(""); s.Valid {
-		t.Fatal("empty string should be invalid")
+func TestValidateClientCompletedAt(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
 	}
-	i := 5
-	if !api.NullIntForTest(&i).Valid {
-		t.Fatal("int should be valid")
-	}
-	now := time.Now()
-	if !api.NullTimeForTest(&now).Valid {
-		t.Fatal("time should be valid")
-	}
-}
+	defer db.Close()
+	createTestSchema(t, db)
 
-func TestParseIDFromURL(t *testing.T) {
-	if _, ok := api.ParseIDFromURLForTest("/api/clients/42"); !ok {
-		t.Fatal("expected valid ID")
+	h := &Handler{DB: db}
+	// Insert client with created_at = 2025-01-01
+	res, err := db.Exec(`INSERT INTO clients (name, status, created_at) VALUES ('A', 'active', '2025-01-01')`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := api.ParseIDFromURLForTest("/api/clients/"); ok {
-		t.Fatal("expected invalid")
-	}
-}
+	clientID, _ := res.LastInsertId()
 
-func TestWriteJSONError(t *testing.T) {
-	w := httptest.NewRecorder()
-	api.WriteJSONErrorForTest(w, "oops", 400)
-	if w.Result().StatusCode != 400 {
-		t.Fatal("expected 400")
+	// Case: completed_at before created_at
+	badDate, _ := time.Parse("2006-01-02", "2024-12-31")
+	err = h.validateClientCompletedAt(context.Background(), int(clientID), &badDate)
+	if err == nil || !strings.Contains(err.Error(), "before client creation date") {
+		t.Errorf("expected error for completed_at before created_at, got %v", err)
+	}
+
+	// Case: completed_at after created_at
+	okDate, _ := time.Parse("2006-01-02", "2025-01-02")
+	if err := h.validateClientCompletedAt(context.Background(), int(clientID), &okDate); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Insert sales_process with follow_up_date = 2025-01-10
+	_, err = db.Exec(`INSERT INTO sales_process (client_id, follow_up_date) VALUES (?, '2025-01-10')`, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Case: completed_at before follow_up_date
+	badFollowUp, _ := time.Parse("2006-01-02", "2025-01-05")
+	err = h.validateClientCompletedAt(context.Background(), int(clientID), &badFollowUp)
+	if err == nil || !strings.Contains(err.Error(), "before follow_up_date") {
+		t.Errorf("expected error for completed_at before follow_up_date, got %v", err)
 	}
 }

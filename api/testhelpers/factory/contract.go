@@ -24,6 +24,12 @@ func WithRevenue(amount float64) ContractOption {
 	}
 }
 
+func WithStartDate(date string) ContractOption {
+	return func(c *Contract) {
+		c.StartDate = date
+	}
+}
+
 func (s *APITestSuite) CreateContract(
 	clientID, processID int,
 	opts ...ContractOption,
