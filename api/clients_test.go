@@ -57,6 +57,16 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			converted_at DATETIME,
 			converted_client_id INTEGER
 		);`,
+		`CREATE TABLE comments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT,
+			entity_id INTEGER,
+			author TEXT,
+			body TEXT,
+			metadata TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, stmt := range schema {
