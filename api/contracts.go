@@ -52,8 +52,10 @@ type ContractResponse struct {
 	PaymentFreq       string                          `json:"payment_frequency"`
 	BaseMonthlyAmount float64                         `json:"base_monthly_amount"`
 	NextDueDate       *string                         `json:"next_due_date,omitempty"`
+	Source            string                          `json:"source"`
 	Cashflow          []ContractCashflowEntryResponse `json:"cashflow,omitempty"`
 	Comments          []CommentResponse               `json:"comments,omitempty"`
+	Chain             []ContractResponse              `json:"chain,omitempty"`
 }
 
 type ContractCashflowEntryResponse struct {
@@ -108,6 +110,7 @@ type ContractCreateInput struct {
 	PaymentFreq       string
 	CreatedAtOverride *time.Time
 	GenerateSchedule  bool
+	Source            string // "manual" or "imported"; defaults to "manual" if empty
 }
 
 func normalizePaymentFrequency(paymentFreq string, durationMonths int) (string, error) {
@@ -127,6 +130,11 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 		return 0, nil, err
 	}
 
+	source := in.Source
+	if source == "" {
+		source = "manual"
+	}
+
 	ed := in.StartDate.AddDate(0, in.DurationMonths, 0)
 	if in.EndDate != nil {
 		if in.EndDate.Before(in.StartDate) {
@@ -141,8 +149,10 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 	if in.CreatedAtOverride != nil {
 		err = tx.QueryRowContext(ctx, `
 	INSERT INTO contracts
-		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
-	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8)
+		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, source, created_at)
+	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8, $9)
+	ON CONFLICT (sales_process_id, start_date) WHERE sales_process_id IS NOT NULL
+	DO NOTHING
 	RETURNING id, created_at
 	`,
 			in.ClientID,
@@ -152,13 +162,16 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 			in.DurationMonths,
 			in.RevenueTotal,
 			pf,
+			source,
 			*in.CreatedAtOverride,
 		).Scan(&contractID, &createdAt)
 	} else {
 		err = tx.QueryRowContext(ctx, `
 	INSERT INTO contracts
-		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency)
-	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7)
+		(client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, source)
+	VALUES ($1, $2, $3::date, $4::date, $5, $6, $7, $8)
+	ON CONFLICT (sales_process_id, start_date) WHERE sales_process_id IS NOT NULL
+	DO NOTHING
 	RETURNING id, created_at
 	`,
 			in.ClientID,
@@ -168,7 +181,21 @@ func (h *Handler) createContractTx(ctx context.Context, tx *sql.Tx, in ContractC
 			in.DurationMonths,
 			in.RevenueTotal,
 			pf,
+			source,
 		).Scan(&contractID, &createdAt)
+	}
+
+	if err == sql.ErrNoRows {
+		// Duplicate contract (same sales_process_id + start_date already exists);
+		// return the existing record so the caller gets a valid ID without creating a second row.
+		var existingCreatedAt sql.NullTime
+		if in.SalesProcessID != nil {
+			err = tx.QueryRowContext(ctx,
+				`SELECT id, created_at FROM contracts WHERE sales_process_id = $1 AND start_date = $2::date LIMIT 1`,
+				in.SalesProcessID, in.StartDate,
+			).Scan(&contractID, &existingCreatedAt)
+			createdAt = existingCreatedAt
+		}
 	}
 	if err != nil {
 		return 0, nil, err
@@ -274,11 +301,38 @@ func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
 	compact := strings.EqualFold(r.URL.Query().Get("compact"), "true")
 	includeComments := !compact && !strings.EqualFold(r.URL.Query().Get("include_comments"), "false")
-	includeCashflow := !compact && !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
+	includeCashflow := !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
 
 	query := `
 
-WITH overdue AS (
+WITH RECURSIVE upsell_chain(terminal_id, node_id) AS (
+	-- Anchor: contracts NOT replaced by any renewal (they are the active/terminal end of a chain)
+	SELECT c.id, c.id
+	FROM contracts c
+	WHERE c.id NOT IN (
+		SELECT previous_contract_id FROM contract_upsells
+		WHERE previous_contract_id IS NOT NULL AND upsell_result = 'verlaengerung'
+	)
+	UNION ALL
+	-- Walk backwards: find the predecessor of each node via upsell chain
+	SELECT uc.terminal_id, cu.previous_contract_id
+	FROM upsell_chain uc
+	JOIN contract_upsells cu
+		ON cu.new_contract_id = uc.node_id
+		AND cu.upsell_result = 'verlaengerung'
+		AND cu.previous_contract_id IS NOT NULL
+),
+chain_stats AS (
+	SELECT
+		uc.terminal_id,
+		SUM(c2.revenue_total)   AS total_revenue,
+		SUM(c2.duration_months) AS total_duration_months,
+		MIN(c2.start_date)      AS chain_start_date
+	FROM upsell_chain uc
+	JOIN contracts c2 ON c2.id = uc.node_id
+	GROUP BY uc.terminal_id
+),
+overdue AS (
 	SELECT
 		contract_id,
 		MIN(due_date)::date AS overdue_due_date
@@ -299,29 +353,36 @@ SELECT
 	c.client_id,
 	cl.name AS client_name,
 	c.sales_process_id,
-	c.start_date,
+	cs.chain_start_date AS start_date,
 	c.end_date,
 	c.created_at,
-	c.duration_months,
-	c.revenue_total,
+	cs.total_duration_months AS duration_months,
+	cs.total_revenue AS revenue_total,
 	c.payment_frequency,
-	CASE 
-		WHEN c.duration_months > 0
-			THEN (c.revenue_total / c.duration_months)
+	CASE
+		WHEN cs.total_duration_months > 0
+			THEN (cs.total_revenue / cs.total_duration_months)
 		ELSE 0
 	END AS base_monthly_amount,
 	COALESCE(
 		o.overdue_due_date,
 		u.upcoming_due_date
-	) AS next_due_date
+	) AS next_due_date,
+	c.source
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
+JOIN chain_stats cs ON cs.terminal_id = c.id
 LEFT JOIN overdue  o ON o.contract_id = c.id
 LEFT JOIN upcoming u ON u.contract_id = c.id`
 
 	if !includeExpired {
 		query += `
-WHERE c.end_date IS NULL OR c.end_date >= CURRENT_DATE`
+WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
+  AND cl.status = 'active'`
+	} else {
+		query += `
+WHERE cl.status = 'inactive'
+   OR c.end_date < CURRENT_DATE`
 	}
 
 	query += `
@@ -343,7 +404,7 @@ ORDER BY c.id;`
 		if err := rows.Scan(
 			&x.ID, &x.ClientID, &x.ClientName, &x.SalesProcessID,
 			&x.StartDate, &x.EndDate, &x.CreatedAt, &x.DurationMonths, &x.RevenueTotal, &x.PaymentFreq,
-			&x.BaseMonthlyAmount, &x.NextDueDate,
+			&x.BaseMonthlyAmount, &x.NextDueDate, &x.Source,
 		); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -498,7 +559,8 @@ SELECT
 	COALESCE(
 		o.overdue_due_date,
 		u.upcoming_due_date
-	) AS next_due_date
+	) AS next_due_date,
+	c.source
 FROM contracts c
 JOIN clients cl ON cl.id = c.client_id
 LEFT JOIN overdue  o ON o.contract_id = c.id
@@ -518,6 +580,7 @@ WHERE c.id = $1
 		&out.PaymentFreq,
 		&out.BaseMonthlyAmount,
 		&nextDueDate,
+		&out.Source,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -547,6 +610,80 @@ WHERE c.id = $1
 
 	out.Comments = []CommentResponse{}
 	out.Cashflow = []ContractCashflowEntryResponse{}
+
+	// Populate the renewal chain (all contracts in the chain, ordered by start date)
+	chainRows, err := h.DB.Query(`
+WITH RECURSIVE
+chain_root(contract_id) AS (
+    SELECT $1::int
+    UNION ALL
+    SELECT cu.previous_contract_id
+    FROM chain_root cr
+    JOIN contract_upsells cu ON cu.new_contract_id = cr.contract_id
+        AND cu.upsell_result = 'verlaengerung'
+        AND cu.previous_contract_id IS NOT NULL
+),
+root AS (
+    SELECT contract_id FROM chain_root ORDER BY contract_id ASC LIMIT 1
+),
+chain_forward(contract_id) AS (
+    SELECT r.contract_id FROM root r
+    UNION ALL
+    SELECT cu.new_contract_id
+    FROM chain_forward cf
+    JOIN contract_upsells cu ON cu.previous_contract_id = cf.contract_id
+        AND cu.upsell_result = 'verlaengerung'
+        AND cu.new_contract_id IS NOT NULL
+)
+SELECT
+    c.id, c.client_id, cl.name, c.sales_process_id,
+    c.start_date, c.end_date, c.created_at, c.duration_months,
+    c.revenue_total, c.payment_frequency,
+    CASE WHEN c.duration_months > 0 THEN (c.revenue_total / c.duration_months) ELSE 0 END,
+    COALESCE(o.overdue_due_date, u.upcoming_due_date),
+    c.source
+FROM chain_forward cf
+JOIN contracts c ON c.id = cf.contract_id
+JOIN clients cl ON cl.id = c.client_id
+LEFT JOIN (
+    SELECT contract_id, MIN(due_date)::date AS overdue_due_date
+    FROM cashflow_entries WHERE status = 'overdue' GROUP BY contract_id
+) o ON o.contract_id = c.id
+LEFT JOIN (
+    SELECT contract_id, MIN(due_date)::date AS upcoming_due_date
+    FROM cashflow_entries WHERE due_date >= CURRENT_DATE GROUP BY contract_id
+) u ON u.contract_id = c.id
+ORDER BY c.start_date ASC, c.id ASC
+`, id)
+	if err == nil {
+		defer chainRows.Close()
+		for chainRows.Next() {
+			var cx ContractResponse
+			var cxEnd, cxCreated, cxNext sql.NullTime
+			if err := chainRows.Scan(
+				&cx.ID, &cx.ClientID, &cx.ClientName, &cx.SalesProcessID,
+				&cx.StartDate, &cxEnd, &cxCreated, &cx.DurationMonths,
+				&cx.RevenueTotal, &cx.PaymentFreq, &cx.BaseMonthlyAmount, &cxNext, &cx.Source,
+			); err == nil {
+				if cxEnd.Valid {
+					s := cxEnd.Time.Format(time.RFC3339)
+					cx.EndDate = &s
+				}
+				if cxCreated.Valid {
+					s := cxCreated.Time.Format(time.RFC3339)
+					cx.CreatedAt = &s
+				}
+				if cxNext.Valid {
+					s := cxNext.Time.Format(time.RFC3339)
+					cx.NextDueDate = &s
+				}
+				out.Chain = append(out.Chain, cx)
+			}
+		}
+	}
+	if out.Chain == nil {
+		out.Chain = []ContractResponse{}
+	}
 
 	commentRows, err := h.DB.Query(`
 		SELECT id, entity_id, author, body, metadata, created_at, updated_at

@@ -117,11 +117,15 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/sales", h.ListSalesProcesses)
 		pr.Patch("/sales/{id}", h.UpdateSalesProcess)
 		pr.Post("/sales/start", h.StartSalesProcess)
-		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
-		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 
 		pr.Get("/sales/upsells/list", h.ListUpsellCategories) // all upsells (3 categories)
 		pr.Get("/sales/upsells/analytics", h.GetUpsellAnalytics)
+
+		// Dashboard KPIs (aggregated — replaces heavy frontend cross-referencing)
+		pr.Get("/dashboard/kpis", h.GetDashboardKPIs)
+
+		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
+		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 
 		// Contracts
 		pr.Get("/contracts", h.ListContracts)
@@ -150,6 +154,7 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Get("/cashflow/forecast", h.CashflowForecast)
 		pr.Get("/cashflow/metrics", h.CashflowMetrics)
 		pr.Get("/cashflow/entries", h.ListCashflowEntries)
+		pr.Patch("/cashflow/entries/{id}/status", h.UpdateCashflowEntryStatus)
 
 		// Exports
 		pr.Get("/exports/raw/clients.csv", h.ExportRawClientsCSV)

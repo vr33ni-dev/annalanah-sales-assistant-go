@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,31 @@ import (
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/db"
 )
+
+func runExpiryUpdate(database *sql.DB) {
+	res, err := database.Exec(`
+		UPDATE clients SET status = 'inactive'
+		WHERE status = 'active'
+		  AND EXISTS (
+		    SELECT 1 FROM contracts
+		    WHERE client_id = clients.id
+		      AND end_date < CURRENT_DATE
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM contracts
+		    WHERE client_id = clients.id
+		      AND (end_date IS NULL OR end_date >= CURRENT_DATE)
+		  )
+	`)
+	if err != nil {
+		log.Printf("expiry update: %v", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("expiry update: marked %d client(s) inactive", n)
+	}
+}
 
 func main() {
 
@@ -31,6 +57,9 @@ func main() {
 			}
 		}()
 	}
+
+	// mark clients inactive if all their contracts have expired (runs on every startup)
+	runExpiryUpdate(database)
 
 	// router
 	r := api.NewRouterWithConfig(database, cfg)

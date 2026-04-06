@@ -20,7 +20,7 @@ func (s *APITestSuite) CreatePaidCashflow(
 ) {
 	_, err := s.DB.DB.Exec(`
 		INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-		VALUES ($1, $2, $3, 'paid')
+		VALUES ($1, $2, $3, 'confirmed')
 	`, contractID, due, amount)
 
 	if err != nil {
@@ -35,7 +35,7 @@ func (s *APITestSuite) CreatePendingCashflow(
 ) {
 	_, err := s.DB.DB.Exec(`
 		INSERT INTO cashflow_entries (contract_id, due_date, amount, status)
-		VALUES ($1, $2, $3, 'pending')
+		VALUES ($1, $2, $3, 'confirmed')
 	`, contractID, due, amount)
 
 	if err != nil {

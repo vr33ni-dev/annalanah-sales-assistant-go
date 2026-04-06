@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type CashflowRow struct {
@@ -82,7 +84,7 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// count total
-	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce LEFT JOIN contracts c ON c.id = ce.contract_id " + whereSQL
+	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce INNER JOIN contracts c ON c.id = ce.contract_id INNER JOIN clients cl ON c.client_id = cl.id " + whereSQL
 	var total int
 	if err := h.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -91,12 +93,13 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 
 	offset := (page - 1) * perPage
 
-	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date, ce.amount, ce.status, ce.updated_at
-        FROM cashflow_entries ce
-        LEFT JOIN contracts c ON c.id = ce.contract_id
-        ` + whereSQL + `
-        ORDER BY ce.due_date ASC, ce.id ASC
-        LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
+	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at
+	FROM cashflow_entries ce
+	INNER JOIN contracts c ON c.id = ce.contract_id
+	INNER JOIN clients cl ON c.client_id = cl.id
+	` + whereSQL + `
+	ORDER BY ce.due_date ASC, ce.id ASC
+	LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
 
 	args = append(args, perPage, offset)
 
@@ -364,6 +367,45 @@ ORDER BY month;
 
 func (h *Handler) GetNumericSettingForTest(key string, def float64) float64 {
 	return h.getNumericSetting(key, def)
+}
+
+// PATCH /api/cashflow/entries/{id}/status
+func (h *Handler) UpdateCashflowEntryStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	switch body.Status {
+	case "confirmed", "overdue":
+	default:
+		http.Error(w, "invalid status: must be one of confirmed, overdue", http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.DB.Exec(
+		`UPDATE cashflow_entries SET status = $1, updated_at = NOW() WHERE id = $2`,
+		body.Status, id,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/cashflow/dashboard

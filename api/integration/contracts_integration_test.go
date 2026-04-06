@@ -28,9 +28,18 @@ func TestListContracts_Integration(t *testing.T) {
 
 	// Arrange: client → sales process → contract
 	client := suite.CreateClient()
+	// Ensure client is active (should be default, but explicit for clarity)
+	_, err := suite.DB.DB.Exec(`UPDATE clients SET status = 'active' WHERE id = $1`, client.ID)
+	if err != nil {
+		t.Fatalf("failed to set client status: %v", err)
+	}
 	sp := suite.CreateSalesProcessForClient(client.ID)
+	// Set contract end_date far in the future to guarantee visibility
 	contract := suite.CreateContract(client.ID, sp.ID)
-
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE + INTERVAL '365 days' WHERE id = $1`, contract.ID)
+	if err != nil {
+		t.Fatalf("failed to set contract end_date: %v", err)
+	}
 	// One paid cashflow entry
 	suite.CreatePaidCashflow(contract.ID, time.Now().UTC(), 500)
 
@@ -69,23 +78,27 @@ func TestListContracts_Integration_HidesExpiredByDefault(t *testing.T) {
 	testhelpers.TruncateAll(t, suite.DB)
 
 	clientA := suite.CreateClient()
+	_, err := suite.DB.DB.Exec(`UPDATE clients SET status = 'active' WHERE id = $1`, clientA.ID)
+	if err != nil {
+		t.Fatalf("failed to set clientA status: %v", err)
+	}
 	spA := suite.CreateSalesProcessForClient(clientA.ID)
 	activeContract := suite.CreateContract(clientA.ID, spA.ID)
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE + INTERVAL '5 days' WHERE id = $1`, activeContract.ID)
+	if err != nil {
+		t.Fatalf("failed to set active contract end_date: %v", err)
+	}
 
 	clientB := suite.CreateClient()
+	_, err = suite.DB.DB.Exec(`UPDATE clients SET status = 'active' WHERE id = $1`, clientB.ID)
+	if err != nil {
+		t.Fatalf("failed to set clientB status: %v", err)
+	}
 	spB := suite.CreateSalesProcessForClient(clientB.ID)
 	expiredContract := suite.CreateContract(clientB.ID, spB.ID)
-
-	_, err := suite.DB.DB.Exec(`
-		UPDATE contracts
-		SET end_date = CASE
-			WHEN id = $1 THEN CURRENT_DATE + INTERVAL '5 days'
-			WHEN id = $2 THEN CURRENT_DATE - INTERVAL '1 day'
-		END
-		WHERE id IN ($1, $2)
-	`, activeContract.ID, expiredContract.ID)
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE - INTERVAL '1 day' WHERE id = $1`, expiredContract.ID)
 	if err != nil {
-		t.Fatalf("failed to set contract end dates: %v", err)
+		t.Fatalf("failed to set expired contract end_date: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
@@ -543,5 +556,120 @@ func TestProjection_StartDate31st(t *testing.T) {
 
 	if dates[1].Month() != time.February {
 		t.Fatalf("expected February rollover, got %v", dates[1])
+	}
+}
+
+// ----------------------------------------------------
+// CONTRACT FILTERING TESTS
+// ----------------------------------------------------
+func TestListContracts_Integration_FiltersInactiveClient(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	testhelpers.TruncateAll(t, suite.DB)
+
+	client := suite.CreateClient()
+	_, err := suite.DB.DB.Exec(`UPDATE clients SET status = 'inactive' WHERE id = $1`, client.ID)
+	if err != nil {
+		t.Fatalf("failed to set client status: %v", err)
+	}
+	sp := suite.CreateSalesProcessForClient(client.ID)
+	contract := suite.CreateContract(client.ID, sp.ID)
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE + INTERVAL '365 days' WHERE id = $1`, contract.ID)
+	if err != nil {
+		t.Fatalf("failed to set contract end_date: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+	handler.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var out []api.ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(out) != 0 {
+		t.Fatalf("expected 0 contracts for inactive client, got %d", len(out))
+	}
+}
+
+func TestListContracts_Integration_FiltersExpiredContract(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	testhelpers.TruncateAll(t, suite.DB)
+
+	client := suite.CreateClient()
+	_, err := suite.DB.DB.Exec(`UPDATE clients SET status = 'active' WHERE id = $1`, client.ID)
+	if err != nil {
+		t.Fatalf("failed to set client status: %v", err)
+	}
+	sp := suite.CreateSalesProcessForClient(client.ID)
+	contract := suite.CreateContract(client.ID, sp.ID)
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE - INTERVAL '1 day' WHERE id = $1`, contract.ID)
+	if err != nil {
+		t.Fatalf("failed to set contract end_date: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+	handler.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var out []api.ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(out) != 0 {
+		t.Fatalf("expected 0 contracts for expired contract, got %d", len(out))
+	}
+}
+
+func TestListContracts_Integration_IncludeCashflowFalseOmitsCashflow(t *testing.T) {
+	suite := factory.NewSuiteFromTestDB(t, testDB)
+	handler := &api.Handler{DB: suite.DB.DB}
+
+	testhelpers.TruncateAll(t, suite.DB)
+
+	client := suite.CreateClient()
+	_, err := suite.DB.DB.Exec(`UPDATE clients SET status = 'active' WHERE id = $1`, client.ID)
+	if err != nil {
+		t.Fatalf("failed to set client status: %v", err)
+	}
+	sp := suite.CreateSalesProcessForClient(client.ID)
+	contract := suite.CreateContract(client.ID, sp.ID)
+	_, err = suite.DB.DB.Exec(`UPDATE contracts SET end_date = CURRENT_DATE + INTERVAL '365 days' WHERE id = $1`, contract.ID)
+	if err != nil {
+		t.Fatalf("failed to set contract end_date: %v", err)
+	}
+	suite.CreatePaidCashflow(contract.ID, time.Now().UTC(), 500)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts?include_cashflow=false", nil)
+	w := httptest.NewRecorder()
+	handler.ListContracts(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var out []api.ContractResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(out) != 1 {
+		t.Fatalf("expected 1 contract, got %d", len(out))
+	}
+	if out[0].Cashflow != nil && len(out[0].Cashflow) > 0 {
+		t.Fatalf("expected cashflow to be omitted, got: %+v", out[0].Cashflow)
 	}
 }

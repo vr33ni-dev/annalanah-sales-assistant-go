@@ -2,7 +2,7 @@
 
 input:
   skip_rows: 1
-  header_row: 1
+  header_row: 2
   delimiter: ","
 
 # Only map core contract fields directly.
@@ -35,6 +35,11 @@ columns:
 
   - source: "CLV"
     target: "clv"
+    transform:
+      - trim
+
+  - source: "Fortsetzung Ja/Nein"
+    target: "is_renewal_raw"
     transform:
       - trim
 

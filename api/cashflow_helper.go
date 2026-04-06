@@ -45,7 +45,7 @@ func insertCashflowEntriesTx(
 	stmt := `
 		INSERT INTO cashflow_entries 
 			(contract_id, due_date, amount, status) 
-		VALUES ($1, $2::date, $3, 'pending')
+		VALUES ($1, $2::date, $3, 'confirmed')
 		ON CONFLICT (contract_id, due_date) DO NOTHING
 	`
 
@@ -126,7 +126,7 @@ func addMonthClamped(t time.Time, months int) time.Time {
 // insertImportedCashflowEntriesTx inserts imported contract cashflow rows and notes as comments.
 // It preserves importer semantics: numeric values become cashflow entries, mixed/non-numeric
 // strings become comments, and placeholders like "-" are ignored.
-func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[string]interface{}) error {
+func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, clientID int, cashflows map[string]interface{}) error {
 	numRe := regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
 
 	for ym, value := range cashflows {
@@ -140,10 +140,14 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			if v == 0 {
 				continue
 			}
+			// kEUR scaling: values < 100 are in kEUR (e.g. 1.8 = €1800)
+			if v < 100 {
+				v *= 1000
+			}
 			if _, err := tx.Exec(`
 				INSERT INTO cashflow_entries
 					(contract_id, due_date, amount, status)
-				VALUES ($1, $2::date, $3, 'pending')
+				VALUES ($1, $2::date, $3, 'confirmed')
 			`, contractID, date, v); err != nil {
 				return err
 			}
@@ -160,10 +164,14 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			numStr := numRe.FindString(trimmed)
 			if numStr != "" {
 				if n, err := strconv.ParseFloat(numStr, 64); err == nil && n != 0 {
+					// kEUR scaling: values < 100 are in kEUR
+					if n < 100 {
+						n *= 1000
+					}
 					if _, err := tx.Exec(`
 						INSERT INTO cashflow_entries
 							(contract_id, due_date, amount, status)
-						VALUES ($1, $2::date, $3, 'pending')
+					VALUES ($1, $2::date, $3, 'confirmed')
 					`, contractID, date, n); err != nil {
 						return err
 					}
@@ -174,8 +182,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 					commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 					if _, err := tx.Exec(`
 						INSERT INTO comments (entity_type, entity_id, body, author)
-						VALUES ('contract', $1, $2, 'importer')
-					`, contractID, commentBody); err != nil {
+						VALUES ('client', $1, $2, 'importer')
+					`, clientID, commentBody); err != nil {
 						return err
 					}
 				}
@@ -185,8 +193,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, cashflows map[s
 			commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 			if _, err := tx.Exec(`
 				INSERT INTO comments (entity_type, entity_id, body, author)
-				VALUES ('contract', $1, $2, 'importer')
-			`, contractID, commentBody); err != nil {
+				VALUES ('client', $1, $2, 'importer')
+			`, clientID, commentBody); err != nil {
 				return err
 			}
 		}

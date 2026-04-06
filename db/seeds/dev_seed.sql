@@ -10,7 +10,7 @@ settings_months AS (
 ),
 settings_avg_rev AS (
   INSERT INTO app_settings (key, value_numeric)
-  VALUES ('avg_revenue_per_contract', 600)
+  VALUES ('avg_revenue_per_contract', 300)
   ON CONFLICT (key) DO UPDATE SET value_numeric = EXCLUDED.value_numeric
   RETURNING 1
 ),
@@ -387,7 +387,7 @@ SELECT
     WHEN sr.payment_frequency = 'one-time' THEN sr.revenue_total
     ELSE ROUND((sr.revenue_total::numeric / NULLIF(sr.periods, 0)), 2)
   END AS amount,
-  'pending'
+  'confirmed'
 FROM (
   SELECT
     c.id AS contract_id,

@@ -412,6 +412,13 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// At least one contact identifier is required so deduplication works
+	// and we can contact the lead. Imported clients are exempt (they use client_id).
+	if req.ClientID == nil && strings.TrimSpace(req.Email) == "" && strings.TrimSpace(req.Phone) == "" {
+		http.Error(w, "email or phone is required", http.StatusBadRequest)
+		return
+	}
+
 	// ------------------------------------------------
 	// 1) Resolve lead (ignore converted)
 	// ------------------------------------------------
@@ -738,12 +745,12 @@ func scanContractUpsell(scanner rowScanner, u *ContractUpsell) error {
 }
 
 type CreateUpsellRequest struct {
-	UpsellDate             *string  `json:"upsell_date,omitempty"`
-	UpsellResult           *string  `json:"upsell_result,omitempty"`
-	UpsellRevenue          *float64 `json:"upsell_revenue,omitempty"`
-	ContractStartDate      *string  `json:"contract_start_date,omitempty"`
-	ContractDurationMonths *int     `json:"contract_duration_months,omitempty"`
-	ContractFrequency      *string  `json:"contract_frequency,omitempty"`
+	UpsellDate             json.RawMessage `json:"upsell_date"`
+	UpsellResult           *string         `json:"upsell_result,omitempty"`
+	UpsellRevenue          *float64        `json:"upsell_revenue,omitempty"`
+	ContractStartDate      *string         `json:"contract_start_date,omitempty"`
+	ContractDurationMonths *int            `json:"contract_duration_months,omitempty"`
+	ContractFrequency      *string         `json:"contract_frequency,omitempty"`
 }
 
 func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Request) {
@@ -915,6 +922,19 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve upsell_date: nil RawMessage = field absent (don't touch on UPDATE);
+	// RawMessage "null" = explicit clear; otherwise parse as date string.
+	var resolvedUpsellDate *string
+	upsellDateProvided := req.UpsellDate != nil
+	if upsellDateProvided && string(req.UpsellDate) != "null" {
+		var d string
+		if err := json.Unmarshal(req.UpsellDate, &d); err != nil {
+			http.Error(w, "invalid upsell_date", http.StatusBadRequest)
+			return
+		}
+		resolvedUpsellDate = &d
+	}
+
 	// -----------------------
 	// VALIDATION
 	// -----------------------
@@ -981,8 +1001,8 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var prevContractID *int
 	_ = tx.QueryRow(`
         SELECT id FROM contracts
-        WHERE client_id = $1 AND end_date IS NULL
-        ORDER BY id DESC LIMIT 1
+        WHERE client_id = $1
+        ORDER BY start_date DESC, id DESC LIMIT 1
     `, clientID).Scan(&prevContractID)
 
 	// -----------------------
@@ -1017,6 +1037,17 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Validate: new contract must not start before the previous contract ends
+		if prevContractID != nil {
+			var prevEndDate time.Time
+			if scanErr := tx.QueryRow(`SELECT end_date FROM contracts WHERE id = $1`, *prevContractID).Scan(&prevEndDate); scanErr == nil {
+				if sd.Before(prevEndDate) {
+					http.Error(w, "contract_start_date cannot be before the current contract's end date", http.StatusUnprocessableEntity)
+					return
+				}
+			}
+		}
+
 		spID := salesID
 		contractID, _, err := h.createContractTx(r.Context(), tx, ContractCreateInput{
 			ClientID:         clientID,
@@ -1045,19 +1076,28 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var upsellID int
 
 	if existingUpsellID == nil {
-		// CREATE
+		// CREATE — use ON CONFLICT to handle the race where two concurrent requests
+		// both see no open upsell and both try to INSERT simultaneously.
+		// The partial unique index (upsell_result IS NULL) ensures only one row wins;
+		// the loser merges its payload into the winner via DO UPDATE.
 		err = tx.QueryRow(`
             INSERT INTO contract_upsells
                 (sales_process_id, client_id, upsell_date, upsell_result,
                  upsell_revenue, previous_contract_id, new_contract_id)
             VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (sales_process_id) WHERE upsell_result IS NULL
+            DO UPDATE SET
+                upsell_date     = COALESCE(EXCLUDED.upsell_date, contract_upsells.upsell_date),
+                upsell_result   = COALESCE(EXCLUDED.upsell_result, contract_upsells.upsell_result),
+                upsell_revenue  = COALESCE(EXCLUDED.upsell_revenue, contract_upsells.upsell_revenue),
+                new_contract_id = COALESCE(EXCLUDED.new_contract_id, contract_upsells.new_contract_id)
             RETURNING id
         `,
 			salesID,
 			clientID,
-			req.UpsellDate,    // may be NULL
-			req.UpsellResult,  // may be NULL
-			req.UpsellRevenue, // may be NULL
+			resolvedUpsellDate,
+			req.UpsellResult,
+			req.UpsellRevenue,
 			prevContractID,
 			newContractID,
 		).Scan(&upsellID)
@@ -1066,15 +1106,16 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRow(`
             UPDATE contract_upsells
             SET
-                upsell_date   = COALESCE($2, upsell_date),
-                upsell_result = COALESCE($3, upsell_result),
-                upsell_revenue = COALESCE($4, upsell_revenue),
-                new_contract_id = COALESCE($5, new_contract_id)
+                upsell_date     = CASE WHEN $2 THEN $3 ELSE upsell_date END,
+                upsell_result   = COALESCE($4, upsell_result),
+                upsell_revenue  = COALESCE($5, upsell_revenue),
+                new_contract_id = COALESCE($6, new_contract_id)
             WHERE id = $1
             RETURNING id
         `,
 			*existingUpsellID,
-			req.UpsellDate,
+			upsellDateProvided, // true = apply $3; false = keep existing
+			resolvedUpsellDate, // nil clears the date, string sets it
 			req.UpsellResult,
 			req.UpsellRevenue,
 			newContractID,
@@ -1136,17 +1177,17 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stats struct {
-		VerlaengerungCount      int      `json:"verlangerung_count"`
-		KeineVerlaengerungCount int      `json:"keine_verlangerung_count"`
+		VerlaengerungCount      int      `json:"verlaengerung_count"`
+		KeineVerlaengerungCount int      `json:"keine_verlaengerung_count"`
 		ScheduledCount          int      `json:"scheduled_count"`
-		Verlaengerungsquote     *float64 `json:"verlangerungsquote"`
+		Verlaengerungsquote     *float64 `json:"verlaengerungsquote"`
 		UmsatzSum               float64  `json:"umsatz_sum"`
 	}
 
 	query := `
         SELECT
-			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlangerung_count,
-			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlangerung_count,
+			COUNT(*) FILTER (WHERE upsell_result = 'verlaengerung')         AS verlaengerung_count,
+			COUNT(*) FILTER (WHERE upsell_result = 'keine_verlaengerung')  AS keine_verlaengerung_count,
 			COUNT(*) FILTER (WHERE upsell_result IS NULL)                  AS scheduled_count,
 
 			ROUND(
@@ -1156,7 +1197,7 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 					0
 				),
 				1
-			) AS verlangerungsquote,
+			) AS verlaengerungsquote,
 
 			COALESCE(SUM(upsell_revenue), 0) AS umsatz_sum
 		FROM contract_upsells cu
@@ -1176,6 +1217,53 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Monthly renewal revenue breakdown
+	renewalWhere := append(where, "cu.upsell_result = 'verlaengerung'", "cu.upsell_date IS NOT NULL")
+	renewalWhereSQL := "WHERE " + strings.Join(renewalWhere, " AND ")
+
+	monthlyQuery := `
+		SELECT
+			TO_CHAR(cu.upsell_date, 'YYYY-MM') AS month,
+			COALESCE(SUM(cu.upsell_revenue), 0) AS revenue
+		FROM contract_upsells cu
+		` + renewalWhereSQL + `
+		GROUP BY month
+		ORDER BY month
+	`
+
+	type monthlyRevenue struct {
+		Month   string  `json:"month"`
+		Revenue float64 `json:"revenue"`
+	}
+
+	rows, err := h.DB.Query(monthlyQuery, args...)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+
+	revenueByMonth := []monthlyRevenue{}
+	for rows.Next() {
+		var row monthlyRevenue
+		if err := rows.Scan(&row.Month, &row.Revenue); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		revenueByMonth = append(revenueByMonth, row)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
+	json.NewEncoder(w).Encode(map[string]any{
+		"verlaengerung_count":       stats.VerlaengerungCount,
+		"keine_verlaengerung_count": stats.KeineVerlaengerungCount,
+		"scheduled_count":           stats.ScheduledCount,
+		"verlaengerungsquote":       stats.Verlaengerungsquote,
+		"umsatz_sum":                stats.UmsatzSum,
+		"revenue_by_month":          revenueByMonth,
+	})
 }

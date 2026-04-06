@@ -131,7 +131,7 @@ func TestListClients_ExpiredContractDoesNotStayActive(t *testing.T) {
 	}
 
 	h := &api.Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
 	h.ListClients(w, req)
@@ -180,7 +180,7 @@ func TestListClients_ReturnsLeadIDWhenClientWasConvertedFromLead(t *testing.T) {
 	}
 
 	h := &api.Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/clients?include_inactive=true", nil)
 	w := httptest.NewRecorder()
 
 	h.ListClients(w, req)
@@ -217,7 +217,7 @@ func TestListClients_ActiveContractKeepsClientActive(t *testing.T) {
 
 	_, err = db.Exec(`
 		INSERT INTO clients (id, name, email, phone, source, status)
-		VALUES (1, 'Mixed Client', 'mixed@example.com', '123', 'import', 'inactive')
+		VALUES (1, 'Mixed Client', 'mixed@example.com', '123', 'import', 'active')
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -701,6 +701,30 @@ func TestUpdateClient_SyncsEmailAndNameToLinkedLead(t *testing.T) {
 	}
 	if leadSource != "paid" {
 		t.Errorf("expected lead source=paid, got %q", leadSource)
+	}
+}
+
+func TestUpdateClient_InvalidCompletedAtFormat(t *testing.T) {
+	db, _ := sql.Open("sqlite3", ":memory:")
+	defer db.Close()
+	createTestSchema(t, db)
+	if _, err := db.Exec(`
+		INSERT INTO clients (id, name, status, created_at)
+		VALUES (1, 'Bob', 'active', '2026-01-01 12:00:00')
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", strings.NewReader(`{"completed_at":"not-a-date"}`))
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "YYYY-MM-DD") {
+		t.Fatalf("expected format hint in error, got %q", w.Body.String())
 	}
 }
 

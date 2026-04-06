@@ -232,10 +232,14 @@ func TestGetUpsellAnalytics_DateRangeFiltersQuery(t *testing.T) {
 	endT, _ := time.Parse("2006-01-02", end)
 
 	// query row result columns correspond to Scan order in handler
-	result := sqlmock.NewRows([]string{"verlangerung_count", "keine_verlangerung_count", "scheduled_count", "verlangerungsquote", "umsatz_sum"}).
+	result := sqlmock.NewRows([]string{"verlaengerung_count", "keine_verlaengerung_count", "scheduled_count", "verlaengerungsquote", "umsatz_sum"}).
 		AddRow(2, 1, 3, 66.7, 1000.0)
 
 	mock.ExpectQuery("FROM contract_upsells cu").WithArgs(startT, endT).WillReturnRows(result)
+
+	// Second query: monthly breakdown (verlaengerung by month)
+	monthlyRows := sqlmock.NewRows([]string{"month", "revenue"})
+	mock.ExpectQuery("GROUP BY month").WithArgs(startT, endT).WillReturnRows(monthlyRows)
 
 	req := httptest.NewRequest("GET", "/api/upsells/analytics?start_date="+start+"&end_date="+end, nil)
 	w := httptest.NewRecorder()
@@ -249,8 +253,8 @@ func TestGetUpsellAnalytics_DateRangeFiltersQuery(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body["verlangerung_count"] != float64(2) {
-		t.Fatalf("expected verlangerung_count=2, got %#v", body["verlangerung_count"])
+	if body["verlaengerung_count"] != float64(2) {
+		t.Fatalf("expected verlaengerung_count=2, got %#v", body["verlaengerung_count"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -733,6 +737,73 @@ func TestStartSalesProcess_PreExistingLead_NewClient_LinksLeadViaClientID(t *tes
 	}
 	if *resp.SalesProcess.LeadID != 5 {
 		t.Fatalf("expected lead_id=5 (pre-existing lead), got %d", *resp.SalesProcess.LeadID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateOrUpdateUpsell_StartBeforePrevEnd_Returns422(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	result := "verlaengerung"
+	revenue := 1200.0
+	duration := 6
+	freq := "monthly"
+	newStart := "2026-03-01" // before previous contract end 2026-06-01
+
+	reqBody := CreateUpsellRequest{
+		UpsellResult:           &result,
+		UpsellRevenue:          &revenue,
+		ContractStartDate:      &newStart,
+		ContractDurationMonths: &duration,
+		ContractFrequency:      &freq,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1/upsell", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) Resolve client_id
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	mock.ExpectBegin()
+
+	// 2) Look up existing open upsell (none)
+	mock.ExpectQuery("SELECT id FROM contract_upsells").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 3) Find previous contract
+	prevContractID := 99
+	mock.ExpectQuery("SELECT id FROM contracts").
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(prevContractID))
+
+	// 4) Previous contract end_date > proposed new start
+	prevEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT end_date FROM contracts WHERE id").
+		WithArgs(prevContractID).
+		WillReturnRows(sqlmock.NewRows([]string{"end_date"}).AddRow(prevEnd))
+
+	mock.ExpectRollback()
+
+	w := httptest.NewRecorder()
+	h.CreateOrUpdateUpsell(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
