@@ -38,6 +38,7 @@ func createExportTestSchema(t *testing.T, db *sql.DB) {
 			duration_months INTEGER,
 			revenue_total REAL,
 			payment_frequency TEXT,
+			source TEXT NOT NULL DEFAULT 'manual',
 			created_at TEXT,
 			updated_at TEXT
 		);`,
@@ -136,7 +137,7 @@ func TestExportRawContractsCSV(t *testing.T) {
 	createExportTestSchema(t, db)
 
 	_, _ = db.Exec(`INSERT INTO clients (id,name,email,phone,source,status) VALUES (1,'Alice','alice@example.com','123','organic','active')`)
-	_, _ = db.Exec(`INSERT INTO contracts (id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,created_at,updated_at) VALUES (10,1,100,'2026-01-15','2026-03-20',3,300,'monthly','2026-01-01','2026-01-02')`)
+	_, _ = db.Exec(`INSERT INTO contracts (id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,source,created_at,updated_at) VALUES (10,1,100,'2026-01-15','2026-03-20',3,300,'monthly','import','2026-01-01','2026-01-02')`)
 
 	h := &api.Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/exports/raw/contracts.csv", nil)
@@ -148,10 +149,10 @@ func TestExportRawContractsCSV(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,created_at,updated_at") {
+	if !strings.Contains(body, "id,client_id,sales_process_id,start_date,end_date,duration_months,revenue_total,payment_frequency,source,created_at,updated_at") {
 		t.Fatalf("missing contracts csv header, body=%s", body)
 	}
-	if !strings.Contains(body, ",monthly,") {
+	if !strings.Contains(body, ",monthly,import,") {
 		t.Fatalf("missing contracts row data, body=%s", body)
 	}
 }
@@ -313,6 +314,91 @@ func TestExportLegacyCashflowCSV(t *testing.T) {
 	}
 	if !strings.Contains(body, "Sehr motiviert") {
 		t.Fatalf("expected comment in output, body=%s", body)
+	}
+}
+
+func TestExportLegacyCashflowCSV_InvalidParams(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	h := &api.Handler{DB: db}
+
+	// invalid from
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/legacy/cashflow.csv?from=badval", nil)
+	w := httptest.NewRecorder()
+	h.ExportLegacyCashflowCSV(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid from, got %d", w.Code)
+	}
+
+	// invalid to
+	req2 := httptest.NewRequest(http.MethodGet, "/api/exports/legacy/cashflow.csv?to=badval", nil)
+	w2 := httptest.NewRecorder()
+	h.ExportLegacyCashflowCSV(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid to, got %d", w2.Code)
+	}
+}
+
+func TestExportLegacyCashflowCSV_RangeToBeforeFrom(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+	for _, stmt := range []string{
+		`CREATE TABLE contract_upsells (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sales_process_id INTEGER, client_id INTEGER,
+			upsell_date TEXT, upsell_result TEXT, upsell_revenue REAL,
+			previous_contract_id INTEGER, new_contract_id INTEGER,
+			created_at TEXT DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE comments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT, entity_id INTEGER,
+			author TEXT, body TEXT, metadata TEXT,
+			created_at TEXT DEFAULT CURRENT_TIMESTAMP
+		);`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+	}
+
+	_, _ = db.Exec(`INSERT INTO clients (id,name,source,status) VALUES (1,'Müller Hans','organic','active')`)
+	_, _ = db.Exec(`INSERT INTO contracts (client_id,start_date,end_date,duration_months,revenue_total,payment_frequency) VALUES (1,'2026-01-01','2026-03-31',3,300,'monthly')`)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/legacy/cashflow.csv?from=2026-06&to=2026-01", nil)
+	w := httptest.NewRecorder()
+	h.ExportLegacyCashflowCSV(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for to before from, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestExportAggregatedCashflowCSV_BadToParam(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	createExportTestSchema(t, db)
+
+	h := &api.Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/aggregated/cashflow.csv?to=badval", nil)
+	w := httptest.NewRecorder()
+	h.ExportAggregatedCashflowCSV(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid to, got %d", w.Code)
 	}
 }
 

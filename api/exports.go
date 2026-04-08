@@ -5,7 +5,6 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -127,8 +126,9 @@ func (h *Handler) ExportRawContractsCSV(w http.ResponseWriter, r *http.Request) 
 			COALESCE(CAST(start_date AS TEXT), ''),
 			COALESCE(CAST(end_date AS TEXT), ''),
 			COALESCE(CAST(duration_months AS TEXT), ''),
-			COALESCE(CAST(revenue_total AS TEXT), ''),
+			COALESCE(CAST(ROUND(CAST(revenue_total AS NUMERIC), 2) AS TEXT), ''),
 			COALESCE(payment_frequency, ''),
+			COALESCE(source, ''),
 			COALESCE(CAST(created_at AS TEXT), ''),
 			COALESCE(CAST(updated_at AS TEXT), '')
 		FROM contracts
@@ -143,15 +143,15 @@ func (h *Handler) ExportRawContractsCSV(w http.ResponseWriter, r *http.Request) 
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	_ = cw.Write([]string{"id", "client_id", "sales_process_id", "start_date", "end_date", "duration_months", "revenue_total", "payment_frequency", "created_at", "updated_at"})
+	_ = cw.Write([]string{"id", "client_id", "sales_process_id", "start_date", "end_date", "duration_months", "revenue_total", "payment_frequency", "source", "created_at", "updated_at"})
 
 	for rows.Next() {
-		var id, clientID, salesProcessID, startDate, endDate, durationMonths, revenueTotal, paymentFrequency, createdAt, updatedAt string
-		if err := rows.Scan(&id, &clientID, &salesProcessID, &startDate, &endDate, &durationMonths, &revenueTotal, &paymentFrequency, &createdAt, &updatedAt); err != nil {
+		var id, clientID, salesProcessID, startDate, endDate, durationMonths, revenueTotal, paymentFrequency, source, createdAt, updatedAt string
+		if err := rows.Scan(&id, &clientID, &salesProcessID, &startDate, &endDate, &durationMonths, &revenueTotal, &paymentFrequency, &source, &createdAt, &updatedAt); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_ = cw.Write([]string{id, clientID, salesProcessID, startDate, endDate, durationMonths, revenueTotal, paymentFrequency, createdAt, updatedAt})
+		_ = cw.Write([]string{id, clientID, salesProcessID, startDate, endDate, durationMonths, revenueTotal, paymentFrequency, source, createdAt, updatedAt})
 	}
 }
 
@@ -164,7 +164,7 @@ func (h *Handler) ExportRawCashflowEntriesCSV(w http.ResponseWriter, r *http.Req
 			CAST(id AS TEXT),
 			COALESCE(CAST(contract_id AS TEXT), ''),
 			COALESCE(CAST(due_date AS TEXT), ''),
-			COALESCE(CAST(amount AS TEXT), ''),
+			COALESCE(CAST(ROUND(CAST(amount AS NUMERIC), 2) AS TEXT), ''),
 			COALESCE(status, ''),
 			COALESCE(CAST(updated_at AS TEXT), '')
 		FROM cashflow_entries
@@ -189,24 +189,6 @@ func (h *Handler) ExportRawCashflowEntriesCSV(w http.ResponseWriter, r *http.Req
 		}
 		_ = cw.Write([]string{id, contractID, dueDate, amount, status, updatedAt})
 	}
-}
-
-type exportContractRow struct {
-	ClientID              int
-	ClientName            string
-	ClientEmail           string
-	ClientPhone           string
-	ClientSource          string
-	ClientSourceStageName string
-	ClientStatus          string
-	ContractID            int
-	SalesProcessID        string
-	StartDate             time.Time
-	EndDate               time.Time
-	PaymentFreq           string
-	DurationMonths        int
-	RevenueTotal          float64
-	BaseAmount            string
 }
 
 var germanMonthNames = [12]string{
@@ -454,90 +436,71 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	type aggClientRow struct {
+		ID              int
+		Name            string
+		Email           string
+		Phone           string
+		Source          string
+		SourceStageName string
+		Status          string
+		StartDate       string
+		EndDate         string
+		TotalRevenue    float64
+	}
+
 	rows, err := h.DB.QueryContext(ctx, `
 		SELECT
-			ct.client_id,
+			cl.id,
 			COALESCE(cl.name, ''),
 			COALESCE(cl.email, ''),
 			COALESCE(cl.phone, ''),
 			COALESCE(cl.source, ''),
-			COALESCE(ss.name, ''),
+			COALESCE((SELECT name FROM stages s WHERE s.id = cl.source_stage_id), ''),
 			COALESCE(cl.status, ''),
-			ct.id,
-			COALESCE(CAST(ct.sales_process_id AS TEXT), ''),
-			COALESCE(CAST(ct.start_date AS TEXT), ''),
-			COALESCE(CAST(ct.end_date AS TEXT), ''),
-			COALESCE(ct.payment_frequency, ''),
-			COALESCE(ct.duration_months, 0),
-			COALESCE(ct.revenue_total, 0)
-		FROM contracts ct
-		JOIN clients cl ON cl.id = ct.client_id
-		LEFT JOIN stages ss ON ss.id = cl.source_stage_id
-		ORDER BY cl.id, ct.id`)
+			COALESCE(CAST(MIN(ct.start_date) AS TEXT), ''),
+			COALESCE(CAST(MAX(ct.end_date) AS TEXT), ''),
+			COALESCE(SUM(ct.revenue_total), 0)
+		FROM clients cl
+		JOIN contracts ct ON ct.client_id = cl.id
+		GROUP BY cl.id, cl.name, cl.email, cl.phone, cl.source, cl.source_stage_id, cl.status
+		ORDER BY cl.id`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	contracts := make([]exportContractRow, 0, 128)
-	var minMonth time.Time
-	var maxMonth time.Time
+	clients := make([]aggClientRow, 0, 128)
+	var minMonth, maxMonth time.Time
 
 	for rows.Next() {
-		var row exportContractRow
-		var startDateRaw, endDateRaw string
-		if err := rows.Scan(
-			&row.ClientID,
-			&row.ClientName,
-			&row.ClientEmail,
-			&row.ClientPhone,
-			&row.ClientSource,
-			&row.ClientSourceStageName,
-			&row.ClientStatus,
-			&row.ContractID,
-			&row.SalesProcessID,
-			&startDateRaw,
-			&endDateRaw,
-			&row.PaymentFreq,
-			&row.DurationMonths,
-			&row.RevenueTotal,
-		); err != nil {
+		var c aggClientRow
+		if err := rows.Scan(&c.ID, &c.Name, &c.Email, &c.Phone, &c.Source, &c.SourceStageName, &c.Status, &c.StartDate, &c.EndDate, &c.TotalRevenue); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		st, ok := parseDateString(startDateRaw)
-		if !ok {
-			continue
+		clients = append(clients, c)
+		if st, ok := parseDateString(c.StartDate); ok {
+			ms := monthStart(st)
+			if minMonth.IsZero() || ms.Before(minMonth) {
+				minMonth = ms
+			}
 		}
-		row.StartDate = monthStart(st)
-
-		if et, ok := parseDateString(endDateRaw); ok {
-			row.EndDate = monthStart(et)
-		} else {
-			row.EndDate = monthStart(st.AddDate(0, row.DurationMonths, 0))
+		if et, ok := parseDateString(c.EndDate); ok {
+			ms := monthStart(et)
+			if maxMonth.IsZero() || ms.After(maxMonth) {
+				maxMonth = ms
+			}
 		}
-
-		if row.DurationMonths > 0 {
-			row.BaseAmount = strconv.FormatFloat(row.RevenueTotal/float64(row.DurationMonths), 'f', 2, 64)
-		}
-
-		if minMonth.IsZero() || row.StartDate.Before(minMonth) {
-			minMonth = row.StartDate
-		}
-		if maxMonth.IsZero() || row.EndDate.After(maxMonth) {
-			maxMonth = row.EndDate
-		}
-
-		contracts = append(contracts, row)
 	}
 
-	if len(contracts) == 0 {
-		setCSVHeaders(w, "cashflow_aggregated.csv")
-		cw := csv.NewWriter(w)
-		defer cw.Flush()
-		_ = cw.Write([]string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"})
+	setCSVHeaders(w, "cashflow_aggregated.csv")
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	if len(clients) == 0 {
+		_ = cw.Write([]string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "first_contract_start", "last_contract_end", "total_revenue"})
 		return
 	}
 
@@ -556,83 +519,68 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 
 	cashRows, err := h.DB.QueryContext(ctx, `
 		SELECT
-			contract_id,
-			substr(CAST(due_date AS TEXT), 1, 7) AS ym,
-			COALESCE(SUM(amount), 0)
-		FROM cashflow_entries
-		GROUP BY contract_id, substr(CAST(due_date AS TEXT), 1, 7)`)
+			ct.client_id,
+			substr(CAST(ce.due_date AS TEXT), 1, 7) AS ym,
+			SUM(ce.amount)
+		FROM cashflow_entries ce
+		JOIN contracts ct ON ct.id = ce.contract_id
+		GROUP BY ct.client_id, substr(CAST(ce.due_date AS TEXT), 1, 7)`)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer cashRows.Close()
 
-	amountByContractMonth := make(map[int]map[string]float64, 256)
+	amountByClientMonth := make(map[int]map[string]float64)
 	for cashRows.Next() {
-		var contractID int
+		var clientID int
 		var ym string
 		var amount float64
-		if err := cashRows.Scan(&contractID, &ym, &amount); err != nil {
+		if err := cashRows.Scan(&clientID, &ym, &amount); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if _, ok := amountByContractMonth[contractID]; !ok {
-			amountByContractMonth[contractID] = make(map[string]float64)
+		if amountByClientMonth[clientID] == nil {
+			amountByClientMonth[clientID] = make(map[string]float64)
 		}
-		amountByContractMonth[contractID][ym] = amount
+		amountByClientMonth[clientID][ym] = amount
 	}
 
-	setCSVHeaders(w, "cashflow_aggregated.csv")
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-
-	header := []string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "contract_id", "sales_process_id", "contract_start_date", "contract_end_date", "payment_frequency", "duration_months", "revenue_total", "base_amount"}
+	header := []string{"client_id", "client_name", "client_email", "client_phone", "client_source", "client_source_stage_name", "client_status", "first_contract_start", "last_contract_end", "total_revenue"}
 	for _, m := range months {
 		header = append(header, monthHeaderKey(m))
 	}
 	_ = cw.Write(header)
 
-	sort.SliceStable(contracts, func(i, j int) bool {
-		if contracts[i].ClientID == contracts[j].ClientID {
-			return contracts[i].ContractID < contracts[j].ContractID
+	for _, c := range clients {
+		startFmt, endFmt := c.StartDate, c.EndDate
+		if t, ok := parseDateString(c.StartDate); ok {
+			startFmt = t.Format("2006-01-02")
 		}
-		return contracts[i].ClientID < contracts[j].ClientID
-	})
-
-	for _, c := range contracts {
+		if t, ok := parseDateString(c.EndDate); ok {
+			endFmt = t.Format("2006-01-02")
+		}
 		row := []string{
-			strconv.Itoa(c.ClientID),
-			c.ClientName,
-			c.ClientEmail,
-			c.ClientPhone,
-			c.ClientSource,
-			c.ClientSourceStageName,
-			c.ClientStatus,
-			strconv.Itoa(c.ContractID),
-			c.SalesProcessID,
-			c.StartDate.Format("2006-01-02"),
-			c.EndDate.Format("2006-01-02"),
-			c.PaymentFreq,
-			strconv.Itoa(c.DurationMonths),
-			strconv.FormatFloat(c.RevenueTotal, 'f', 2, 64),
-			c.BaseAmount,
+			strconv.Itoa(c.ID),
+			c.Name,
+			c.Email,
+			c.Phone,
+			c.Source,
+			c.SourceStageName,
+			c.Status,
+			startFmt,
+			endFmt,
+			strconv.FormatFloat(c.TotalRevenue, 'f', 2, 64),
 		}
-
-		contractMap := amountByContractMonth[c.ContractID]
+		clientMap := amountByClientMonth[c.ID]
 		for _, m := range months {
-			if m.Before(c.StartDate) || m.After(c.EndDate) {
-				row = append(row, "")
-				continue
+			ym := monthKey(m)
+			if v, ok := clientMap[ym]; ok {
+				row = append(row, strconv.FormatFloat(v, 'f', 2, 64))
+			} else {
+				row = append(row, "0.00")
 			}
-			amt := 0.0
-			if contractMap != nil {
-				if v, ok := contractMap[monthKey(m)]; ok {
-					amt = v
-				}
-			}
-			row = append(row, strconv.FormatFloat(amt, 'f', 2, 64))
 		}
-
 		_ = cw.Write(row)
 	}
 }
