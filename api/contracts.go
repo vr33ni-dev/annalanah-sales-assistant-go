@@ -357,11 +357,11 @@ SELECT
 	c.end_date,
 	c.created_at,
 	cs.total_duration_months AS duration_months,
-	cs.total_revenue AS revenue_total,
+	ROUND(cs.total_revenue::numeric, 2) AS revenue_total,
 	c.payment_frequency,
 	CASE
 		WHEN cs.total_duration_months > 0
-			THEN (cs.total_revenue / cs.total_duration_months)
+			THEN ROUND((cs.total_revenue / cs.total_duration_months)::numeric, 2)
 		ELSE 0
 	END AS base_monthly_amount,
 	COALESCE(
@@ -549,11 +549,11 @@ SELECT
 	c.created_at,
 	c.updated_at,
 	c.duration_months,
-	c.revenue_total,
+	ROUND(c.revenue_total::numeric, 2) AS revenue_total,
 	c.payment_frequency,
 	CASE
 		WHEN c.duration_months > 0
-			THEN (c.revenue_total / c.duration_months)
+			THEN ROUND((c.revenue_total / c.duration_months)::numeric, 2)
 		ELSE 0
 	END AS base_monthly_amount,
 	COALESCE(
@@ -638,8 +638,8 @@ chain_forward(contract_id) AS (
 SELECT
     c.id, c.client_id, cl.name, c.sales_process_id,
     c.start_date, c.end_date, c.created_at, c.duration_months,
-    c.revenue_total, c.payment_frequency,
-    CASE WHEN c.duration_months > 0 THEN (c.revenue_total / c.duration_months) ELSE 0 END,
+    ROUND(c.revenue_total::numeric, 2) AS revenue_total, c.payment_frequency,
+    CASE WHEN c.duration_months > 0 THEN ROUND((c.revenue_total / c.duration_months)::numeric, 2) ELSE 0 END,
     COALESCE(o.overdue_due_date, u.upcoming_due_date),
     c.source
 FROM chain_forward cf
