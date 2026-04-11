@@ -858,7 +858,7 @@ func (h *Handler) CreateContract(w http.ResponseWriter, r *http.Request) {
 
 	// Optionally insert comments (non-fatal)
 	if len(c.Comments) > 0 {
-		_ = h.insertCommentsForEntity("contract", c.ID, c.Comments)
+		_ = h.insertCommentsForEntity("contract", c.ID, c.ClientID, c.Comments)
 	}
 
 	// Return response
@@ -959,7 +959,9 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 
 	// Optional comments (same behavior as before)
 	if req.Comments != nil && len(req.Comments) > 0 {
-		_ = h.insertCommentsForEntity("contract", id, req.Comments)
+		var contractClientID int
+		_ = h.DB.QueryRow(`SELECT client_id FROM contracts WHERE id = $1`, id).Scan(&contractClientID)
+		_ = h.insertCommentsForEntity("contract", id, contractClientID, req.Comments)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

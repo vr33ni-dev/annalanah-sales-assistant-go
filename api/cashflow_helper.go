@@ -181,8 +181,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, clientID int, c
 				if leftover != "" {
 					commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 					if _, err := tx.Exec(`
-						INSERT INTO comments (entity_type, entity_id, body, author)
-						VALUES ('client', $1, $2, 'importer')
+						INSERT INTO comments (entity_type, entity_id, client_id, body, author)
+						VALUES ('client', $1, $1, $2, 'importer')
 					`, clientID, commentBody); err != nil {
 						return err
 					}
@@ -192,8 +192,8 @@ func insertImportedCashflowEntriesTx(tx *sql.Tx, contractID int, clientID int, c
 
 			commentBody := fmt.Sprintf("%s: %s", ym, trimmed)
 			if _, err := tx.Exec(`
-				INSERT INTO comments (entity_type, entity_id, body, author)
-				VALUES ('client', $1, $2, 'importer')
+				INSERT INTO comments (entity_type, entity_id, client_id, body, author)
+				VALUES ('client', $1, $1, $2, 'importer')
 			`, clientID, commentBody); err != nil {
 				return err
 			}

@@ -254,11 +254,11 @@ func TestListComments_Success(t *testing.T) {
 	h := &api.Handler{DB: db}
 
 	now := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}).
-		AddRow(1, sql.NullString{String: "Sam", Valid: true}, "hi", `{"k":"v"}`, now, now).
-		AddRow(2, sql.NullString{Valid: false}, "hello", nil, now, now)
+	rows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
+		AddRow(1, sql.NullInt64{Int64: 5, Valid: true}, sql.NullString{String: "Sam", Valid: true}, "hi", `{"k":"v"}`, now, now).
+		AddRow(2, sql.NullInt64{Valid: false}, sql.NullString{Valid: false}, "hello", nil, now, now)
 
-	mock.ExpectQuery("SELECT id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT id, client_id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/comments?entity_type=client&entity_id=42", nil)
 	w := httptest.NewRecorder()
@@ -340,8 +340,8 @@ func TestListComments_Empty(t *testing.T) {
 
 	h := &api.Handler{DB: db}
 
-	rows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"})
-	mock.ExpectQuery("SELECT id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
+	rows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"})
+	mock.ExpectQuery("SELECT id, client_id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/comments?entity_type=client&entity_id=42", nil)
 	w := httptest.NewRecorder()
@@ -372,10 +372,10 @@ func TestListComments_NullTimestamps(t *testing.T) {
 
 	h := &api.Handler{DB: db}
 
-	rows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}).
-		AddRow(1, sql.NullString{String: "Sam", Valid: true}, "hi", `{"k":"v"}`, nil, nil)
+	rows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
+		AddRow(1, sql.NullInt64{Int64: 5, Valid: true}, sql.NullString{String: "Sam", Valid: true}, "hi", `{"k":"v"}`, nil, nil)
 
-	mock.ExpectQuery("SELECT id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT id, client_id, author, body, metadata, created_at, updated_at").WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/comments?entity_type=client&entity_id=42", nil)
 	w := httptest.NewRecorder()

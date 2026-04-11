@@ -482,7 +482,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(c.Comments) > 0 {
-		if err := h.insertCommentsForEntity("client", c.ID, c.Comments); err != nil {
+		if err := h.insertCommentsForEntity("client", c.ID, c.ID, c.Comments); err != nil {
 			log.Printf("failed to insert comments for client %d: %v", c.ID, err)
 		}
 	}
@@ -669,7 +669,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 
 	// optionally insert comments provided in the patch
 	if updated.Comments != nil && len(updated.Comments) > 0 {
-		if err := h.insertCommentsForEntity("client", id, updated.Comments); err != nil {
+		if err := h.insertCommentsForEntity("client", id, id, updated.Comments); err != nil {
 			log.Printf("failed to insert comments for client %d: %v", id, err)
 		}
 	}

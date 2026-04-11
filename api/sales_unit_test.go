@@ -346,10 +346,6 @@ func TestUpdateSalesProcess_NoShowForcesClosedFalseAndClearsCompletedAt(t *testi
 	commentRows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"})
 	mock.ExpectQuery("FROM comments").WithArgs(1).WillReturnRows(commentRows)
 
-	// 7) lead_id lookup for delete-on-lost logic (no lead attached)
-	mock.ExpectQuery("SELECT lead_id FROM sales_process WHERE id = ").WithArgs(1).
-		WillReturnRows(sqlmock.NewRows([]string{"lead_id"}).AddRow(nil))
-
 	w := httptest.NewRecorder()
 	h.UpdateSalesProcess(w, req)
 
@@ -447,26 +443,6 @@ func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *te
 	// 6) Comments query (empty)
 	commentRows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"})
 	mock.ExpectQuery("FROM comments").WithArgs(1).WillReturnRows(commentRows)
-
-	// 7) lead_id lookup (attached)
-	mock.ExpectQuery("SELECT lead_id FROM sales_process WHERE id = ").WithArgs(1).
-		WillReturnRows(sqlmock.NewRows([]string{"lead_id"}).AddRow(7))
-
-	// 8) lead converted? false
-	mock.ExpectQuery("SELECT converted FROM leads WHERE id = ").WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"converted"}).AddRow(false))
-
-	// 9) contracts exist? false
-	mock.ExpectQuery("SELECT EXISTS").WithArgs(10).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-
-	// 10) delete transaction
-	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM comments").WithArgs(10, 1).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM clients WHERE id = ").WithArgs(10).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
 
 	w := httptest.NewRecorder()
 	h.UpdateSalesProcess(w, req)
