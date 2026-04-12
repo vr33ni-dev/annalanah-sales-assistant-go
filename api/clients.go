@@ -198,10 +198,9 @@ ORDER BY id
 	// ------------------------------------------------------------
 	if len(clientIDs) > 0 {
 		commentRows, err := h.DB.QueryContext(ctx, `
-			SELECT id, entity_id, author, body, metadata, created_at, updated_at
+			SELECT id, client_id, author, body, metadata, created_at, updated_at
 			FROM comments
-			WHERE entity_type = 'client'
-			  AND entity_id = ANY($1)
+			WHERE client_id = ANY($1)
 			ORDER BY created_at DESC
 		`, pq.Array(clientIDs))
 
@@ -210,13 +209,13 @@ ORDER BY id
 
 			for commentRows.Next() {
 				var id int
-				var entityID int64
+				var clientID int64
 				var author sql.NullString
 				var body string
 				var metadata sql.NullString
 				var created, updated time.Time
 
-				if err := commentRows.Scan(&id, &entityID, &author, &body, &metadata, &created, &updated); err != nil {
+				if err := commentRows.Scan(&id, &clientID, &author, &body, &metadata, &created, &updated); err != nil {
 					continue
 				}
 
@@ -231,16 +230,15 @@ ORDER BY id
 					a = &s
 				}
 
-				if idx, ok := idToIndex[entityID]; ok {
+				if idx, ok := idToIndex[clientID]; ok {
 					clients[idx].Comments = append(clients[idx].Comments, CommentResponse{
-						ID:         id,
-						EntityType: "client",
-						EntityID:   int(entityID),
-						Author:     a,
-						Body:       body,
-						Metadata:   meta,
-						CreatedAt:  created.Format(time.RFC3339),
-						UpdatedAt:  updated.Format(time.RFC3339),
+						ID:       id,
+						ClientID: func() *int { v := int(clientID); return &v }(),
+						Author:   a,
+						Body:     body,
+						Metadata: meta,
+						CreatedAt: created.Format(time.RFC3339),
+						UpdatedAt: updated.Format(time.RFC3339),
 					})
 				}
 			}

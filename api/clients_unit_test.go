@@ -386,9 +386,9 @@ func TestListClients_LoadsCommentsForClients(t *testing.T) {
 		AddRow(int64(1), nil, "Acme", "acme@example.com", "123", "web", "", "active", nil)
 	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
 
-	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
 		AddRow(10, int64(1), "Admin", "First comment", nil, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT id, entity_id").WillReturnRows(commentRows)
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(commentRows)
 
 	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
@@ -664,9 +664,9 @@ func TestListClients_CommentWithMetadata(t *testing.T) {
 	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
 
 	metaJSON := `{"key":"value"}`
-	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
 		AddRow(5, int64(1), nil, "body text", metaJSON, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT id, entity_id").WillReturnRows(commentRows)
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(commentRows)
 
 	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)

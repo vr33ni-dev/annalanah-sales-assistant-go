@@ -54,22 +54,25 @@ func (h *Handler) loadSalesProcessResponse(id int) (SalesProcessResponse, error)
 	}
 
 	commentRows, err := h.DB.Query(`
-		SELECT id, author, body, metadata, created_at, updated_at
+		SELECT id, client_id, entity_type, entity_id, author, body, metadata, created_at, updated_at
 		FROM comments
-		WHERE entity_type = 'sales_process' AND entity_id = $1
+		WHERE client_id = $1
 		ORDER BY created_at DESC
-	`, updated.ID)
+	`, updated.ClientID)
 	if err == nil {
 		defer commentRows.Close()
 
 		var comments []CommentResponse
 		for commentRows.Next() {
 			var id int
+			var cid sql.NullInt64
+			var entityType string
+			var entityID int
 			var author sql.NullString
 			var body string
 			var metadata sql.NullString
 			var created, updatedAt time.Time
-			if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updatedAt); err == nil {
+			if err := commentRows.Scan(&id, &cid, &entityType, &entityID, &author, &body, &metadata, &created, &updatedAt); err == nil {
 				var meta map[string]interface{}
 				if metadata.Valid && metadata.String != "" {
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
@@ -79,8 +82,14 @@ func (h *Handler) loadSalesProcessResponse(id int) (SalesProcessResponse, error)
 					s := author.String
 					a = &s
 				}
+				var cidPtr *int
+				if cid.Valid {
+					v := int(cid.Int64)
+					cidPtr = &v
+				}
 				comments = append(comments, CommentResponse{
-					ID: id, EntityType: "sales_process", EntityID: updated.ID, Author: a, Body: body, Metadata: meta,
+					ID: id, ClientID: cidPtr, EntityType: entityType, EntityID: entityID,
+					Author: a, Body: body, Metadata: meta,
 					CreatedAt: created.Format(time.RFC3339), UpdatedAt: updatedAt.Format(time.RFC3339),
 				})
 			}
