@@ -232,11 +232,11 @@ ORDER BY id
 
 				if idx, ok := idToIndex[clientID]; ok {
 					clients[idx].Comments = append(clients[idx].Comments, CommentResponse{
-						ID:       id,
-						ClientID: func() *int { v := int(clientID); return &v }(),
-						Author:   a,
-						Body:     body,
-						Metadata: meta,
+						ID:        id,
+						ClientID:  func() *int { v := int(clientID); return &v }(),
+						Author:    a,
+						Body:      body,
+						Metadata:  meta,
 						CreatedAt: created.Format(time.RFC3339),
 						UpdatedAt: updated.Format(time.RFC3339),
 					})
