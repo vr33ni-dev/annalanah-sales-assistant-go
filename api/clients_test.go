@@ -61,6 +61,7 @@ func createTestSchema(t *testing.T, db *sql.DB) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			entity_type TEXT,
 			entity_id INTEGER,
+			client_id INTEGER,
 			author TEXT,
 			body TEXT,
 			metadata TEXT,

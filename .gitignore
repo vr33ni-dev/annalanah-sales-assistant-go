@@ -53,6 +53,7 @@ tools/transform_staging/*
 tools/mappings/salesprocess.json
 pkg/importer/salesprocess.go
 tools/merge_truecoach.py
+tools/check_clv_totals.py
 tools/importcashflow/*
 tools/importcsv/*
 tools/extract_sales_names/*

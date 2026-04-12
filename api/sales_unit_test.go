@@ -342,13 +342,9 @@ func TestUpdateSalesProcess_NoShowForcesClosedFalseAndClearsCompletedAt(t *testi
 		)
 	mock.ExpectQuery("FROM sales_process sp").WithArgs(1).WillReturnRows(respRows)
 
-	// 6) Comments query (empty)
-	commentRows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"})
-	mock.ExpectQuery("FROM comments").WithArgs(1).WillReturnRows(commentRows)
-
-	// 7) lead_id lookup for delete-on-lost logic (no lead attached)
-	mock.ExpectQuery("SELECT lead_id FROM sales_process WHERE id = ").WithArgs(1).
-		WillReturnRows(sqlmock.NewRows([]string{"lead_id"}).AddRow(nil))
+	// 6) Comments query (empty) — now queries by client_id=10
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"})
+	mock.ExpectQuery("FROM comments").WithArgs(10).WillReturnRows(commentRows)
 
 	w := httptest.NewRecorder()
 	h.UpdateSalesProcess(w, req)
@@ -444,29 +440,9 @@ func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *te
 		)
 	mock.ExpectQuery("FROM sales_process sp").WithArgs(1).WillReturnRows(respRows)
 
-	// 6) Comments query (empty)
-	commentRows := sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"})
-	mock.ExpectQuery("FROM comments").WithArgs(1).WillReturnRows(commentRows)
-
-	// 7) lead_id lookup (attached)
-	mock.ExpectQuery("SELECT lead_id FROM sales_process WHERE id = ").WithArgs(1).
-		WillReturnRows(sqlmock.NewRows([]string{"lead_id"}).AddRow(7))
-
-	// 8) lead converted? false
-	mock.ExpectQuery("SELECT converted FROM leads WHERE id = ").WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"converted"}).AddRow(false))
-
-	// 9) contracts exist? false
-	mock.ExpectQuery("SELECT EXISTS").WithArgs(10).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-
-	// 10) delete transaction
-	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM comments").WithArgs(10, 1).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM clients WHERE id = ").WithArgs(10).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
+	// 6) Comments query (empty) — now queries by client_id=10
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"})
+	mock.ExpectQuery("FROM comments").WithArgs(10).WillReturnRows(commentRows)
 
 	w := httptest.NewRecorder()
 	h.UpdateSalesProcess(w, req)
@@ -536,7 +512,7 @@ func TestStartSalesProcess_NewClient_CreatesTrackerLeadAndReturnsLeadID(t *testi
 
 	// 8) loadStartSalesProcessResponse: comments (empty)
 	mock.ExpectQuery("FROM comments").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
 
 	// 9) loadStartSalesProcessResponse: client detail
 	mock.ExpectQuery("FROM clients").
@@ -623,7 +599,7 @@ func TestStartSalesProcess_NewClient_EmailExistsInLeads_LinksExistingLead(t *tes
 
 	// 9) Comments (empty)
 	mock.ExpectQuery("FROM comments").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
 
 	// 10) Client detail
 	mock.ExpectQuery("FROM clients").
@@ -712,7 +688,7 @@ func TestStartSalesProcess_PreExistingLead_NewClient_LinksLeadViaClientID(t *tes
 
 	// 9) Comments (empty)
 	mock.ExpectQuery("FROM comments").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "author", "body", "metadata", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
 
 	// 10) Client detail
 	mock.ExpectQuery("FROM clients").

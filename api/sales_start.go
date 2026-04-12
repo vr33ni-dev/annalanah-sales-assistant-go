@@ -292,20 +292,23 @@ func (h *Handler) resolveExistingClientForSalesStart(ctx context.Context, client
 func (h *Handler) loadStartSalesProcessResponse(ctx context.Context, salesID, clientID int, stage string, req StartSalesProcessRequest, leadID *int) (StartSalesProcessResponse, error) {
 	var respComments []CommentResponse
 	commentRows, err := h.DB.QueryContext(ctx, `
-		SELECT id, author, body, metadata, created_at, updated_at
+		SELECT id, client_id, entity_type, entity_id, author, body, metadata, created_at, updated_at
 		FROM comments
-		WHERE entity_type = 'client' AND entity_id = $1
+		WHERE client_id = $1
 		ORDER BY created_at DESC
 	`, clientID)
 	if err == nil {
 		defer commentRows.Close()
 		for commentRows.Next() {
 			var id int
+			var cid sql.NullInt64
+			var entityType string
+			var entityID int
 			var author sql.NullString
 			var body string
 			var metadata sql.NullString
 			var created, updated time.Time
-			if err := commentRows.Scan(&id, &author, &body, &metadata, &created, &updated); err == nil {
+			if err := commentRows.Scan(&id, &cid, &entityType, &entityID, &author, &body, &metadata, &created, &updated); err == nil {
 				var meta map[string]interface{}
 				if metadata.Valid && metadata.String != "" {
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
@@ -315,8 +318,14 @@ func (h *Handler) loadStartSalesProcessResponse(ctx context.Context, salesID, cl
 					s := author.String
 					a = &s
 				}
+				var cidPtr *int
+				if cid.Valid {
+					v := int(cid.Int64)
+					cidPtr = &v
+				}
 				respComments = append(respComments, CommentResponse{
-					ID: id, EntityType: "client", EntityID: clientID, Author: a, Body: body, Metadata: meta,
+					ID: id, ClientID: cidPtr, EntityType: entityType, EntityID: entityID,
+					Author: a, Body: body, Metadata: meta,
 					CreatedAt: created.Format(time.RFC3339), UpdatedAt: updated.Format(time.RFC3339),
 				})
 			}

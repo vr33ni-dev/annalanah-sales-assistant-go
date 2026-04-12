@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -252,7 +253,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ---------- UPDATE SALES_PROCESS (fields + normalized stage) ----------
-	_, err = h.DB.Exec(`
+	result, err := h.DB.Exec(`
 	UPDATE sales_process
 	SET
 		initial_contact_date = COALESCE($1, initial_contact_date),
@@ -289,10 +290,18 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		http.Error(w, "sales process not found", http.StatusNotFound)
+		return
+	}
 
 	// Resolve client_id once (used for completed_at and optional contract creation)
 	var clientID int
 	if err := h.DB.QueryRow(`SELECT client_id FROM sales_process WHERE id = $1`, id).Scan(&clientID); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "sales process not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -316,6 +325,32 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Insert any comments sent alongside the update
+	for _, c := range sp.Comments {
+		body := strings.TrimSpace(c.Body)
+		if body == "" {
+			continue
+		}
+		author := c.Author
+		if sess, ok := h.parseSession(r); ok {
+			author = &sess.Name
+		} else if author == nil {
+			def := os.Getenv("DEFAULT_COMMENT_AUTHOR")
+			if def == "" {
+				def = "local-dev"
+			}
+			author = &def
+		}
+		metaBytes, _ := json.Marshal(c.Metadata)
+		if _, err := h.DB.ExecContext(r.Context(),
+			`INSERT INTO comments (entity_type, entity_id, client_id, author, body, metadata) VALUES ('sales_process', $1, $2, $3, $4, $5::jsonb)`,
+			id, clientID, author, body, string(metaBytes),
+		); err != nil {
+			http.Error(w, "failed to save comment: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	updated, err := h.loadSalesProcessResponse(id)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -324,22 +359,6 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	// If this sales process was started from an unconverted lead and ended up lost,
-	// delete the temporary client record so the lead can be scheduled again cleanly.
-	if updated.Stage == "lost" && updated.Closed != nil && !*updated.Closed {
-		shouldDelete, err := h.shouldDeleteLostTemporaryClient(r.Context(), updated.ID, updated.ClientID)
-		if err != nil {
-			http.Error(w, "cleanup check failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if shouldDelete {
-			if err := h.deleteTemporaryClientWithComments(r.Context(), updated.ClientID, updated.ID); err != nil {
-				http.Error(w, "temporary client cleanup failed: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -501,7 +520,7 @@ func (h *Handler) StartSalesProcess(w http.ResponseWriter, r *http.Request) {
 
 	// optionally insert comments provided with the create request (post-commit)
 	if len(req.Comments) > 0 {
-		if err := h.insertCommentsForEntity("client", clientID, req.Comments); err != nil {
+		if err := h.insertCommentsForEntity("client", clientID, clientID, req.Comments); err != nil {
 			// ignore insertion error for now
 		}
 	}

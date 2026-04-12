@@ -198,10 +198,9 @@ ORDER BY id
 	// ------------------------------------------------------------
 	if len(clientIDs) > 0 {
 		commentRows, err := h.DB.QueryContext(ctx, `
-			SELECT id, entity_id, author, body, metadata, created_at, updated_at
+			SELECT id, client_id, author, body, metadata, created_at, updated_at
 			FROM comments
-			WHERE entity_type = 'client'
-			  AND entity_id = ANY($1)
+			WHERE client_id = ANY($1)
 			ORDER BY created_at DESC
 		`, pq.Array(clientIDs))
 
@@ -210,13 +209,13 @@ ORDER BY id
 
 			for commentRows.Next() {
 				var id int
-				var entityID int64
+				var clientID int64
 				var author sql.NullString
 				var body string
 				var metadata sql.NullString
 				var created, updated time.Time
 
-				if err := commentRows.Scan(&id, &entityID, &author, &body, &metadata, &created, &updated); err != nil {
+				if err := commentRows.Scan(&id, &clientID, &author, &body, &metadata, &created, &updated); err != nil {
 					continue
 				}
 
@@ -231,16 +230,15 @@ ORDER BY id
 					a = &s
 				}
 
-				if idx, ok := idToIndex[entityID]; ok {
+				if idx, ok := idToIndex[clientID]; ok {
 					clients[idx].Comments = append(clients[idx].Comments, CommentResponse{
-						ID:         id,
-						EntityType: "client",
-						EntityID:   int(entityID),
-						Author:     a,
-						Body:       body,
-						Metadata:   meta,
-						CreatedAt:  created.Format(time.RFC3339),
-						UpdatedAt:  updated.Format(time.RFC3339),
+						ID:        id,
+						ClientID:  func() *int { v := int(clientID); return &v }(),
+						Author:    a,
+						Body:      body,
+						Metadata:  meta,
+						CreatedAt: created.Format(time.RFC3339),
+						UpdatedAt: updated.Format(time.RFC3339),
 					})
 				}
 			}
@@ -262,185 +260,6 @@ ORDER BY id
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(clients)
-}
-
-// DEBUG: GET /api/debug/active-clients
-// Returns names and end dates of all active clients for reconciliation with import file
-func (h *Handler) DebugActiveClients(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	type ActiveClientDebug struct {
-		Name            string  `json:"name"`
-		Email           *string `json:"email,omitempty"`
-		ContractEndDate *string `json:"contract_end_date,omitempty"`
-	}
-
-	rows, err := h.DB.QueryContext(ctx, `
-SELECT 
-	c.name,
-	c.email,
-	MAX(ct.end_date)::text AS end_date
-FROM clients c
-LEFT JOIN contracts ct ON ct.client_id = c.id
-	AND (ct.end_date IS NULL OR ct.end_date >= CURRENT_DATE)
-GROUP BY c.id, c.name, c.email
-HAVING EXISTS (
-	SELECT 1
-	FROM contracts ct2
-	WHERE ct2.client_id = c.id
-	  AND (ct2.end_date IS NULL OR ct2.end_date >= CURRENT_DATE)
-)
-ORDER BY c.name ASC
-`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var activeClients []ActiveClientDebug
-	for rows.Next() {
-		var client ActiveClientDebug
-		var email sql.NullString
-		var endDate sql.NullString
-		if err := rows.Scan(&client.Name, &email, &endDate); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if email.Valid {
-			client.Email = &email.String
-		}
-		if endDate.Valid {
-			client.ContractEndDate = &endDate.String
-		}
-		activeClients = append(activeClients, client)
-	}
-
-	log.Printf("DebugActiveClients: found %d active clients", len(activeClients))
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":   len(activeClients),
-		"clients": activeClients,
-	})
-}
-
-// DEBUG: GET /api/debug/expired-but-active
-// Returns clients with status='active' but all contracts expired (end_date < today)
-func (h *Handler) DebugExpiredButActive(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	type ExpiredClientDebug struct {
-		Name              string  `json:"name"`
-		Email             *string `json:"email,omitempty"`
-		LatestContractEnd *string `json:"latest_contract_end,omitempty"`
-	}
-
-	rows, err := h.DB.QueryContext(ctx, `
-SELECT 
-	c.id,
-	c.name,
-	c.email,
-	MAX(ct.end_date)::text AS latest_end_date
-FROM clients c
-LEFT JOIN contracts ct ON ct.client_id = c.id
-WHERE c.status = 'active'
-GROUP BY c.id, c.name, c.email
-HAVING (
-	SELECT COUNT(1) FROM contracts ct2
-	WHERE ct2.client_id = c.id
-	  AND (ct2.end_date IS NULL OR ct2.end_date >= CURRENT_DATE)
-) = 0
-ORDER BY c.name ASC
-`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var expiredClients []ExpiredClientDebug
-	for rows.Next() {
-		var id int
-		var client ExpiredClientDebug
-		var email sql.NullString
-		var latestEnd sql.NullString
-		if err := rows.Scan(&id, &client.Name, &email, &latestEnd); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if email.Valid {
-			client.Email = &email.String
-		}
-		if latestEnd.Valid {
-			client.LatestContractEnd = &latestEnd.String
-		}
-		expiredClients = append(expiredClients, client)
-	}
-
-	log.Printf("DebugExpiredButActive: found %d expired-but-active clients", len(expiredClients))
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":   len(expiredClients),
-		"clients": expiredClients,
-	})
-}
-
-// DEBUG: GET /api/debug/no-contracts
-// Returns clients with no contracts at all
-func (h *Handler) DebugNoContracts(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	type NoContractClientDebug struct {
-		ID     int     `json:"id"`
-		Name   string  `json:"name"`
-		Email  *string `json:"email,omitempty"`
-		Status string  `json:"status"`
-	}
-
-	rows, err := h.DB.QueryContext(ctx, `
-SELECT 
-	c.id,
-	c.name,
-	c.email,
-	c.status
-FROM clients c
-WHERE NOT EXISTS (
-	SELECT 1 FROM contracts ct WHERE ct.client_id = c.id
-)
-ORDER BY c.name ASC
-`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var noContractClients []NoContractClientDebug
-	for rows.Next() {
-		var client NoContractClientDebug
-		var email sql.NullString
-		if err := rows.Scan(&client.ID, &client.Name, &email, &client.Status); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if email.Valid {
-			client.Email = &email.String
-		}
-		noContractClients = append(noContractClients, client)
-	}
-
-	log.Printf("DebugNoContracts: found %d clients with no contracts", len(noContractClients))
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":   len(noContractClients),
-		"clients": noContractClients,
-	})
 }
 
 // POST /api/clients
@@ -482,7 +301,7 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(c.Comments) > 0 {
-		if err := h.insertCommentsForEntity("client", c.ID, c.Comments); err != nil {
+		if err := h.insertCommentsForEntity("client", c.ID, c.ID, c.Comments); err != nil {
 			log.Printf("failed to insert comments for client %d: %v", c.ID, err)
 		}
 	}
@@ -669,7 +488,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 
 	// optionally insert comments provided in the patch
 	if updated.Comments != nil && len(updated.Comments) > 0 {
-		if err := h.insertCommentsForEntity("client", id, updated.Comments); err != nil {
+		if err := h.insertCommentsForEntity("client", id, id, updated.Comments); err != nil {
 			log.Printf("failed to insert comments for client %d: %v", id, err)
 		}
 	}

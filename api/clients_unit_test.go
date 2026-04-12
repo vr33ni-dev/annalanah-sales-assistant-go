@@ -15,158 +15,6 @@ import (
 	"github.com/lib/pq"
 )
 
-// ── DebugActiveClients ────────────────────────────────────────────────────────
-
-func TestDebugActiveClients_DBError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT").WillReturnError(errTest("db down"))
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/active-clients", nil)
-	w := httptest.NewRecorder()
-	h.DebugActiveClients(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDebugActiveClients_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"name", "email", "end_date"}).
-		AddRow("Acme Corp", nil, nil).
-		AddRow("Beta GmbH", "beta@example.com", "2026-12-31")
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/active-clients", nil)
-	w := httptest.NewRecorder()
-	h.DebugActiveClients(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if count, _ := resp["count"].(float64); int(count) != 2 {
-		t.Fatalf("expected count=2, got %v", resp["count"])
-	}
-}
-
-// ── DebugExpiredButActive ─────────────────────────────────────────────────────
-
-func TestDebugExpiredButActive_DBError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT").WillReturnError(errTest("db down"))
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/expired-but-active", nil)
-	w := httptest.NewRecorder()
-	h.DebugExpiredButActive(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDebugExpiredButActive_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"id", "name", "email", "latest_end_date"}).
-		AddRow(7, "Ghost Corp", nil, "2025-06-30")
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/expired-but-active", nil)
-	w := httptest.NewRecorder()
-	h.DebugExpiredButActive(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if count, _ := resp["count"].(float64); int(count) != 1 {
-		t.Fatalf("expected count=1, got %v", resp["count"])
-	}
-}
-
-// ── DebugNoContracts ──────────────────────────────────────────────────────────
-
-func TestDebugNoContracts_DBError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT").WillReturnError(errTest("db down"))
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/no-contracts", nil)
-	w := httptest.NewRecorder()
-	h.DebugNoContracts(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDebugNoContracts_Success(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"id", "name", "email", "status"}).
-		AddRow(3, "New Lead", nil, "initial_call_scheduled").
-		AddRow(4, "Another", "a@example.com", "inactive")
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/no-contracts", nil)
-	w := httptest.NewRecorder()
-	h.DebugNoContracts(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if count, _ := resp["count"].(float64); int(count) != 2 {
-		t.Fatalf("expected count=2, got %v", resp["count"])
-	}
-}
-
 // ── CreateClient pq error paths ───────────────────────────────────────────────
 
 func TestCreateClient_DuplicateEmail_Returns409(t *testing.T) {
@@ -386,9 +234,9 @@ func TestListClients_LoadsCommentsForClients(t *testing.T) {
 		AddRow(int64(1), nil, "Acme", "acme@example.com", "123", "web", "", "active", nil)
 	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
 
-	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
 		AddRow(10, int64(1), "Admin", "First comment", nil, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT id, entity_id").WillReturnRows(commentRows)
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(commentRows)
 
 	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
@@ -435,107 +283,6 @@ func TestValidateClientCompletedAt_FollowUpQueryError(t *testing.T) {
 	d := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
 	if err := h.validateClientCompletedAt(context.Background(), 1, &d); err == nil {
 		t.Fatal("expected error on follow_up query failure, got nil")
-	}
-}
-
-// ── DebugActiveClients: scan error ────────────────────────────────────────────
-
-func TestDebugActiveClients_ScanError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	// Return wrong column count to trigger scan error
-	rows := sqlmock.NewRows([]string{"name"}).AddRow("Bad")
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/active-clients", nil)
-	w := httptest.NewRecorder()
-	h.DebugActiveClients(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-// ── DebugExpiredButActive: scan error + latestEnd.Valid ───────────────────────
-
-func TestDebugExpiredButActive_ScanError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	// Return too few columns to trigger scan error
-	rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/expired-but-active", nil)
-	w := httptest.NewRecorder()
-	h.DebugExpiredButActive(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestDebugExpiredButActive_LatestEndValid(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"id", "name", "email", "latest_end_date"}).
-		AddRow(1, "OldCo", "old@example.com", "2024-12-31")
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/expired-but-active", nil)
-	w := httptest.NewRecorder()
-	h.DebugExpiredButActive(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	clients, _ := resp["clients"].([]interface{})
-	if len(clients) != 1 {
-		t.Fatalf("expected 1, got %d", len(clients))
-	}
-	c := clients[0].(map[string]interface{})
-	if c["latest_contract_end"] != "2024-12-31" {
-		t.Fatalf("expected latest_contract_end=2024-12-31, got %v", c["latest_contract_end"])
-	}
-}
-
-// ── DebugNoContracts: scan error ──────────────────────────────────────────────
-
-func TestDebugNoContracts_ScanError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
-	mock.ExpectQuery("SELECT").WillReturnRows(rows)
-
-	h := &Handler{DB: db}
-	req := httptest.NewRequest(http.MethodGet, "/api/debug/no-contracts", nil)
-	w := httptest.NewRecorder()
-	h.DebugNoContracts(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -664,9 +411,9 @@ func TestListClients_CommentWithMetadata(t *testing.T) {
 	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
 
 	metaJSON := `{"key":"value"}`
-	commentRows := sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}).
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}).
 		AddRow(5, int64(1), nil, "body text", metaJSON, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT id, entity_id").WillReturnRows(commentRows)
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(commentRows)
 
 	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
