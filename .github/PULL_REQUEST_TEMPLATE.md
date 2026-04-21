@@ -13,7 +13,11 @@ Describe the change and why it is needed.
 
 - [ ] I have added/updated tests where appropriate
 - [ ] I have updated documentation if needed
-- [ ] I have added a changelog entry if this change affects public behavior
+
+**DB Migration** (tick exactly one):
+
+- [ ] No DB migrations in this PR
+- [ ] Contains DB migration → Neon backup branch created, will run `goose up` manually after deploy
 
 IMPORTANT: If this PR should trigger a release when merged to `master`, add one of the following labels to the PR (maintainers may add the label before merge):
 
