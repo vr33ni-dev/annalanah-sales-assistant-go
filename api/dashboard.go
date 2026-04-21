@@ -220,6 +220,15 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert Brutto → Netto: stored prices include 19% MwSt (B2C)
+	const mwst = 1.19
+	renewalRevenue /= mwst
+	newCustomerRevenue /= mwst
+	totalRevenue /= mwst
+	totalCLV /= mwst
+	gesamtCLV /= mwst
+	activeRevenue /= mwst
+
 	var closingRateNew *float64
 	if decidedNewCount > 0 {
 		v := float64(int(float64(wonNewCount)/float64(decidedNewCount)*1000+0.5)) / 10
