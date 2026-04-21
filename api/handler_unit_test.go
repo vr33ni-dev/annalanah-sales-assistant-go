@@ -72,3 +72,47 @@ func TestWriteJSONError(t *testing.T) {
 		t.Fatalf("unexpected body: %s", body)
 	}
 }
+
+func TestNullTimeForTest(t *testing.T) {
+	// nil pointer → invalid
+	got := NullTimeForTest(nil)
+	if got.Valid {
+		t.Fatal("expected invalid for nil time")
+	}
+
+	// zero time → invalid
+	zero := time.Time{}
+	got = NullTimeForTest(&zero)
+	if got.Valid {
+		t.Fatal("expected invalid for zero time")
+	}
+
+	// valid time
+	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	got = NullTimeForTest(&now)
+	if !got.Valid {
+		t.Fatal("expected valid for non-zero time")
+	}
+	if !got.Time.Equal(now) {
+		t.Fatalf("expected %v, got %v", now, got.Time)
+	}
+}
+
+func TestParseIDFromURLForTest(t *testing.T) {
+	id, ok := ParseIDFromURLForTest("/api/clients/42")
+	if !ok || id != 42 {
+		t.Fatalf("expected id=42, got id=%d ok=%v", id, ok)
+	}
+
+	// path too short
+	_, ok = ParseIDFromURLForTest("/api")
+	if ok {
+		t.Fatal("expected failure for short path")
+	}
+
+	// non-integer segment
+	_, ok = ParseIDFromURLForTest("/api/clients/notanint")
+	if ok {
+		t.Fatal("expected failure for non-int segment")
+	}
+}

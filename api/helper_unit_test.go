@@ -530,3 +530,99 @@ func TestUpsertSetting_PotentialMonths_RequiresNumeric(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ── ListSettings: DB query error returns 500 ─────────────────────────────────
+
+func TestListSettings_DBQueryError_Returns500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT key").WillReturnError(errors.New("db unavailable"))
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+	h.ListSettings(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── ListSettings: scan error returns 500 ─────────────────────────────────────
+
+func TestListSettings_ScanError_Returns500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Return only 1 column instead of the expected 4 → forces Scan to fail
+	rows := sqlmock.NewRows([]string{"key"}).AddRow("some_key")
+	mock.ExpectQuery("SELECT key").WillReturnRows(rows)
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w := httptest.NewRecorder()
+	h.ListSettings(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── GetSetting: non-special key not found returns 404 ────────────────────────
+
+func TestGetSetting_OtherKey_NotFound_Returns404(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT value_numeric").
+		WithArgs("mwst_rate").
+		WillReturnError(sql.ErrNoRows)
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/mwst_rate", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "mwst_rate")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetSetting(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── GetSetting: DB error (non-ErrNoRows) returns 500 ─────────────────────────
+
+func TestGetSetting_DBQueryError_Returns500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT value_numeric").
+		WithArgs("some_key").
+		WillReturnError(errors.New("db down"))
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/some_key", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "some_key")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetSetting(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}

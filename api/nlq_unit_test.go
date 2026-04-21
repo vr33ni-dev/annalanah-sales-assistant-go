@@ -840,3 +840,29 @@ func TestRunNLQ_DBSuccessPopulatesSQLCache(t *testing.T) {
 		t.Fatalf("unmet mock expectations: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// generateSQL – mock mode "wie viele stages" branch
+// ---------------------------------------------------------------------------
+
+func TestGenerateSQL_MockMode_WieVieleStages(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "wie viele stages gibt es?")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "stages") {
+		t.Fatalf("expected stages SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_WievielStages(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "wieviele stages?")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "stages") {
+		t.Fatalf("expected stages SQL, got: %s", sql)
+	}
+}
