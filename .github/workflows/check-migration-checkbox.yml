@@ -1,0 +1,26 @@
+name: Require migration checkbox
+
+on:
+  pull_request:
+    types: [ opened, edited, synchronize, reopened ]
+
+jobs:
+  check-migration-checkbox:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check migration checkbox is acknowledged
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          NO_MIGRATION=$(echo "$PR_BODY" | grep -c '\- \[x\] No DB migrations in this PR' || true)
+          HAS_MIGRATION=$(echo "$PR_BODY" | grep -c '\- \[x\] Contains DB migration' || true)
+
+          if [ "$NO_MIGRATION" -ge 1 ] || [ "$HAS_MIGRATION" -ge 1 ]; then
+            echo "✅ Migration checkbox acknowledged."
+            exit 0
+          fi
+
+          echo "❌ Please tick exactly one migration option in the PR description:"
+          echo "   - 'No DB migrations in this PR'"
+          echo "   - 'Contains DB migration → ...'"
+          exit 1
