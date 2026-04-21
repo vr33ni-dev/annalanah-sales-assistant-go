@@ -596,6 +596,574 @@ func intPtr(i int) *int {
 	return &i
 }
 
+// ─── loadContractCashflowEntries tests ───────────────────────────────────────
+
+func TestLoadContractCashflowEntries_Empty(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"})
+	mock.ExpectQuery("SELECT").WillReturnRows(rows)
+
+	sqlRows, err := db.Query("SELECT id, contract_id, due_date, amount, status, updated_at FROM cashflow_entries")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	out, err := loadContractCashflowEntries(sqlRows)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if out == nil {
+		t.Fatalf("expected non-nil slice, got nil")
+	}
+	if len(out) != 0 {
+		t.Fatalf("expected empty slice, got %d", len(out))
+	}
+}
+
+func TestLoadContractCashflowEntries_ScanError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Wrong column count triggers scan error
+	rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
+	mock.ExpectQuery("SELECT").WillReturnRows(rows)
+
+	sqlRows, err := db.Query("SELECT id FROM cashflow_entries")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	_, err = loadContractCashflowEntries(sqlRows)
+	if err == nil {
+		t.Fatalf("expected scan error, got nil")
+	}
+}
+
+// ─── createContractTx tests ───────────────────────────────────────────────────
+
+func TestCreateContractTx_InvalidPaymentFreq(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+
+	startDate, _ := time.Parse("2006-01-02", "2025-01-01")
+	_, _, err = h.createContractTx(context.Background(), tx, ContractCreateInput{
+		ClientID:       1,
+		StartDate:      startDate,
+		DurationMonths: 6,
+		RevenueTotal:   600,
+		PaymentFreq:    "invalid-freq",
+	})
+	if err == nil {
+		t.Fatalf("expected error for invalid payment frequency, got nil")
+	}
+}
+
+func TestCreateContractTx_EndDateBeforeStart(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+
+	startDate, _ := time.Parse("2006-01-02", "2025-06-01")
+	endDate, _ := time.Parse("2006-01-02", "2025-01-01") // before start
+	_, _, err = h.createContractTx(context.Background(), tx, ContractCreateInput{
+		ClientID:       1,
+		StartDate:      startDate,
+		EndDate:        &endDate,
+		DurationMonths: 0,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	})
+	if err == nil {
+		t.Fatalf("expected error for end_date before start_date, got nil")
+	}
+}
+
+func TestCreateContractTx_ErrNoRows_WithSalesProcessID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+
+	spID := 5
+	startDate, _ := time.Parse("2006-01-02", "2025-01-01")
+
+	// INSERT returns ErrNoRows (ON CONFLICT DO NOTHING fired)
+	mock.ExpectQuery("INSERT INTO contracts").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}))
+	// Fallback SELECT to find existing contract
+	mock.ExpectQuery("SELECT id, created_at FROM contracts WHERE sales_process_id").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(42, time.Now()))
+
+	contractID, _, err := h.createContractTx(context.Background(), tx, ContractCreateInput{
+		ClientID:       1,
+		SalesProcessID: &spID,
+		StartDate:      startDate,
+		DurationMonths: 6,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if contractID != 42 {
+		t.Fatalf("expected contract ID 42, got %d", contractID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateContractTx_GenerateSchedule_CreatedAtValid(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	tx, _ := db.Begin()
+
+	created := time.Now()
+	mock.ExpectQuery("INSERT INTO contracts").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(10, created))
+	// DurationMonths=1, monthly: Jan1→Feb1 → 1 cashflow INSERT
+	mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	startDate, _ := time.Parse("2006-01-02", "2025-01-01")
+	contractID, createdAtStr, err := h.createContractTx(context.Background(), tx, ContractCreateInput{
+		ClientID:         1,
+		StartDate:        startDate,
+		DurationMonths:   1,
+		RevenueTotal:     100,
+		PaymentFreq:      "monthly",
+		GenerateSchedule: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if contractID != 10 {
+		t.Fatalf("expected 10, got %d", contractID)
+	}
+	if createdAtStr == nil {
+		t.Fatalf("expected non-nil createdAt string, got nil")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ─── ListContracts error paths ────────────────────────────────────────────────
+
+func TestListContracts_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery("WITH RECURSIVE upsell_chain").WillReturnError(errors.New("db error"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+	h.ListContracts(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListContracts_ScanError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	// Wrong column count → scan error
+	mock.ExpectQuery("WITH RECURSIVE upsell_chain").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts", nil)
+	w := httptest.NewRecorder()
+	h.ListContracts(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── GetContract error paths ──────────────────────────────────────────────────
+
+func TestGetContract_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnError(errors.New("db error"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContract_CommentQueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+	now := time.Now()
+
+	mainRow := sqlmock.NewRows([]string{
+		"id", "client_id", "client_name", "sales_process_id",
+		"start_date", "end_date", "created_at", "updated_at",
+		"duration_months", "revenue_total", "payment_frequency",
+		"base_monthly_amount", "next_due_date", "source",
+	}).AddRow(1, 5, "Acme", nil, now, nil, nil, nil, 6, 600.0, "monthly", 100.0, nil, "manual")
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRow)
+	// chain query is not expected → ignored error
+	mock.ExpectQuery("FROM comments").WillReturnError(errors.New("comment query error"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContract_CashflowQueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+	now := time.Now()
+
+	mainRow := sqlmock.NewRows([]string{
+		"id", "client_id", "client_name", "sales_process_id",
+		"start_date", "end_date", "created_at", "updated_at",
+		"duration_months", "revenue_total", "payment_frequency",
+		"base_monthly_amount", "next_due_date", "source",
+	}).AddRow(1, 5, "Acme", nil, now, nil, nil, nil, 6, 600.0, "monthly", 100.0, nil, "manual")
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRow)
+	// chain: no expectation → ignored error
+	mock.ExpectQuery("FROM comments").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
+	mock.ExpectQuery("FROM cashflow_entries").WillReturnError(errors.New("cashflow error"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContract_LoadCashflowError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+	now := time.Now()
+
+	mainRow := sqlmock.NewRows([]string{
+		"id", "client_id", "client_name", "sales_process_id",
+		"start_date", "end_date", "created_at", "updated_at",
+		"duration_months", "revenue_total", "payment_frequency",
+		"base_monthly_amount", "next_due_date", "source",
+	}).AddRow(1, 5, "Acme", nil, now, nil, nil, nil, 6, 600.0, "monthly", 100.0, nil, "manual")
+
+	mock.ExpectQuery("WITH overdue AS").WillReturnRows(mainRow)
+	// chain: no expectation → ignored error
+	mock.ExpectQuery("FROM comments").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
+	// cashflow rows with wrong columns → scan error in loadContractCashflowEntries
+	mock.ExpectQuery("FROM cashflow_entries").WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).AddRow(1))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.GetContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── ListContractCashflowEntries error paths ──────────────────────────────────
+
+func TestListContractCashflowEntries_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectQuery("SELECT id, contract_id, due_date, amount, status, updated_at").
+		WillReturnError(errors.New("query error"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/7/cashflow", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "7")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.ListContractCashflowEntries(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListContractCashflowEntries_LoadError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	// Wrong column count → scan error in loadContractCashflowEntries
+	mock.ExpectQuery("SELECT id, contract_id, due_date, amount, status, updated_at").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/contracts/7/cashflow", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "7")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.ListContractCashflowEntries(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── CreateContract additional error paths ────────────────────────────────────
+
+func TestCreateContract_InvalidEndDate(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	endDate := "not-a-date"
+	c := Contract{
+		ClientID:       1,
+		StartDate:      "2025-01-01",
+		EndDate:        &endDate,
+		DurationMonths: 0,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateContract_BeginTxError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin().WillReturnError(errors.New("tx begin failed"))
+
+	c := Contract{ClientID: 1, StartDate: "2025-01-01", DurationMonths: 0, RevenueTotal: 600, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateContract_TxError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO contracts").WillReturnError(errors.New("insert failed"))
+	mock.ExpectRollback()
+
+	c := Contract{ClientID: 1, StartDate: "2025-01-01", DurationMonths: 0, RevenueTotal: 600, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateContract_CommitError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO contracts").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(7, time.Now()))
+	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
+
+	c := Contract{ClientID: 1, StartDate: "2025-01-01", DurationMonths: 0, RevenueTotal: 600, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── UpdateContract additional paths ─────────────────────────────────────────
+
+func TestUpdateContract_CommitError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{StartDate: "2025-01-01", DurationMonths: 3, RevenueTotal: 300, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/10", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "10")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE contracts").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM cashflow_entries").WillReturnResult(sqlmock.NewResult(0, 1))
+	// monthly, 3 months → 3 cashflow inserts
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+	mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateContract_WithComments(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{
+		StartDate:      "2025-01-01",
+		DurationMonths: 3,
+		RevenueTotal:   300,
+		PaymentFreq:    "monthly",
+		Comments:       []CommentCreateRequest{{Body: "test note"}},
+	}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/10", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "10")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE contracts").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM cashflow_entries").WillReturnResult(sqlmock.NewResult(0, 1))
+	// monthly, 3 months → 3 cashflow inserts
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec("INSERT INTO cashflow_entries").WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+	mock.ExpectCommit()
+	// Comment path (non-fatal): unexpected queries are silently ignored
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestInsertCashflowEntriesTx_BiMonthly(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
