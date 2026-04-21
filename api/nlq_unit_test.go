@@ -346,8 +346,8 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 
 	h.RunNLQ(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
 	}
 
 	var resp nlqResponse
@@ -356,6 +356,55 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	}
 	if resp.Error != "anthropic unavailable" {
 		t.Fatalf("expected generation error in response, got %+v", resp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// writeJSONErr – HTTP status code mapping
+// ---------------------------------------------------------------------------
+
+func TestWriteJSONErr_AnthropicPaymentRequired(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusPaymentRequired}
+	writeJSONErr(w, nlqResponse{Error: "payment required"}, apiErr)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected application/json, got %q", ct)
+	}
+}
+
+func TestWriteJSONErr_AnthropicRateLimit(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusTooManyRequests}
+	writeJSONErr(w, nlqResponse{Error: "rate limited"}, apiErr)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestWriteJSONErr_AnthropicOtherError(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusInternalServerError}
+	writeJSONErr(w, nlqResponse{Error: "upstream error"}, apiErr)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestWriteJSONErr_NonAnthropicError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeJSONErr(w, nlqResponse{Error: "internal"}, fmt.Errorf("something broke"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("body decode: %v", err)
+	}
+	if resp.Error != "internal" {
+		t.Fatalf("expected error field, got %+v", resp)
 	}
 }
 

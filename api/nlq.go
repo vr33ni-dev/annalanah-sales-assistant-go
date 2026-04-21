@@ -151,7 +151,7 @@ func isLikelySQLQuestion(q string) bool {
 		"sales", "stage", "status", "list", "show", "report", "data", "query",
 		// German
 		"kunde", "kunden", "umsatz", "vertrag", "zweitgespräch", "follow-up",
-		"phase", "stufe", "status", "analyse", "bericht", "zeige", "liste",
+		"phase", "stufe", "status", "analyse", "bericht", "zeige", "liste", "upsell",
 	}
 
 	for _, k := range keywords {
@@ -407,6 +407,9 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 
 		case strings.Contains(q, "upsell-umsatz") || strings.Contains(q, "upsell umsatz") || strings.Contains(q, "renewal revenue"):
 			return "SELECT COALESCE(SUM(upsell_revenue), 0) AS total_upsell_revenue FROM contract_upsells", nil
+
+		case strings.Contains(q, "upsell gespräch") || strings.Contains(q, "upsell gespr") || strings.Contains(q, "benötigte upsell") || strings.Contains(q, "bald ablaufend"):
+			return `SELECT c.id, c.name, ct.end_date FROM contracts ct JOIN clients c ON c.id = ct.client_id WHERE ct.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days' AND NOT EXISTS (SELECT 1 FROM contract_upsells cu WHERE cu.previous_contract_id = ct.id) ORDER BY ct.end_date`, nil
 
 		case strings.Contains(q, "verlängerung") || strings.Contains(q, "verlaengerung") || strings.Contains(q, "renewal"):
 			return "SELECT id, client_id, upsell_date, upsell_result, upsell_revenue FROM contract_upsells WHERE upsell_result = 'verlaengerung' LIMIT 50", nil
