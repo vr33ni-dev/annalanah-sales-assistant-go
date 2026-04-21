@@ -627,10 +627,10 @@ func (h *Handler) createClientAndSalesProcessTx(
 			`SELECT id FROM sales_process WHERE client_id = $1`,
 			clientID,
 		).Scan(&salesProcessID); err != nil {
-			return 0, 0, err
+			return clientID, 0, err
 		}
 	} else if err != nil {
-		return 0, 0, err
+		return clientID, 0, err
 	}
 
 	return clientID, salesProcessID, nil

@@ -394,3 +394,125 @@ func TestConvertLead_Success(t *testing.T) {
 		t.Fatalf("unexpected response %+v", out)
 	}
 }
+
+func TestConvertLead_BeginTxError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	mock.ExpectBegin().WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/1/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestConvertLead_LeadQueryError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name, email, phone, source`).
+		WithArgs(2).
+		WillReturnError(sql.ErrConnDone)
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/2/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "2")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestConvertLead_CreateClientSalesError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name, email, phone, source`).
+		WithArgs(3).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "email", "phone", "source", "source_stage_id"}).
+			AddRow("Bob", sql.NullString{}, sql.NullString{}, "organic", nil))
+	// No email → INSERT INTO clients directly
+	mock.ExpectQuery(`INSERT INTO clients`).
+		WillReturnError(sql.ErrConnDone)
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/3/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "3")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConvertLead_UniqueClientSalesConstraint(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	h := &api.Handler{DB: db}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT name, email, phone, source`).
+		WithArgs(4).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "email", "phone", "source", "source_stage_id"}).
+			AddRow("Carol", sql.NullString{}, sql.NullString{}, "referral", nil))
+	// No email → INSERT INTO clients
+	mock.ExpectQuery(`INSERT INTO clients`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(55))
+	// INSERT INTO sales_process → conflicts on unique_client_sales
+	mock.ExpectQuery(`INSERT INTO sales_process`).
+		WillReturnError(&pq.Error{Code: "23505", Constraint: "unique_client_sales"})
+	mock.ExpectRollback()
+	// After rollback, reload existing sales_process via h.DB
+	mock.ExpectQuery(`SELECT id FROM sales_process WHERE client_id`).
+		WithArgs(55).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(99))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/leads/4/convert", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "4")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.ConvertLead(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var out map[string]int
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if out["client_id"] != 55 || out["sales_process_id"] != 99 {
+		t.Fatalf("unexpected response: %+v", out)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

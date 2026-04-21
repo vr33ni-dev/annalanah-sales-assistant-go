@@ -1021,3 +1021,139 @@ func TestListContractCashflowEntries_InvalidID(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+func TestUpdateContract_InvalidID(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/abc", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "abc")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateContract_BadJSON(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", bytes.NewBufferString("{bad json}"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateContract_InvalidPaymentFreq(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{StartDate: "2025-01-01", DurationMonths: 6, RevenueTotal: 600, PaymentFreq: "weekly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/1", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateContract_DeleteCashflowFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	reqBody := UpdateContractRequest{StartDate: "2025-01-01", DurationMonths: 3, RevenueTotal: 300, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPatch, "/api/contracts/10", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "10")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE contracts").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM cashflow_entries").WillReturnError(errors.New("delete failed"))
+	mock.ExpectRollback()
+
+	h.UpdateContract(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateContract_InvalidStartDate(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	c := Contract{ClientID: 1, StartDate: "not-a-date", DurationMonths: 6, RevenueTotal: 600, PaymentFreq: "monthly"}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateContract_BadJSON(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewBufferString("{bad json}"))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestCreateContract_EndDateBeforeStart(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	endDate := "2024-01-01"
+	c := Contract{
+		ClientID:       1,
+		StartDate:      "2025-01-01",
+		EndDate:        &endDate,
+		DurationMonths: 0,
+		RevenueTotal:   600,
+		PaymentFreq:    "monthly",
+	}
+	b, _ := json.Marshal(c)
+	req := httptest.NewRequest(http.MethodPost, "/api/contracts", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.CreateContract(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

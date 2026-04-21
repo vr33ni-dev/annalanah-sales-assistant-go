@@ -417,3 +417,116 @@ func TestListSettings_NormalizesUpdatedAt(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestUpsertSetting_MissingBothValues(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	body := map[string]interface{}{}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/some_key", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "some_key")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpsertSetting_BadJSON(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/some_key", bytes.NewBufferString("{bad json}"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "some_key")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpsertSetting_DBExecError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectExec(`INSERT INTO app_settings`).
+		WillReturnError(errors.New("db error"))
+
+	v := 3.0
+	body := AppSetting{ValueNumeric: &v}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/some_setting", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "some_setting")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpsertSetting_TextValue_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &Handler{DB: db}
+
+	mock.ExpectExec(`INSERT INTO app_settings`).
+		WithArgs("notify_email", nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// GetSetting re-query after upsert
+	mock.ExpectQuery(`SELECT value_numeric,\s+value_text,\s+CAST\(updated_at AS text\)\s+FROM app_settings\s+WHERE key = \$1`).
+		WithArgs("notify_email").
+		WillReturnRows(sqlmock.NewRows([]string{"value_numeric", "value_text", "updated_at"}).AddRow(nil, "test@example.com", nil))
+
+	txt := "test@example.com"
+	body := AppSetting{ValueText: &txt}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/notify_email", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "notify_email")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestUpsertSetting_PotentialMonths_RequiresNumeric(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	h := &Handler{DB: db}
+
+	txt := "six"
+	body := AppSetting{ValueText: &txt}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/potential_months", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("key", "potential_months")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+
+	h.UpsertSetting(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
