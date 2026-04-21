@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,10 +23,12 @@ type nlqRequest struct {
 }
 
 type nlqResponse struct {
-	SQL     string                   `json:"sql"`
-	Columns []string                 `json:"columns,omitempty"`
-	Rows    []map[string]interface{} `json:"rows"`
-	Error   string                   `json:"error,omitempty"`
+	SQL      string                   `json:"sql"`
+	Columns  []string                 `json:"columns,omitempty"`
+	Rows     []map[string]interface{} `json:"rows"`
+	RowCount int                      `json:"row_count"`
+	Cached   bool                     `json:"cached,omitempty"`
+	Error    string                   `json:"error,omitempty"`
 }
 
 // sqlResultCacheEntry holds a cached NLQ response and its expiration
@@ -148,7 +151,7 @@ func isLikelySQLQuestion(q string) bool {
 		"sales", "stage", "status", "list", "show", "report", "data", "query",
 		// German
 		"kunde", "kunden", "umsatz", "vertrag", "zweitgespräch", "follow-up",
-		"phase", "stufe", "status", "analyse", "bericht", "zeige", "liste",
+		"phase", "stufe", "status", "analyse", "bericht", "zeige", "liste", "upsell",
 	}
 
 	for _, k := range keywords {
@@ -196,7 +199,7 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 			return generatedSQL, nil
 		})
 		if err != nil {
-			writeJSON(w, nlqResponse{Error: err.Error()})
+			writeJSONErr(w, nlqResponse{Error: err.Error()}, err)
 			return
 		}
 		sqlText = strings.TrimSpace(v.(string))
@@ -219,6 +222,7 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 
 	// Now check cache by SQL string
 	if cached, ok := sqlCache.Get(sqlText); ok {
+		cached.Cached = true
 		writeJSON(w, cached)
 		return
 	}
@@ -304,9 +308,10 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp := nlqResponse{
-			SQL:     sqlText,
-			Columns: cols,
-			Rows:    results,
+			SQL:      sqlText,
+			Columns:  cols,
+			Rows:     results,
+			RowCount: len(results),
 		}
 		sqlCache.Set(sqlText, resp)
 		duration := time.Since(start)
@@ -314,7 +319,7 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 		return resp, nil
 	})
 	if err != nil {
-		writeJSON(w, nlqResponse{Error: err.Error()})
+		writeJSONErr(w, nlqResponse{Error: err.Error()}, err)
 		return
 	}
 	writeJSON(w, v.(nlqResponse))
@@ -322,6 +327,26 @@ func (h *Handler) RunNLQ(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONErr writes a JSON error response with an appropriate HTTP status code.
+// For Anthropic API errors it maps the upstream status code; otherwise 500.
+func writeJSONErr(w http.ResponseWriter, v interface{}, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusPaymentRequired: // 402
+			w.WriteHeader(http.StatusPaymentRequired)
+		case http.StatusTooManyRequests: // 429
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 	_ = json.NewEncoder(w).Encode(v)
 }
 
@@ -383,6 +408,9 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 		case strings.Contains(q, "upsell-umsatz") || strings.Contains(q, "upsell umsatz") || strings.Contains(q, "renewal revenue"):
 			return "SELECT COALESCE(SUM(upsell_revenue), 0) AS total_upsell_revenue FROM contract_upsells", nil
 
+		case strings.Contains(q, "upsell gespräch") || strings.Contains(q, "upsell gespr") || strings.Contains(q, "benötigte upsell") || strings.Contains(q, "bald ablaufend"):
+			return `SELECT c.id, c.name, ct.end_date FROM contracts ct JOIN clients c ON c.id = ct.client_id WHERE ct.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days' AND NOT EXISTS (SELECT 1 FROM contract_upsells cu WHERE cu.previous_contract_id = ct.id) ORDER BY ct.end_date`, nil
+
 		case strings.Contains(q, "verlängerung") || strings.Contains(q, "verlaengerung") || strings.Contains(q, "renewal"):
 			return "SELECT id, client_id, upsell_date, upsell_result, upsell_revenue FROM contract_upsells WHERE upsell_result = 'verlaengerung' LIMIT 50", nil
 
@@ -422,7 +450,7 @@ func generateSQL(ctx context.Context, question string) (string, error) {
 			Model:     anthropic.ModelClaudeHaiku4_5,
 			MaxTokens: 1024,
 			System: []anthropic.TextBlockParam{
-				{Text: schemaDoc},
+				{Text: schemaDoc, CacheControl: anthropic.NewCacheControlEphemeralParam()},
 			},
 			Messages: []anthropic.MessageParam{
 				anthropic.NewUserMessage(anthropic.NewTextBlock(question)),

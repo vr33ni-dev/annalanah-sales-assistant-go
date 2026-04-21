@@ -346,8 +346,8 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 
 	h.RunNLQ(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
 	}
 
 	var resp nlqResponse
@@ -356,6 +356,55 @@ func TestRunNLQ_GenerateSQLError(t *testing.T) {
 	}
 	if resp.Error != "anthropic unavailable" {
 		t.Fatalf("expected generation error in response, got %+v", resp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// writeJSONErr – HTTP status code mapping
+// ---------------------------------------------------------------------------
+
+func TestWriteJSONErr_AnthropicPaymentRequired(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusPaymentRequired}
+	writeJSONErr(w, nlqResponse{Error: "payment required"}, apiErr)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected application/json, got %q", ct)
+	}
+}
+
+func TestWriteJSONErr_AnthropicRateLimit(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusTooManyRequests}
+	writeJSONErr(w, nlqResponse{Error: "rate limited"}, apiErr)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestWriteJSONErr_AnthropicOtherError(t *testing.T) {
+	w := httptest.NewRecorder()
+	apiErr := &anthropic.Error{StatusCode: http.StatusInternalServerError}
+	writeJSONErr(w, nlqResponse{Error: "upstream error"}, apiErr)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestWriteJSONErr_NonAnthropicError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeJSONErr(w, nlqResponse{Error: "internal"}, fmt.Errorf("something broke"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("body decode: %v", err)
+	}
+	if resp.Error != "internal" {
+		t.Fatalf("expected error field, got %+v", resp)
 	}
 }
 
@@ -789,5 +838,31 @@ func TestRunNLQ_DBSuccessPopulatesSQLCache(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet mock expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// generateSQL – mock mode "wie viele stages" branch
+// ---------------------------------------------------------------------------
+
+func TestGenerateSQL_MockMode_WieVieleStages(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "wie viele stages gibt es?")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "stages") {
+		t.Fatalf("expected stages SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_WievielStages(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "wieviele stages?")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "stages") {
+		t.Fatalf("expected stages SQL, got: %s", sql)
 	}
 }

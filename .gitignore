@@ -70,3 +70,6 @@ Makefile
 # logs
 *.log
 *_import.json
+
+# local-only docs
+docs/migration-runbook.md

@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"time"
 )
@@ -144,14 +145,15 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 	var activeRevenue float64
 
 	err = h.DB.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(c.revenue_total), 0)
+		SELECT COUNT(*),
+		 COALESCE(SUM(c.revenue_total), 0)
 		FROM contracts c
 		JOIN clients cl ON cl.id = c.client_id
 		WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
 		  AND cl.status = 'active'
-		  AND c.id NOT IN (
-			SELECT previous_contract_id FROM contract_upsells
-			WHERE previous_contract_id IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM contract_upsells
+			WHERE previous_contract_id = c.id
 			  AND upsell_result = 'verlaengerung'
 		  )
 	`).Scan(&activeContractsCount, &activeRevenue)
@@ -220,9 +222,18 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert Brutto → Netto: stored prices include 19% MwSt (B2C)
+	const mwst = 1.19
+	renewalRevenue /= mwst
+	newCustomerRevenue /= mwst
+	totalRevenue /= mwst
+	totalCLV /= mwst
+	gesamtCLV /= mwst
+	activeRevenue /= mwst
+
 	var closingRateNew *float64
 	if decidedNewCount > 0 {
-		v := float64(int(float64(wonNewCount)/float64(decidedNewCount)*1000+0.5)) / 10
+		v := math.Round(float64(wonNewCount)/float64(decidedNewCount)*1000) / 10
 		closingRateNew = &v
 	}
 

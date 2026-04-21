@@ -382,9 +382,9 @@ func TestListClients_CommentScanError(t *testing.T) {
 		AddRow(int64(1), nil, "Acme", "acme@example.com", "123", "web", "", "active", nil)
 	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
 
-	// Comment rows with wrong column count to trigger scan error → continue
+	// Return rows with only 1 column — scan of 7 columns fails → continue
 	commentRows := sqlmock.NewRows([]string{"id"}).AddRow(99)
-	mock.ExpectQuery("SELECT id, entity_id").WillReturnRows(commentRows)
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(commentRows)
 
 	h := &Handler{DB: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
@@ -434,5 +434,188 @@ func TestListClients_CommentWithMetadata(t *testing.T) {
 	c := comments[0].(map[string]interface{})
 	if meta, _ := c["metadata"].(map[string]interface{}); meta["key"] != "value" {
 		t.Fatalf("expected metadata key=value, got %v", c["metadata"])
+	}
+}
+
+// ── ListClients: main rows.Scan error returns 500 ────────────────────────────
+
+func TestListClients_MainScanError_Returns500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Return only 1 column instead of the expected 9 → forces Scan to fail
+	rows := sqlmock.NewRows([]string{"id"}).AddRow(42)
+	mock.ExpectQuery("WITH client_status").WillReturnRows(rows)
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	w := httptest.NewRecorder()
+	h.ListClients(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── ListClients: non-nil leadID sets LeadID field ────────────────────────────
+
+func TestListClients_WithLeadID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	leadID := int64(7)
+	clientRows := sqlmock.NewRows([]string{"id", "lead_id", "name", "email", "phone", "source", "source_stage_name", "status", "completed_at"}).
+		AddRow(int64(1), leadID, "Acme", "acme@example.com", "123", "web", "", "active", nil)
+	mock.ExpectQuery("WITH client_status").WillReturnRows(clientRows)
+
+	// No comments
+	mock.ExpectQuery("SELECT id, client_id").WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "author", "body", "metadata", "created_at", "updated_at"}))
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/clients", nil)
+	w := httptest.NewRecorder()
+	h.ListClients(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var out []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(out))
+	}
+	gotLeadID, _ := out[0]["lead_id"].(float64)
+	if gotLeadID != float64(leadID) {
+		t.Fatalf("expected lead_id=%d, got %v", leadID, out[0]["lead_id"])
+	}
+}
+
+// ── CreateClient: non-pq DB error returns 500 ────────────────────────────────
+
+func TestCreateClient_NonPQError_Returns500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("INSERT INTO clients").
+		WillReturnError(errTest("connection refused"))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"name":"Alice","status":"active"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
+	w := httptest.NewRecorder()
+	h.CreateClient(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── UpdateClient: invalid completed_at format returns 400 ────────────────────
+
+func TestUpdateClient_InvalidCompletedAt_Returns400(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// The date parse failure is caught before any DB call, so no expectations needed.
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"completed_at":"not-a-date"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid completed_at") {
+		t.Fatalf("expected 'invalid completed_at' message, got %q", w.Body.String())
+	}
+}
+
+// ── UpdateClient: second JSON unmarshal failure (invalid field type) → 400 ───
+
+func TestUpdateClient_SecondUnmarshalError_Returns400(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// First unmarshal into map succeeds, second into typed struct fails
+	// because source_stage_id must be *int but receives a string.
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"source_stage_id":"not-a-number"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── UpdateClient: comment insert failure is non-fatal ────────────────────────
+
+func TestUpdateClient_CommentInsertFailsNonFatal(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT completed_at FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"completed_at"}).AddRow(nil))
+	mock.ExpectExec("UPDATE clients").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE leads").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO comments").WillReturnError(errTest("comment insert failed"))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"name":"Bob","comments":[{"body":"a note"}]}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	// Comment failure is non-fatal — still returns 204
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── CreateClient: comment insert failure is non-fatal ────────────────────────
+
+func TestCreateClient_CommentInsertFailsNonFatal(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("INSERT INTO clients").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(42))
+	mock.ExpectExec("INSERT INTO comments").
+		WillReturnError(errTest("comment insert failed"))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"name":"Alice","status":"active","comments":[{"body":"first note"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/clients", body)
+	w := httptest.NewRecorder()
+	h.CreateClient(w, req)
+
+	// Comment failure is non-fatal — still returns 201
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 }

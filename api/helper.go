@@ -25,6 +25,22 @@ type AppSetting struct {
 	UpdatedAt    *string  `json:"updated_at,omitempty"`
 }
 
+func nullStringToPtr(ns sql.NullString) *string {
+	if !ns.Valid {
+		return nil
+	}
+	s := ns.String
+	return &s
+}
+
+func nullTimeToString(nt sql.NullTime, layout string) *string {
+	if !nt.Valid {
+		return nil
+	}
+	s := nt.Time.Format(layout)
+	return &s
+}
+
 func normalizeSettingUpdatedAt(raw sql.NullString) *string {
 	if !raw.Valid {
 		return nil

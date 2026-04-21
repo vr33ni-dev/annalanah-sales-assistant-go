@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -94,10 +95,7 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 			lr.SourceStageID = &sid
 		}
 
-		if createdAt.Valid {
-			s := createdAt.Time.Format(time.RFC3339)
-			lr.CreatedAt = &s
-		}
+		lr.CreatedAt = nullTimeToString(createdAt, time.RFC3339)
 
 		leads = append(leads, lr)
 	}
@@ -126,6 +124,12 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
+	}
+
+	// Normalize email to lowercase
+	if payload.Email != nil {
+		lower := strings.ToLower(*payload.Email)
+		payload.Email = &lower
 	}
 
 	// Resolve stage id
@@ -213,10 +217,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 			if phoneNS.Valid {
 				lr.Phone = phoneNS.String
 			}
-			if createdAtNS.Valid {
-				s := createdAtNS.Time.Format(time.RFC3339)
-				lr.CreatedAt = &s
-			}
+			lr.CreatedAt = nullTimeToString(createdAtNS, time.RFC3339)
 
 			if sourceStageID.Valid {
 				sid := int(sourceStageID.Int64)
@@ -249,10 +250,7 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 		v := int(stageID.Int64)
 		lr.SourceStageID = &v
 	}
-	if createdAt.Valid {
-		s := createdAt.Time.Format(time.RFC3339)
-		lr.CreatedAt = &s
-	}
+	lr.CreatedAt = nullTimeToString(createdAt, time.RFC3339)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -327,10 +325,7 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}
-	if createdAt.Valid {
-		s := createdAt.Time.Format(time.RFC3339)
-		lr.CreatedAt = &s
-	}
+	lr.CreatedAt = nullTimeToString(createdAt, time.RFC3339)
 
 	if sourceStageID.Valid {
 		sid := int(sourceStageID.Int64)
@@ -403,15 +398,8 @@ func (h *Handler) ConvertLead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 		return
 	}
-	var emailPtr, phonePtr *string
-	if email.Valid {
-		s := email.String
-		emailPtr = &s
-	}
-	if phone.Valid {
-		s := phone.String
-		phonePtr = &s
-	}
+	emailPtr := nullStringToPtr(email)
+	phonePtr := nullStringToPtr(phone)
 	var stagePtr *int
 	if sourceStage.Valid {
 		v := int(sourceStage.Int64)

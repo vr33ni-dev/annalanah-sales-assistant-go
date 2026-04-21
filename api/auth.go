@@ -447,7 +447,8 @@ func (h *Handler) parseSession(r *http.Request) (*Session, bool) {
 	}
 	mac := hmac.New(sha256.New, h.Auth.CookieKey)
 	mac.Write([]byte(parts[0]))
-	if base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) != parts[1] {
+	expected, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(mac.Sum(nil), expected) {
 		return nil, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[0])

@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-chi/chi/v5"
 	_ "github.com/mattn/go-sqlite3"
 
 	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
@@ -231,6 +234,196 @@ func TestGetNumericSetting_DefaultAndValue(t *testing.T) {
 //
 // SQLite aggregation sanity check (UNIT test)
 //
+
+// ============================================================================
+// ListCashflowEntries tests
+// ============================================================================
+
+func TestListCashflowEntries_InvalidStartDate(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries?start_date=notadate", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestListCashflowEntries_InvalidEndDate(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries?end_date=notadate", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestListCashflowEntries_CountDBError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM cashflow_entries`).
+		WillReturnError(sql.ErrConnDone)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestListCashflowEntries_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM cashflow_entries`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	dataRows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"}).
+		AddRow(10, 2, sql.NullTime{Valid: false}, 500.0, "confirmed", sql.NullTime{Valid: false})
+	mock.ExpectQuery(`SELECT ce.id`).
+		WillReturnRows(dataRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := resp["data"]; !ok {
+		t.Fatalf("missing data key")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ============================================================================
+// UpdateCashflowEntryStatus tests
+// ============================================================================
+
+func TestUpdateCashflowEntryStatus_InvalidID(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/cashflow/entries/abc/status", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "abc")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.UpdateCashflowEntryStatus(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateCashflowEntryStatus_InvalidStatus(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	body := `{"status":"pending"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/cashflow/entries/5/status", bytes.NewBufferString(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "5")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.UpdateCashflowEntryStatus(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateCashflowEntryStatus_DBError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	mock.ExpectExec(`UPDATE cashflow_entries SET status`).
+		WithArgs("confirmed", 5).
+		WillReturnError(sql.ErrConnDone)
+
+	body := `{"status":"confirmed"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/cashflow/entries/5/status", bytes.NewBufferString(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "5")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.UpdateCashflowEntryStatus(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestUpdateCashflowEntryStatus_NotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	mock.ExpectExec(`UPDATE cashflow_entries SET status`).
+		WithArgs("overdue", 7).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	body := `{"status":"overdue"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/cashflow/entries/7/status", bytes.NewBufferString(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "7")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.UpdateCashflowEntryStatus(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestUpdateCashflowEntryStatus_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	mock.ExpectExec(`UPDATE cashflow_entries SET status`).
+		WithArgs("confirmed", 3).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := `{"status":"confirmed"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/cashflow/entries/3/status", bytes.NewBufferString(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "3")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h.UpdateCashflowEntryStatus(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
 
 func TestCashflowForecast_WithContractID_SQLiteAggregation(t *testing.T) {
 	db, _ := sql.Open("sqlite3", ":memory:")

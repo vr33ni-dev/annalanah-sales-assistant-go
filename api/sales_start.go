@@ -313,11 +313,7 @@ func (h *Handler) loadStartSalesProcessResponse(ctx context.Context, salesID, cl
 				if metadata.Valid && metadata.String != "" {
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
 				}
-				var a *string
-				if author.Valid {
-					s := author.String
-					a = &s
-				}
+				a := nullStringToPtr(author)
 				var cidPtr *int
 				if cid.Valid {
 					v := int(cid.Int64)

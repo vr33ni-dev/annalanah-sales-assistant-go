@@ -71,6 +71,12 @@ func TestGenerateSQL_NLQMockMode_UpsellQuestions(t *testing.T) {
 			mustContain:  "upsell_result = 'keine_verlaengerung'",
 			mustNotError: true,
 		},
+		{
+			name:         "upcoming upsell conversations",
+			question:     "Zeige mir bald benötigte Upsell Gespräche",
+			mustContain:  "contract_upsells",
+			mustNotError: true,
+		},
 	}
 
 	for _, tc := range tests {

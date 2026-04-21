@@ -48,10 +48,7 @@ func (h *Handler) loadSalesProcessResponse(id int) (SalesProcessResponse, error)
 	); err != nil {
 		return SalesProcessResponse{}, err
 	}
-	if completedAt.Valid {
-		s := completedAt.Time.Format("2006-01-02")
-		updated.CompletedAt = &s
-	}
+	updated.CompletedAt = nullTimeToString(completedAt, "2006-01-02")
 
 	commentRows, err := h.DB.Query(`
 		SELECT id, client_id, entity_type, entity_id, author, body, metadata, created_at, updated_at
@@ -77,11 +74,7 @@ func (h *Handler) loadSalesProcessResponse(id int) (SalesProcessResponse, error)
 				if metadata.Valid && metadata.String != "" {
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
 				}
-				var a *string
-				if author.Valid {
-					s := author.String
-					a = &s
-				}
+				a := nullStringToPtr(author)
 				var cidPtr *int
 				if cid.Valid {
 					v := int(cid.Int64)

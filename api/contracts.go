@@ -78,14 +78,8 @@ func loadContractCashflowEntries(rows *sql.Rows) ([]ContractCashflowEntryRespons
 		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated); err != nil {
 			return nil, err
 		}
-		if due.Valid {
-			s := due.Time.Format(time.RFC3339)
-			e.DueDate = &s
-		}
-		if updated.Valid {
-			s := updated.Time.Format(time.RFC3339)
-			e.UpdatedAt = &s
-		}
+		e.DueDate = nullTimeToString(due, time.RFC3339)
+		e.UpdatedAt = nullTimeToString(updated, time.RFC3339)
 		out = append(out, e)
 	}
 
@@ -458,11 +452,7 @@ ORDER BY c.id;`
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
 				}
 
-				var a *string
-				if author.Valid {
-					s := author.String
-					a = &s
-				}
+				a := nullStringToPtr(author)
 
 				if idx, ok := idToIndex[entityID]; ok {
 					out[idx].Comments = append(out[idx].Comments, CommentResponse{
@@ -591,22 +581,10 @@ WHERE c.id = $1
 		return
 	}
 
-	if createdAt.Valid {
-		s := createdAt.Time.Format(time.RFC3339)
-		out.CreatedAt = &s
-	}
-	if updatedAt.Valid {
-		s := updatedAt.Time.Format(time.RFC3339)
-		out.UpdatedAt = &s
-	}
-	if endDate.Valid {
-		s := endDate.Time.Format(time.RFC3339)
-		out.EndDate = &s
-	}
-	if nextDueDate.Valid {
-		s := nextDueDate.Time.Format(time.RFC3339)
-		out.NextDueDate = &s
-	}
+	out.CreatedAt = nullTimeToString(createdAt, time.RFC3339)
+	out.UpdatedAt = nullTimeToString(updatedAt, time.RFC3339)
+	out.EndDate = nullTimeToString(endDate, time.RFC3339)
+	out.NextDueDate = nullTimeToString(nextDueDate, time.RFC3339)
 
 	out.Comments = []CommentResponse{}
 	out.Cashflow = []ContractCashflowEntryResponse{}
@@ -665,18 +643,9 @@ ORDER BY c.start_date ASC, c.id ASC
 				&cx.StartDate, &cxEnd, &cxCreated, &cx.DurationMonths,
 				&cx.RevenueTotal, &cx.PaymentFreq, &cx.BaseMonthlyAmount, &cxNext, &cx.Source,
 			); err == nil {
-				if cxEnd.Valid {
-					s := cxEnd.Time.Format(time.RFC3339)
-					cx.EndDate = &s
-				}
-				if cxCreated.Valid {
-					s := cxCreated.Time.Format(time.RFC3339)
-					cx.CreatedAt = &s
-				}
-				if cxNext.Valid {
-					s := cxNext.Time.Format(time.RFC3339)
-					cx.NextDueDate = &s
-				}
+				cx.EndDate = nullTimeToString(cxEnd, time.RFC3339)
+				cx.CreatedAt = nullTimeToString(cxCreated, time.RFC3339)
+				cx.NextDueDate = nullTimeToString(cxNext, time.RFC3339)
 				out.Chain = append(out.Chain, cx)
 			}
 		}
@@ -716,11 +685,7 @@ ORDER BY c.start_date ASC, c.id ASC
 			_ = json.Unmarshal([]byte(metadata.String), &meta)
 		}
 
-		var a *string
-		if author.Valid {
-			s := author.String
-			a = &s
-		}
+		a := nullStringToPtr(author)
 
 		out.Comments = append(out.Comments, CommentResponse{
 			ID:         commentID,

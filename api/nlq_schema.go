@@ -46,6 +46,7 @@ TABLE contracts (
   duration_months INT,
   revenue_total NUMERIC,
   payment_frequency TEXT CHECK (payment_frequency IN ('monthly','bi-monthly','quarterly','one-time','bi-yearly')),
+  source TEXT DEFAULT 'manual', -- 'manual' | 'imported'
   updated_at TIMESTAMP
 );
 
@@ -75,10 +76,28 @@ TABLE comments (
   id SERIAL PRIMARY KEY,
   entity_type TEXT, -- 'client' | 'contract' | 'sales_process' | 'stage' | 'lead'
   entity_id INT,
+  client_id INT REFERENCES clients(id), -- shortcut: set when entity_type='client'
   author TEXT,
   body TEXT,
   metadata JSONB,
   created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+TABLE cashflow_entries (
+  id SERIAL PRIMARY KEY,
+  contract_id INT NOT NULL REFERENCES contracts(id),
+  due_date DATE NOT NULL,
+  amount NUMERIC NOT NULL,
+  status TEXT CHECK (status IN ('confirmed','overdue')), -- 'confirmed'=scheduled/active, 'overdue'=past due
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+
+TABLE app_settings (
+  key TEXT PRIMARY KEY, -- e.g. 'mwst_rate'
+  value_numeric NUMERIC,
+  value_text TEXT,
   updated_at TIMESTAMP
 );
 
@@ -120,6 +139,7 @@ Throughout all examples and SQL generation:
 - cm → comments
 - stp → stage_participants
 - cu → contract_upsells
+- ce → cashflow_entries
 
 
 ---------------------------
@@ -337,6 +357,15 @@ LIMIT 50
 - "letzten Monat" → date_trunc('month', st.date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
 - "diese Woche" → date_trunc('week', st.date) = date_trunc('week', CURRENT_DATE)
 
+### Cashflow Entries (ce)
+- "Fälligkeiten", "fällige Zahlungen", "cashflow" → cashflow_entries
+- "überfällig", "overdue" → ce.status = 'overdue'
+- "bestätigt", "confirmed", "geplant", "ausstehend" → ce.status = 'confirmed'
+- "Fälligkeit diese Woche" → ce.due_date >= date_trunc('week', CURRENT_DATE) AND ce.due_date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
+- "Fälligkeit diesen Monat" → date_trunc('month', ce.due_date) = date_trunc('month', CURRENT_DATE)
+- "Gesamtbetrag", "Summe fälliger Beträge" → SUM(ce.amount)
+- For client-level cashflow, JOIN contracts ct ON ct.id = ce.contract_id, then JOIN clients c ON c.id = ct.client_id
+
 ### Upsells / Renewals (cu)
 - "Verlängerung", "renewal", "verlängert" → cu.upsell_result = 'verlaengerung'
 - "keine Verlängerung", "nicht verlängert", "churn" → cu.upsell_result = 'keine_verlaengerung'
@@ -345,6 +374,32 @@ LIMIT 50
 - For client-level renewal details, JOIN clients c ON c.id = cu.client_id.
 - For contract lineage, JOIN contracts ct_prev ON ct_prev.id = cu.previous_contract_id
   and/or JOIN contracts ct_new ON ct_new.id = cu.new_contract_id.
+
+### Upcoming Upsell Conversations Needed
+- "bald benötigte upsell gespräche", "upsell gespräche fällig", "Verlängerungsgespräche", "bald ablaufende Verträge ohne Upsell",
+  "welche Kunden brauchen ein Upsell Gespräch", "Upsell ausstehend", "renewal pending", "anstehende Verlängerungen":
+  Meaning: Active contracts whose end date is approaching (within 60 days by default) and for which
+  NO upsell record exists yet (i.e. neither a renewal nor a rejection has been logged).
+
+  SQL pattern:
+  SELECT c.id, c.name, c.email, c.phone,
+         ct.id AS contract_id, ct.end_date, ct.revenue_total,
+         ct.duration_months, ct.payment_frequency
+  FROM clients c
+  JOIN contracts ct ON ct.client_id = c.id
+  WHERE ct.end_date IS NOT NULL
+    AND ct.end_date > CURRENT_DATE
+    AND ct.end_date <= CURRENT_DATE + INTERVAL '60 days'
+    AND NOT EXISTS (
+      SELECT 1 FROM contract_upsells cu
+      WHERE cu.previous_contract_id = ct.id
+    )
+  ORDER BY ct.end_date ASC
+
+- "in den nächsten 30 Tagen" → replace INTERVAL '60 days' with INTERVAL '30 days'
+- "in den nächsten 90 Tagen" → replace INTERVAL '60 days' with INTERVAL '90 days'
+- If user says "bereits abgelaufene Verträge ohne Upsell" / "abgelaufen ohne Verlängerung":
+  change ct.end_date > CURRENT_DATE to ct.end_date < CURRENT_DATE (past, not future).
 
 
 ---------------------------
@@ -423,4 +478,21 @@ JOIN sales_process sp ON sp.client_id = c.id
 WHERE sp.stage = 'follow_up'
   AND sp.follow_up_result IS NULL
   AND sp.follow_up_date > CURRENT_DATE
+
+User: "Zeige mir bald benötigte Upsell Gespräche"
+SQL:
+SELECT c.id, c.name, c.email, c.phone,
+       ct.id AS contract_id, ct.end_date, ct.revenue_total,
+       ct.duration_months, ct.payment_frequency
+FROM clients c
+JOIN contracts ct ON ct.client_id = c.id
+WHERE ct.end_date IS NOT NULL
+  AND ct.end_date > CURRENT_DATE
+  AND ct.end_date <= CURRENT_DATE + INTERVAL '60 days'
+  AND NOT EXISTS (
+    SELECT 1 FROM contract_upsells cu
+    WHERE cu.previous_contract_id = ct.id
+  )
+ORDER BY ct.end_date ASC
+LIMIT 100
 `
