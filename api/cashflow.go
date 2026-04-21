@@ -46,18 +46,24 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 		idx++
 	}
 	if v := q.Get("start_date"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			where = append(where, "ce.due_date >= $"+strconv.Itoa(idx))
-			args = append(args, t)
-			idx++
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
 		}
+		where = append(where, "ce.due_date >= $"+strconv.Itoa(idx))
+		args = append(args, t)
+		idx++
 	}
 	if v := q.Get("end_date"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			where = append(where, "ce.due_date <= $"+strconv.Itoa(idx))
-			args = append(args, t)
-			idx++
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			http.Error(w, "invalid end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
 		}
+		where = append(where, "ce.due_date <= $"+strconv.Itoa(idx))
+		args = append(args, t)
+		idx++
 	}
 
 	// pagination
@@ -128,16 +134,8 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if due.Valid {
-			s := due.Time.Format(time.RFC3339)
-			e.DueDate = &s
-		} else {
-			e.DueDate = nil
-		}
-		if updated.Valid {
-			tu := updated.Time.Format(time.RFC3339)
-			e.UpdatedAt = &tu
-		}
+		e.DueDate = nullTimeToString(due, time.RFC3339)
+		e.UpdatedAt = nullTimeToString(updated, time.RFC3339)
 		out = append(out, e)
 	}
 

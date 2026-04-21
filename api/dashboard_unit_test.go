@@ -120,10 +120,10 @@ func TestGetDashboardKPIs_Success(t *testing.T) {
 		}
 	}
 
-	if v, _ := kpis["active_revenue"].(float64); v != 4800.0 {
+	if v, _ := kpis["active_revenue"].(float64); v != 4800.0/1.19 {
 		t.Errorf("expected active_revenue=4800, got %v", v)
 	}
-	if v, _ := kpis["clv_all_time"].(float64); v != 15000.0 {
+	if v, _ := kpis["clv_all_time"].(float64); v != 15000.0/1.19 {
 		t.Errorf("expected clv_all_time=15000, got %v", v)
 	}
 

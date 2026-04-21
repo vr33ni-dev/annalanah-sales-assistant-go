@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -180,10 +181,7 @@ ORDER BY id
 		if sourceNS.Valid {
 			c.Source = sourceNS.String
 		}
-		if completedAt.Valid {
-			date := completedAt.Time.Format("2006-01-02")
-			c.CompletedAt = &date
-		}
+		c.CompletedAt = nullTimeToString(completedAt, "2006-01-02")
 
 		// initialize empty slice to avoid null
 		c.Comments = []CommentResponse{}
@@ -224,11 +222,7 @@ ORDER BY id
 					_ = json.Unmarshal([]byte(metadata.String), &meta)
 				}
 
-				var a *string
-				if author.Valid {
-					s := author.String
-					a = &s
-				}
+				a := nullStringToPtr(author)
 
 				if idx, ok := idToIndex[clientID]; ok {
 					clients[idx].Comments = append(clients[idx].Comments, CommentResponse{
@@ -274,6 +268,8 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "status is required", http.StatusBadRequest)
 		return
 	}
+
+	c.Email = strings.ToLower(c.Email)
 
 	err := h.DB.QueryRow(
 		`INSERT INTO clients (name, email, phone, source, source_stage_id, status)
@@ -398,6 +394,8 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid client data", http.StatusBadRequest)
 		return
 	}
+
+	updated.Email = strings.ToLower(updated.Email)
 
 	// Parse completed_at string (if any)
 	var completedAt *time.Time

@@ -145,14 +145,15 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 	var activeRevenue float64
 
 	err = h.DB.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(c.revenue_total), 0)
+		SELECT COUNT(*),
+		 COALESCE(SUM(c.revenue_total), 0)
 		FROM contracts c
 		JOIN clients cl ON cl.id = c.client_id
 		WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
 		  AND cl.status = 'active'
-		  AND c.id NOT EXISTS (
-			SELECT previous_contract_id FROM contract_upsells
-			WHERE previous_contract_id IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM contract_upsells
+			WHERE previous_contract_id = c.id
 			  AND upsell_result = 'verlaengerung'
 		  )
 	`).Scan(&activeContractsCount, &activeRevenue)
