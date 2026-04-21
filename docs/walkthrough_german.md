@@ -150,7 +150,7 @@ sequenceDiagram
 
 ### 📊 Dashboard
 
-Eine einzige Ansicht mit allen wichtigen Geschäftskennzahlen für einen beliebigen Zeitraum:
+Eine einzige Ansicht mit allen wichtigen Geschäftskennzahlen für einen beliebigen Zeitraum abzüglich MwSt:
 
 | Kennzahl | Was sie zeigt |
 |---|---|
@@ -159,7 +159,7 @@ Eine einzige Ansicht mit allen wichtigen Geschäftskennzahlen für einen beliebi
 | Gesamtumsatz | Summe aller Vertragswerte (Neu- und Verlängerungen), deren Startdatum im gewählten Zeitraum liegt — zeigt also, wie viel Umsatz in diesem Zeitraum **neu abgeschlossen** wurde |
 | Aktiver Umsatz | Summe der Vertragswerte aller Verträge, die **heute noch laufen** (unabhängig vom Zeitraumfilter) — zeigt das aktuelle Umsatzvolumen im Bestand |
 | Abschlussquote | % der Verkaufsgespräche, die zu einem Abschluss führten |
-| Verlängerungsquote | % der auslaufenden Verträge, die verlängert wurden |
+| Verlängerungsquote | % der Upsell Gespräche, deren Ergebnis Verlängerung ist |
 | Durchschnittlicher Vertragswert | Typische Abschlussgröße |
 | Customer Lifetime Value (CLV) | Gesamtumsatz pro Kunde über alle Zeit |
 
