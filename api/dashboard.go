@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"time"
 )
@@ -149,7 +150,7 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 		JOIN clients cl ON cl.id = c.client_id
 		WHERE (c.end_date IS NULL OR c.end_date >= CURRENT_DATE)
 		  AND cl.status = 'active'
-		  AND c.id NOT IN (
+		  AND c.id NOT EXISTS (
 			SELECT previous_contract_id FROM contract_upsells
 			WHERE previous_contract_id IS NOT NULL
 			  AND upsell_result = 'verlaengerung'
@@ -231,7 +232,7 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 
 	var closingRateNew *float64
 	if decidedNewCount > 0 {
-		v := float64(int(float64(wonNewCount)/float64(decidedNewCount)*1000+0.5)) / 10
+		v := math.Round(float64(wonNewCount)/float64(decidedNewCount)*1000) / 10
 		closingRateNew = &v
 	}
 
