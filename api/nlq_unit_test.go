@@ -866,3 +866,168 @@ func TestGenerateSQL_MockMode_WievielStages(t *testing.T) {
 		t.Fatalf("expected stages SQL, got: %s", sql)
 	}
 }
+
+func TestGenerateSQL_MockMode_KeineVerlaengerung(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "keine verlaengerung diesen Monat")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(sql, "keine_verlaengerung") {
+		t.Fatalf("expected keine_verlaengerung SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_UpsellUmsatz(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "upsell umsatz gesamt")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "upsell_revenue") {
+		t.Fatalf("expected upsell_revenue SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_UpsellGespraech(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "bald ablaufend diese Woche")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "end_date") {
+		t.Fatalf("expected end_date SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_Verlaengerung(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "verlaengerung diese Woche")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "verlaengerung") {
+		t.Fatalf("expected verlaengerung SQL, got: %s", sql)
+	}
+}
+
+func TestGenerateSQL_MockMode_Default(t *testing.T) {
+	t.Setenv("NLQ_MOCK", "1")
+	sql, err := generateSQL(context.Background(), "zeige alle einträge")
+	if err != nil {
+		t.Fatalf("generateSQL error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "clients limit 10") {
+		t.Fatalf("expected default SQL, got: %s", sql)
+	}
+}
+
+// RunNLQ with NLQ_MOCK=1 set as env var (not h.DB==nil) hits the env-var branch in SQL singleflight.
+func TestRunNLQ_MockModeEnvVar(t *testing.T) {
+	resetCaches()
+	t.Setenv("NLQ_MOCK", "1")
+
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+	question := "zeige kunden mock"
+	questionCache.Set(question, "SELECT id, name, email, status FROM clients LIMIT 10")
+
+	body := map[string]string{"question": question}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// RunNLQ with a DB returning a nil value in a column exercises the nil case in the type switch.
+func TestRunNLQ_NilColumnValue(t *testing.T) {
+	resetCaches()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+	question := "zeige kunden mit null name"
+	sql := "SELECT id, name FROM clients"
+	questionCache.Set(question, sql)
+
+	rows := sqlmock.NewRows([]string{"id", "name"}).AddRow(1, nil)
+	mock.ExpectQuery("^SELECT id, name FROM clients LIMIT 100$").WillReturnRows(rows)
+
+	body := map[string]string{"question": question}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(resp.Rows))
+	}
+	if resp.Rows[0]["name"] != nil {
+		t.Fatalf("expected nil name, got %v", resp.Rows[0]["name"])
+	}
+}
+
+// RunNLQ with a DB returning a []byte column value exercises the []byte case in the type switch.
+func TestRunNLQ_ByteColumnValue(t *testing.T) {
+	resetCaches()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+	question := "zeige kunden flag status"
+	sqlStr := "SELECT id, flag FROM clients"
+	questionCache.Set(question, sqlStr)
+
+	rows := sqlmock.NewRows([]string{"id", "flag"}).AddRow(int64(1), []byte("true"))
+	mock.ExpectQuery("^SELECT id, flag FROM clients LIMIT 100$").WillReturnRows(rows)
+
+	body := map[string]string{"question": question}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/nlq", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	h.RunNLQ(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp nlqResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(resp.Rows))
+	}
+	if resp.Rows[0]["flag"] != true {
+		t.Fatalf("expected flag=true, got %v", resp.Rows[0]["flag"])
+	}
+}
