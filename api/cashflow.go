@@ -15,12 +15,14 @@ import (
 )
 
 type CashflowRow struct {
-	Month     string  `json:"month"`     // YYYY-MM
-	Confirmed float64 `json:"confirmed"` // invoiced or scheduled from contracts
-	Potential float64 `json:"potential"` // open deals
+	Month        string  `json:"month"`         // YYYY-MM
+	Confirmed    float64 `json:"confirmed"`     // invoiced or scheduled from contracts
+	Potential    float64 `json:"potential"`     // open deals
+	MonetaryMode string  `json:"monetary_mode"` // Brutto/raw DB values
 }
 
 // GET /api/cashflow/entries
+// Monetary fields in response are Brutto/raw DB values.
 // Supports filters: contract_id, client_id, status, start_date, end_date
 // Pagination: page (default 1), per_page (default 50, max 500)
 func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
@@ -117,12 +119,13 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Entry struct {
-		ID         int     `json:"id"`
-		ContractID int     `json:"contract_id"`
-		DueDate    *string `json:"due_date"`
-		Amount     float64 `json:"amount"`
-		Status     string  `json:"status"`
-		UpdatedAt  *string `json:"updated_at,omitempty"`
+		ID           int     `json:"id"`
+		ContractID   int     `json:"contract_id"`
+		DueDate      *string `json:"due_date"`
+		Amount       float64 `json:"amount"`
+		Status       string  `json:"status"`
+		UpdatedAt    *string `json:"updated_at,omitempty"`
+		MonetaryMode string  `json:"monetary_mode"`
 	}
 
 	var out []Entry
@@ -136,11 +139,13 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 		}
 		e.DueDate = nullTimeToString(due, time.RFC3339)
 		e.UpdatedAt = nullTimeToString(updated, time.RFC3339)
+		e.MonetaryMode = monetaryModeBrutto
 		out = append(out, e)
 	}
 
 	resp := map[string]interface{}{
-		"data": out,
+		"monetary_mode": monetaryModeBrutto,
+		"data":          out,
 		"meta": map[string]interface{}{
 			"total":    total,
 			"page":     page,
@@ -153,6 +158,7 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/cashflow/forecast
+// Monetary fields in response are Brutto/raw DB values.
 func (h *Handler) CashflowForecast(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -356,6 +362,7 @@ ORDER BY month;
 			http.Error(w, err.Error(), 500)
 			return
 		}
+		row.MonetaryMode = monetaryModeBrutto
 		out = append(out, row)
 	}
 
@@ -407,6 +414,7 @@ func (h *Handler) UpdateCashflowEntryStatus(w http.ResponseWriter, r *http.Reque
 }
 
 // GET /api/cashflow/dashboard
+// Monetary fields in response are Brutto/raw DB values.
 // Returns dashboard metrics used by the frontend:
 // - avg_monthly_ytd: average realized (paid) cash-in per month YTD
 // - months_elapsed_ytd: number of months elapsed in YTD (Jan..now, inclusive)
@@ -430,7 +438,6 @@ func (h *Handler) CashflowMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	monthsElapsed := int(now.Month()) // Jan=1 => months elapsed in year
 	var avgMonthlyYtd float64
 	if monthsElapsed > 0 {
@@ -582,6 +589,7 @@ ORDER BY month;`
 	}
 
 	resp := map[string]interface{}{
+		"monetary_mode":       monetaryModeBrutto,
 		"avg_monthly_ytd":     avgMonthlyYtd,
 		"months_elapsed_ytd":  monthsElapsed,
 		"ytd_paid_amount":     ytdPaid,

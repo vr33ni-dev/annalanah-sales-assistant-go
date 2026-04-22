@@ -93,6 +93,9 @@ func TestListStages(t *testing.T) {
 	if len(got) != 1 || got[0].Name != "Kickoff" {
 		t.Fatalf("expected one stage named Kickoff, got %+v", got)
 	}
+	if got[0].MonetaryMode != "brutto" {
+		t.Fatalf("expected monetary_mode brutto, got %q", got[0].MonetaryMode)
+	}
 }
 
 func TestListStages_ComputesPerformanceMetrics(t *testing.T) {

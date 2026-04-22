@@ -100,6 +100,9 @@ func TestCashflowMetrics_Handler(t *testing.T) {
 	if _, ok := resp["confirmed_next3"]; !ok {
 		t.Fatalf("missing confirmed_next3")
 	}
+	if mm, ok := resp["monetary_mode"].(string); !ok || mm != "brutto" {
+		t.Fatalf("expected monetary_mode brutto, got %v", resp["monetary_mode"])
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
@@ -138,12 +141,15 @@ func TestCashflowMetrics_ExcludesNotPaid_and_NoNext3(t *testing.T) {
 		t.Fatalf("decode resp: %v", err)
 	}
 
-	// ytd_paid_amount should be 1000
+	// ytd_paid_amount should be returned as Brutto
 	if resp["ytd_paid_amount"] == nil {
 		t.Fatalf("missing ytd_paid_amount")
 	}
 	if resp["ytd_paid_amount"].(float64) != 1000.0 {
 		t.Fatalf("expected ytd_paid_amount 1000, got %v", resp["ytd_paid_amount"])
+	}
+	if mm, ok := resp["monetary_mode"].(string); !ok || mm != "brutto" {
+		t.Fatalf("expected monetary_mode brutto, got %v", resp["monetary_mode"])
 	}
 
 	// confirmed_next3 may be null or an empty array when there are no months
@@ -206,6 +212,9 @@ func TestCashflowMetrics_AvgMonthlyYTD_Calculation(t *testing.T) {
 	expected := 1200.0 / monthsElapsed
 	if avg != expected {
 		t.Fatalf("expected avg_monthly_ytd %v, got %v", expected, avg)
+	}
+	if mm, ok := resp["monetary_mode"].(string); !ok || mm != "brutto" {
+		t.Fatalf("expected monetary_mode brutto, got %v", resp["monetary_mode"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -311,6 +320,20 @@ func TestListCashflowEntries_Success(t *testing.T) {
 	}
 	if _, ok := resp["data"]; !ok {
 		t.Fatalf("missing data key")
+	}
+	if mm, ok := resp["monetary_mode"].(string); !ok || mm != "brutto" {
+		t.Fatalf("expected monetary_mode brutto, got %v", resp["monetary_mode"])
+	}
+	data, ok := resp["data"].([]interface{})
+	if !ok || len(data) != 1 {
+		t.Fatalf("expected exactly one data row, got %v", resp["data"])
+	}
+	row, ok := data[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected row object, got %T", data[0])
+	}
+	if row["monetary_mode"] != "brutto" {
+		t.Fatalf("expected row monetary_mode brutto, got %v", row["monetary_mode"])
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

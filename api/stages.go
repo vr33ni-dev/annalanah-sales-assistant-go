@@ -26,6 +26,7 @@ type Stage struct {
 	AttendanceRate   *float64 `json:"attendance_rate,omitempty"`
 	ClosingRate      *float64 `json:"closing_rate,omitempty"`
 	ROI              *float64 `json:"roi,omitempty"`
+	MonetaryMode     string   `json:"monetary_mode"`
 }
 
 func roundFloat(value float64, decimals int) float64 {
@@ -34,6 +35,7 @@ func roundFloat(value float64, decimals int) float64 {
 }
 
 // GET /api/stages
+// Monetary fields in response are Brutto/raw DB values.
 func (h *Handler) ListStages(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`
 SELECT
@@ -113,6 +115,8 @@ ORDER BY s.id;
 			roi := roundFloat(actualRevenue / *s.AdBudget, 2)
 			s.ROI = &roi
 		}
+
+		s.MonetaryMode = monetaryModeBrutto
 
 		stages = append(stages, s)
 	}

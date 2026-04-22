@@ -38,7 +38,7 @@ func (h *Handler) GetContractsInRange(w http.ResponseWriter, r *http.Request) {
 		end = sql.NullTime{Time: t, Valid: true}
 	}
 
-	const mwst = 1.19
+	mwstRate := defaultMwstRate
 
 	type ContractRow struct {
 		ContractID   int     `json:"contract_id"`
@@ -47,6 +47,7 @@ func (h *Handler) GetContractsInRange(w http.ResponseWriter, r *http.Request) {
 		StartDate    string  `json:"start_date"`
 		EndDate      *string `json:"end_date,omitempty"`
 		RevenueNetto float64 `json:"revenue_netto"`
+		MonetaryMode string  `json:"monetary_mode"`
 	}
 	var rows []ContractRow
 
@@ -112,7 +113,8 @@ func (h *Handler) GetContractsInRange(w http.ResponseWriter, r *http.Request) {
 		if endDate.Valid {
 			r.EndDate = &endDate.String
 		}
-		r.RevenueNetto = revenueBrutto / mwst
+		r.RevenueNetto = netFromGross(revenueBrutto, mwstRate)
+		r.MonetaryMode = monetaryModeNetto
 		rows = append(rows, r)
 	}
 	if err := dbRows.Err(); err != nil {
@@ -122,12 +124,11 @@ func (h *Handler) GetContractsInRange(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rows)
-
-	// GET /api/dashboard/kpis?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
-	//
-	// Returns all KPIs needed by the Dashboard page so the frontend does not have
 }
 
+// GET /api/dashboard/kpis?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+//
+// Returns all KPIs needed by the Dashboard page so the frontend does not have
 // to cross-reference large lists (upsellsAll, allContracts, salesProcesses).
 //
 // Response fields:
@@ -340,13 +341,13 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Convert Brutto → Netto: stored prices include 19% MwSt (B2C)
-	const mwst = 1.19
-	renewalRevenue /= mwst
-	newCustomerRevenue /= mwst
-	totalRevenue /= mwst
-	totalCLV /= mwst
-	gesamtCLV /= mwst
-	activeRevenue /= mwst
+	mwstRate := defaultMwstRate
+	renewalRevenue = netFromGross(renewalRevenue, mwstRate)
+	newCustomerRevenue = netFromGross(newCustomerRevenue, mwstRate)
+	totalRevenue = netFromGross(totalRevenue, mwstRate)
+	totalCLV = netFromGross(totalCLV, mwstRate)
+	gesamtCLV = netFromGross(gesamtCLV, mwstRate)
+	activeRevenue = netFromGross(activeRevenue, mwstRate)
 
 	var closingRateNew *float64
 	if decidedNewCount > 0 {
@@ -369,6 +370,7 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
+		"monetary_mode":             monetaryModeNetto,
 		"renewal_revenue":           renewalRevenue,
 		"new_customer_revenue":      newCustomerRevenue,
 		"total_revenue":             totalRevenue,
@@ -413,16 +415,18 @@ func (h *Handler) GetMonthlyKPIs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type MonthlyKPI struct {
-		Month       int      `json:"month"`
-		Revenue     float64  `json:"revenue"`
-		ClosedDeals int      `json:"closed_deals"`
-		ClosingRate *float64 `json:"closing_rate"`
+		Month        int      `json:"month"`
+		Revenue      float64  `json:"revenue"`
+		ClosedDeals  int      `json:"closed_deals"`
+		ClosingRate  *float64 `json:"closing_rate"`
+		MonetaryMode string   `json:"monetary_mode"`
 	}
 
 	// Pre-fill all 12 months so the response always has 12 rows.
 	rows := make([]MonthlyKPI, 12)
 	for i := range rows {
 		rows[i].Month = i + 1
+		rows[i].MonetaryMode = monetaryModeNetto
 	}
 
 	// ── 1. Revenue per month (Brutto; converted below) ──────────────────────
@@ -459,9 +463,9 @@ func (h *Handler) GetMonthlyKPIs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Convert Brutto → Netto
-	const mwst = 1.19
+	mwstRate := defaultMwstRate
 	for i := range rows {
-		rows[i].Revenue /= mwst
+		rows[i].Revenue = netFromGross(rows[i].Revenue, mwstRate)
 	}
 
 	// ── 2. Won new-customer deals per month (by completed_at) ───────────────

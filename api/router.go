@@ -114,22 +114,22 @@ func NewRouterWithConfig(db *sql.DB, cfg *Config) *chi.Mux {
 		pr.Patch("/sales/{id}", h.UpdateSalesProcess)
 		pr.Post("/sales/start", h.StartSalesProcess)
 
-		pr.Get("/sales/upsells/list", h.ListUpsellCategories) // all upsells (3 categories)
-		pr.Get("/sales/upsells/analytics", h.GetUpsellAnalytics)
+		pr.Get("/sales/upsells/list", h.ListUpsellCategories)    // returns upsell_revenue as Netto
+		pr.Get("/sales/upsells/analytics", h.GetUpsellAnalytics) // returns umsatz_sum+revenue_by_month as Netto
 
 		// Dashboard KPIs (aggregated — replaces heavy frontend cross-referencing)
-		pr.Get("/dashboard/kpis", h.GetDashboardKPIs)
-		pr.Get("/dashboard/monthly-kpis", h.GetMonthlyKPIs)
-		pr.Get("/dashboard/contracts-in-range", h.GetContractsInRange)
+		pr.Get("/dashboard/kpis", h.GetDashboardKPIs)                  // returns revenue KPI fields as Netto
+		pr.Get("/dashboard/monthly-kpis", h.GetMonthlyKPIs)            // returns monthly revenue as Netto
+		pr.Get("/dashboard/contracts-in-range", h.GetContractsInRange) // returns revenue_netto per contract
 
-		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // upsell status for one sales process
+		pr.Get("/sales/{id}/upsell", h.GetUpsellForSalesProcess) // returns upsell_revenue as Netto
 		pr.Patch("/sales/{id}/upsell", h.CreateOrUpdateUpsell)   // schedule or update a single upsell
 
 		// Contracts
-		pr.Get("/contracts", h.ListContracts)
-		pr.Post("/contracts", h.CreateContract)
-		pr.Get("/contracts/{id}", h.GetContract)
-		pr.Patch("/contracts/{id}", h.UpdateContract)
+		pr.Get("/contracts", h.ListContracts)         // response: revenue_total+base_monthly_amount are Netto
+		pr.Post("/contracts", h.CreateContract)       // request payload monetary fields are Brutto
+		pr.Get("/contracts/{id}", h.GetContract)      // response: revenue_total+base_monthly_amount are Netto
+		pr.Patch("/contracts/{id}", h.UpdateContract) // request payload monetary fields are Brutto
 		pr.Get("/contracts/{id}/cashflow", h.ListContractCashflowEntries)
 
 		// Stages

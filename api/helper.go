@@ -25,6 +25,20 @@ type AppSetting struct {
 	UpdatedAt    *string  `json:"updated_at,omitempty"`
 }
 
+const defaultMwstRate = 1.19
+
+const (
+	monetaryModeNetto  = "netto"
+	monetaryModeBrutto = "brutto"
+)
+
+func netFromGross(gross, mwstRate float64) float64 {
+	if mwstRate <= 0 {
+		return gross
+	}
+	return gross / mwstRate
+}
+
 func nullStringToPtr(ns sql.NullString) *string {
 	if !ns.Valid {
 		return nil
