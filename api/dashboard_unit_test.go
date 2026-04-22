@@ -9,6 +9,160 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+func TestGetContractsInRange_InvalidType(t *testing.T) {
+	h := &Handler{DB: nil}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=foo", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContractsInRange_InvalidStartDate(t *testing.T) {
+	h := &Handler{DB: nil}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=neukunden&start_date=invalid", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContractsInRange_InvalidEndDate(t *testing.T) {
+	h := &Handler{DB: nil}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=verlaengerung&end_date=31-12-2025", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContractsInRange_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM contracts c").
+		WillReturnError(errTest("contracts in range query failed"))
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=neukunden", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetContractsInRange_SuccessNeukunden(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"id", "client_id", "name", "start_date", "end_date", "revenue_total"}).
+		AddRow(101, 11, "Alice Beispiel", "2025-01-10", "2025-04-10", 1190.0).
+		AddRow(102, 12, "Bob Beispiel", "2025-02-01", nil, 2380.0)
+
+	mock.ExpectQuery("FROM contracts c").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=neukunden&start_date=2025-01-01&end_date=2025-12-31", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(got))
+	}
+
+	if got[0]["contract_id"].(float64) != 101 {
+		t.Fatalf("expected contract_id 101, got %v", got[0]["contract_id"])
+	}
+	if got[0]["revenue_netto"].(float64) != 1000.0 {
+		t.Fatalf("expected revenue_netto 1000.0, got %v", got[0]["revenue_netto"])
+	}
+	if got[1]["revenue_netto"].(float64) != 2000.0 {
+		t.Fatalf("expected revenue_netto 2000.0, got %v", got[1]["revenue_netto"])
+	}
+	if _, ok := got[1]["end_date"]; ok {
+		t.Fatalf("expected end_date to be omitted for NULL end_date")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestGetContractsInRange_SuccessVerlaengerungFallback(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows([]string{"id", "client_id", "name", "start_date", "end_date", "revenue"}).
+		AddRow(201, 21, "Carla Kunde", "2025-03-15", "2025-09-15", 595.0)
+
+	mock.ExpectQuery("COALESCE\\(cu.upsell_revenue, c.revenue_total\\)").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	h := &Handler{DB: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/contracts-in-range?type=verlaengerung&start_date=2025-01-01&end_date=2025-12-31", nil)
+	w := httptest.NewRecorder()
+
+	h.GetContractsInRange(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(got))
+	}
+
+	if got[0]["contract_id"].(float64) != 201 {
+		t.Fatalf("expected contract_id 201, got %v", got[0]["contract_id"])
+	}
+	if got[0]["revenue_netto"].(float64) != 500.0 {
+		t.Fatalf("expected revenue_netto 500.0, got %v", got[0]["revenue_netto"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestGetDashboardKPIs_InvalidStartDate(t *testing.T) {
 	h := &Handler{DB: nil}
 	req := httptest.NewRequest(http.MethodGet, "/api/dashboard/kpis?start_date=not-a-date", nil)

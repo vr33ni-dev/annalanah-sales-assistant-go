@@ -291,6 +291,8 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 }
 
 // GET /api/contracts
+// revenue_total and base_monthly_amount are returned as Netto (MwSt 19% deducted).
+// Values are stored Brutto in the DB; the conversion is applied here before encoding.
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
 	compact := strings.EqualFold(r.URL.Query().Get("compact"), "true")
@@ -404,6 +406,10 @@ ORDER BY c.id;`
 			return
 		}
 
+		const mwst = 1.19
+		x.RevenueTotal /= mwst
+		x.BaseMonthlyAmount /= mwst
+
 		if includeComments {
 			x.Comments = []CommentResponse{}
 		}
@@ -498,6 +504,8 @@ ORDER BY c.id;`
 }
 
 // GET /api/contracts/{id}
+// revenue_total and base_monthly_amount are returned as Netto (MwSt 19% deducted).
+// Values are stored Brutto in the DB; the conversion is applied here before encoding.
 func (h *Handler) GetContract(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -586,6 +594,10 @@ WHERE c.id = $1
 	out.EndDate = nullTimeToString(endDate, time.RFC3339)
 	out.NextDueDate = nullTimeToString(nextDueDate, time.RFC3339)
 
+	const mwst = 1.19
+	out.RevenueTotal /= mwst
+	out.BaseMonthlyAmount /= mwst
+
 	out.Comments = []CommentResponse{}
 	out.Cashflow = []ContractCashflowEntryResponse{}
 
@@ -643,6 +655,8 @@ ORDER BY c.start_date ASC, c.id ASC
 				&cx.StartDate, &cxEnd, &cxCreated, &cx.DurationMonths,
 				&cx.RevenueTotal, &cx.PaymentFreq, &cx.BaseMonthlyAmount, &cxNext, &cx.Source,
 			); err == nil {
+				cx.RevenueTotal /= mwst
+				cx.BaseMonthlyAmount /= mwst
 				cx.EndDate = nullTimeToString(cxEnd, time.RFC3339)
 				cx.CreatedAt = nullTimeToString(cxCreated, time.RFC3339)
 				cx.NextDueDate = nullTimeToString(cxNext, time.RFC3339)
