@@ -340,6 +340,57 @@ func TestListCashflowEntries_Success(t *testing.T) {
 	}
 }
 
+func TestListCashflowEntries_NoFilterNoJoin(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	// Verify: without client_id filter, we expect no JOIN contracts
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM cashflow_entries ce WHERE ce.status`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	dataRows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"})
+	mock.ExpectQuery(`SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at FROM cashflow_entries ce WHERE`).
+		WillReturnRows(dataRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries?status=confirmed", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListCashflowEntries_WithClientIDFilterJoins(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h := &api.Handler{DB: db}
+
+	// Verify: with client_id filter, we expect JOIN contracts
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM cashflow_entries ce INNER JOIN contracts c ON c.id = ce.contract_id WHERE c.client_id`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	dataRows := sqlmock.NewRows([]string{"id", "contract_id", "due_date", "amount", "status", "updated_at"}).
+		AddRow(10, 2, sql.NullTime{Valid: false}, 500.0, "confirmed", sql.NullTime{Valid: false})
+	mock.ExpectQuery(`SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at FROM cashflow_entries ce INNER JOIN contracts c ON c.id = ce.contract_id WHERE`).
+		WillReturnRows(dataRows)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries?client_id=client-123", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 // ============================================================================
 // UpdateCashflowEntryStatus tests
 // ============================================================================

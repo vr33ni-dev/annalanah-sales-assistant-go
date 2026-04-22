@@ -91,8 +91,15 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 		whereSQL = "WHERE " + strings.Join(where, " AND ")
 	}
 
+	// Only join contracts when filtering by client_id (client_id lives on contracts table).
+	// Cashflow rows are guaranteed to have a valid contract via FK so no join is needed otherwise.
+	joinSQL := ""
+	if q.Get("client_id") != "" {
+		joinSQL = "INNER JOIN contracts c ON c.id = ce.contract_id "
+	}
+
 	// count total
-	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce INNER JOIN contracts c ON c.id = ce.contract_id INNER JOIN clients cl ON c.client_id = cl.id " + whereSQL
+	countQuery := "SELECT COUNT(*) FROM cashflow_entries ce " + joinSQL + whereSQL
 	var total int
 	if err := h.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -103,9 +110,7 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 
 	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at
 	FROM cashflow_entries ce
-	INNER JOIN contracts c ON c.id = ce.contract_id
-	INNER JOIN clients cl ON c.client_id = cl.id
-	` + whereSQL + `
+	` + joinSQL + whereSQL + `
 	ORDER BY ce.due_date ASC, ce.id ASC
 	LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
 
