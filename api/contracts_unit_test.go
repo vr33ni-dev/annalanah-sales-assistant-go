@@ -225,6 +225,12 @@ func TestGetContract_Handler(t *testing.T) {
 	if len(out.Cashflow) != 1 {
 		t.Fatalf("expected 1 cashflow entry, got %d", len(out.Cashflow))
 	}
+	if out.MonetaryMode != "netto" {
+		t.Fatalf("expected contract monetary_mode netto, got %q", out.MonetaryMode)
+	}
+	if out.Cashflow[0].MonetaryMode != "brutto" {
+		t.Fatalf("expected cashflow monetary_mode brutto, got %q", out.Cashflow[0].MonetaryMode)
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
@@ -1429,6 +1435,12 @@ func TestListContracts_Handler_Success(t *testing.T) {
 	}
 	if len(out[0].Cashflow) != 1 {
 		t.Fatalf("expected 1 cashflow entry by default, got %d", len(out[0].Cashflow))
+	}
+	if out[0].MonetaryMode != "netto" {
+		t.Fatalf("expected contract monetary_mode netto, got %q", out[0].MonetaryMode)
+	}
+	if out[0].Cashflow[0].MonetaryMode != "brutto" {
+		t.Fatalf("expected cashflow monetary_mode brutto, got %q", out[0].Cashflow[0].MonetaryMode)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

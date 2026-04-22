@@ -772,7 +772,10 @@ type CreateUpsellRequest struct {
 	ContractFrequency      *string         `json:"contract_frequency,omitempty"`
 }
 
+// GET /api/sales/{id}/upsell
+// Monetary fields in response are Netto (MwSt deducted).
 func (h *Handler) GetUpsellForSalesProcess(w http.ResponseWriter, r *http.Request) {
+	mwstRate := defaultMwstRate
 	idStr := chi.URLParam(r, "id")
 	salesID, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -815,6 +818,10 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 			http.Error(w, err.Error(), 500)
 			return
 		}
+		if u.UpsellRevenue != nil {
+			v := netFromGross(*u.UpsellRevenue, mwstRate)
+			u.UpsellRevenue = &v
+		}
 		list = append(list, u)
 	}
 
@@ -831,7 +838,10 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 	_ = json.NewEncoder(w).Encode(list)
 }
 
+// GET /api/sales/upsells/list
+// Monetary fields in response are Netto (MwSt deducted).
 func (h *Handler) ListUpsellCategories(w http.ResponseWriter, r *http.Request) {
+	mwstRate := defaultMwstRate
 	q := r.URL.Query()
 	var where []string
 	var args []any
@@ -902,7 +912,10 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 			http.Error(w, err.Error(), 500)
 			return
 		}
-
+		if u.UpsellRevenue != nil {
+			v := netFromGross(*u.UpsellRevenue, mwstRate)
+			u.UpsellRevenue = &v
+		}
 		if u.UpsellResult == nil {
 			scheduled = append(scheduled, u)
 		} else if *u.UpsellResult == "verlaengerung" {
@@ -927,6 +940,8 @@ ORDER BY cu.upsell_date DESC NULLS LAST, cu.id DESC
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// PATCH /api/sales/{id}/upsell
+// Request monetary fields are expected as Brutto (stored as Brutto in DB).
 func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	salesID, err := strconv.Atoi(idStr)
@@ -1171,7 +1186,10 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/sales/upsells/analytics
+// Monetary fields in response are Netto (MwSt deducted).
 func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
+	mwstRate := defaultMwstRate
 	q := r.URL.Query()
 	var where []string
 	var args []any
@@ -1282,6 +1300,11 @@ func (h *Handler) GetUpsellAnalytics(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Err(); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+
+	stats.UmsatzSum = netFromGross(stats.UmsatzSum, mwstRate)
+	for i := range revenueByMonth {
+		revenueByMonth[i].Revenue = netFromGross(revenueByMonth[i].Revenue, mwstRate)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

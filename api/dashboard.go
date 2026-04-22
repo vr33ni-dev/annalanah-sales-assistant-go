@@ -3,10 +3,128 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 )
+
+func (h *Handler) GetContractsInRange(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	startStr := q.Get("start_date")
+	endStr := q.Get("end_date")
+	typ := strings.ToLower(q.Get("type"))
+	if typ != "neukunden" && typ != "verlaengerung" {
+		writeJSONError(w, "type must be 'neukunden' or 'verlaengerung'", http.StatusBadRequest)
+		return
+	}
+
+	var start, end sql.NullTime
+	if startStr != "" {
+		t, err := time.Parse("2006-01-02", startStr)
+		if err != nil {
+			writeJSONError(w, "invalid start_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		start = sql.NullTime{Time: t, Valid: true}
+	}
+	if endStr != "" {
+		t, err := time.Parse("2006-01-02", endStr)
+		if err != nil {
+			writeJSONError(w, "invalid end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		end = sql.NullTime{Time: t, Valid: true}
+	}
+
+	mwstRate := defaultMwstRate
+
+	type ContractRow struct {
+		ContractID   int     `json:"contract_id"`
+		ClientID     int     `json:"client_id"`
+		ClientName   string  `json:"client_name"`
+		StartDate    string  `json:"start_date"`
+		EndDate      *string `json:"end_date,omitempty"`
+		RevenueNetto float64 `json:"revenue_netto"`
+		MonetaryMode string  `json:"monetary_mode"`
+	}
+	var rows []ContractRow
+
+	var sqlQuery string
+	if typ == "neukunden" {
+		// Neukunden: contracts that are NOT referenced as new_contract_id in contract_upsells with upsell_result='verlaengerung'
+		sqlQuery = `
+			SELECT c.id, c.client_id, cl.name, c.start_date, c.end_date, c.revenue_total
+			FROM contracts c
+			JOIN clients cl ON cl.id = c.client_id
+			WHERE cl.status = 'active'
+			  AND ($1::date IS NULL OR c.start_date >= $1::date)
+			  AND ($2::date IS NULL OR c.start_date <= $2::date)
+			  AND NOT EXISTS (
+				SELECT 1 FROM contract_upsells cu
+				WHERE cu.new_contract_id = c.id AND cu.upsell_result = 'verlaengerung'
+			  )
+			ORDER BY c.start_date DESC, c.id DESC
+		`
+	} else {
+		// Verlaengerung: contracts that ARE referenced as new_contract_id in contract_upsells with upsell_result='verlaengerung'
+		// Return upsell_revenue if present, else fallback to contract value
+		sqlQuery = `
+			SELECT c.id, c.client_id, cl.name, c.start_date, c.end_date,
+				   COALESCE(cu.upsell_revenue, c.revenue_total) AS revenue
+			FROM contracts c
+			JOIN clients cl ON cl.id = c.client_id
+			JOIN contract_upsells cu ON cu.new_contract_id = c.id AND cu.upsell_result = 'verlaengerung'
+			WHERE cl.status = 'active'
+			  AND ($1::date IS NULL OR c.start_date >= $1::date)
+			  AND ($2::date IS NULL OR c.start_date <= $2::date)
+			ORDER BY c.start_date DESC, c.id DESC
+		`
+	}
+
+	var args []interface{}
+	if start.Valid {
+		args = append(args, start.Time)
+	} else {
+		args = append(args, nil)
+	}
+	if end.Valid {
+		args = append(args, end.Time)
+	} else {
+		args = append(args, nil)
+	}
+
+	dbRows, err := h.DB.Query(sqlQuery, args...)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer dbRows.Close()
+
+	for dbRows.Next() {
+		var r ContractRow
+		var endDate sql.NullString
+		var revenueBrutto float64
+		if err := dbRows.Scan(&r.ContractID, &r.ClientID, &r.ClientName, &r.StartDate, &endDate, &revenueBrutto); err != nil {
+			writeJSONError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if endDate.Valid {
+			r.EndDate = &endDate.String
+		}
+		r.RevenueNetto = netFromGross(revenueBrutto, mwstRate)
+		r.MonetaryMode = monetaryModeNetto
+		rows = append(rows, r)
+	}
+	if err := dbRows.Err(); err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rows)
+}
 
 // GET /api/dashboard/kpis?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
 //
@@ -223,13 +341,13 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Convert Brutto → Netto: stored prices include 19% MwSt (B2C)
-	const mwst = 1.19
-	renewalRevenue /= mwst
-	newCustomerRevenue /= mwst
-	totalRevenue /= mwst
-	totalCLV /= mwst
-	gesamtCLV /= mwst
-	activeRevenue /= mwst
+	mwstRate := defaultMwstRate
+	renewalRevenue = netFromGross(renewalRevenue, mwstRate)
+	newCustomerRevenue = netFromGross(newCustomerRevenue, mwstRate)
+	totalRevenue = netFromGross(totalRevenue, mwstRate)
+	totalCLV = netFromGross(totalCLV, mwstRate)
+	gesamtCLV = netFromGross(gesamtCLV, mwstRate)
+	activeRevenue = netFromGross(activeRevenue, mwstRate)
 
 	var closingRateNew *float64
 	if decidedNewCount > 0 {
@@ -252,6 +370,7 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
+		"monetary_mode":             monetaryModeNetto,
 		"renewal_revenue":           renewalRevenue,
 		"new_customer_revenue":      newCustomerRevenue,
 		"total_revenue":             totalRevenue,
@@ -268,4 +387,188 @@ func (h *Handler) GetDashboardKPIs(w http.ResponseWriter, r *http.Request) {
 		"verlaengerung_count":       verlaengerungCount,
 		"keine_verlaengerung_count": keineVerlaengerungCount,
 	})
+}
+
+// GET /api/dashboard/monthly-kpis?year=YYYY
+//
+// Returns per-month KPIs for the requested year (defaults to current year).
+// Revenue is returned as Netto (MwSt 19% deducted; stored Brutto in DB).
+// Closing rate logic mirrors GetDashboardKPIs: new-customer processes only,
+// won bucketed by completed_at, losses by updated_at/follow_up_date/created_at.
+//
+// Response: array of 12 objects ordered Jan–Dec:
+//
+//	{
+//	  "month":        1,        // 1–12
+//	  "revenue":      1234.56,  // Netto sum of contracts starting this month
+//	  "closed_deals": 3,        // won new-customer sales processes
+//	  "closing_rate": 75.0      // won/decided * 100, null if no decisions
+//	}
+func (h *Handler) GetMonthlyKPIs(w http.ResponseWriter, r *http.Request) {
+	yearStr := r.URL.Query().Get("year")
+	year := time.Now().Year()
+	if yearStr != "" {
+		if _, err := fmt.Sscanf(yearStr, "%d", &year); err != nil || year < 2000 || year > 2100 {
+			http.Error(w, "invalid year", http.StatusBadRequest)
+			return
+		}
+	}
+
+	type MonthlyKPI struct {
+		Month        int      `json:"month"`
+		Revenue      float64  `json:"revenue"`
+		ClosedDeals  int      `json:"closed_deals"`
+		ClosingRate  *float64 `json:"closing_rate"`
+		MonetaryMode string   `json:"monetary_mode"`
+	}
+
+	// Pre-fill all 12 months so the response always has 12 rows.
+	rows := make([]MonthlyKPI, 12)
+	for i := range rows {
+		rows[i].Month = i + 1
+		rows[i].MonetaryMode = monetaryModeNetto
+	}
+
+	// ── 1. Revenue per month (Brutto; converted below) ──────────────────────
+	revenueRows, err := h.DB.Query(`
+		SELECT
+			EXTRACT(MONTH FROM c.start_date)::int AS month,
+			COALESCE(SUM(c.revenue_total), 0)     AS revenue
+		FROM contracts c
+		JOIN clients cl ON cl.id = c.client_id
+		WHERE EXTRACT(YEAR FROM c.start_date) = $1
+		  AND cl.status = 'active'
+		GROUP BY month
+		ORDER BY month
+	`, year)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer revenueRows.Close()
+	for revenueRows.Next() {
+		var m int
+		var rev float64
+		if err := revenueRows.Scan(&m, &rev); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if m >= 1 && m <= 12 {
+			rows[m-1].Revenue = rev
+		}
+	}
+	if err := revenueRows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert Brutto → Netto
+	mwstRate := defaultMwstRate
+	for i := range rows {
+		rows[i].Revenue = netFromGross(rows[i].Revenue, mwstRate)
+	}
+
+	// ── 2. Won new-customer deals per month (by completed_at) ───────────────
+	wonRows, err := h.DB.Query(`
+		SELECT
+			EXTRACT(MONTH FROM cl.completed_at)::int AS month,
+			COUNT(*)                                   AS won_count
+		FROM sales_process sp
+		JOIN clients cl ON cl.id = sp.client_id
+		WHERE sp.closed = true
+		  AND sp.follow_up_date IS NOT NULL
+		  AND COALESCE(sp.is_imported_placeholder, false) = false
+		  AND EXTRACT(YEAR FROM cl.completed_at) = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM contract_upsells cu
+			WHERE cu.client_id = sp.client_id
+			  AND cu.upsell_date IS NOT NULL
+			  AND cu.upsell_date < sp.follow_up_date
+		  )
+		GROUP BY month
+		ORDER BY month
+	`, year)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer wonRows.Close()
+	wonByMonth := make([]int, 12)
+	for wonRows.Next() {
+		var m, cnt int
+		if err := wonRows.Scan(&m, &cnt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if m >= 1 && m <= 12 {
+			wonByMonth[m-1] = cnt
+		}
+	}
+	if err := wonRows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// ── 3. Decided new-customer deals per month ─────────────────────────────
+	decidedRows, err := h.DB.Query(`
+		SELECT
+			EXTRACT(MONTH FROM
+				CASE WHEN sp.closed = true
+					THEN cl.completed_at::date
+					ELSE COALESCE(sp.updated_at, sp.follow_up_date, sp.created_at)::date
+				END
+			)::int AS month,
+			COUNT(*) AS decided_count
+		FROM sales_process sp
+		JOIN clients cl ON cl.id = sp.client_id
+		WHERE (sp.closed = true OR (sp.closed = false AND sp.follow_up_result = true))
+		  AND sp.follow_up_date IS NOT NULL
+		  AND COALESCE(sp.is_imported_placeholder, false) = false
+		  AND EXTRACT(YEAR FROM
+			CASE WHEN sp.closed = true
+				THEN cl.completed_at::date
+				ELSE COALESCE(sp.updated_at, sp.follow_up_date, sp.created_at)::date
+			END
+		  ) = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM contract_upsells cu
+			WHERE cu.client_id = sp.client_id
+			  AND cu.upsell_date IS NOT NULL
+			  AND cu.upsell_date < sp.follow_up_date
+		  )
+		GROUP BY month
+		ORDER BY month
+	`, year)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer decidedRows.Close()
+	decidedByMonth := make([]int, 12)
+	for decidedRows.Next() {
+		var m, cnt int
+		if err := decidedRows.Scan(&m, &cnt); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if m >= 1 && m <= 12 {
+			decidedByMonth[m-1] = cnt
+		}
+	}
+	if err := decidedRows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// ── 4. Merge into result ─────────────────────────────────────────────────
+	for i := range rows {
+		rows[i].ClosedDeals = wonByMonth[i]
+		if decidedByMonth[i] > 0 {
+			rate := math.Round(float64(wonByMonth[i])/float64(decidedByMonth[i])*1000) / 10
+			rows[i].ClosingRate = &rate
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(rows)
 }

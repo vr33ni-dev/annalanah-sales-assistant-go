@@ -114,6 +114,8 @@ func (h *Handler) ExportRawClientsCSV(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GET /api/exports/raw/contracts.csv
+// Monetary fields are exported as Brutto/raw DB values.
 func (h *Handler) ExportRawContractsCSV(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -155,6 +157,8 @@ func (h *Handler) ExportRawContractsCSV(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// GET /api/exports/raw/cashflow_entries.csv
+// Monetary fields are exported as Brutto/raw DB values.
 func (h *Handler) ExportRawCashflowEntriesCSV(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -419,6 +423,8 @@ func (h *Handler) ExportLegacyCashflowCSV(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// GET /api/exports/aggregated/cashflow.csv
+// Monetary fields are exported as Brutto/raw DB values.
 func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()

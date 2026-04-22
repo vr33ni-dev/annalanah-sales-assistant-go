@@ -53,18 +53,20 @@ type ContractResponse struct {
 	BaseMonthlyAmount float64                         `json:"base_monthly_amount"`
 	NextDueDate       *string                         `json:"next_due_date,omitempty"`
 	Source            string                          `json:"source"`
+	MonetaryMode      string                          `json:"monetary_mode"`
 	Cashflow          []ContractCashflowEntryResponse `json:"cashflow,omitempty"`
 	Comments          []CommentResponse               `json:"comments,omitempty"`
 	Chain             []ContractResponse              `json:"chain,omitempty"`
 }
 
 type ContractCashflowEntryResponse struct {
-	ID         int     `json:"id"`
-	ContractID int     `json:"contract_id"`
-	DueDate    *string `json:"due_date"`
-	Amount     float64 `json:"amount"`
-	Status     string  `json:"status"`
-	UpdatedAt  *string `json:"updated_at,omitempty"`
+	ID           int     `json:"id"`
+	ContractID   int     `json:"contract_id"`
+	DueDate      *string `json:"due_date"`
+	Amount       float64 `json:"amount"`
+	Status       string  `json:"status"`
+	UpdatedAt    *string `json:"updated_at,omitempty"`
+	MonetaryMode string  `json:"monetary_mode"`
 }
 
 func loadContractCashflowEntries(rows *sql.Rows) ([]ContractCashflowEntryResponse, error) {
@@ -80,6 +82,7 @@ func loadContractCashflowEntries(rows *sql.Rows) ([]ContractCashflowEntryRespons
 		}
 		e.DueDate = nullTimeToString(due, time.RFC3339)
 		e.UpdatedAt = nullTimeToString(updated, time.RFC3339)
+		e.MonetaryMode = monetaryModeBrutto
 		out = append(out, e)
 	}
 
@@ -291,11 +294,14 @@ func (h *Handler) notifyNewContractAsync(contractID, clientID int, revenue float
 }
 
 // GET /api/contracts
+// revenue_total and base_monthly_amount are returned as Netto (MwSt 19% deducted).
+// Values are stored Brutto in the DB; the conversion is applied here before encoding.
 func (h *Handler) ListContracts(w http.ResponseWriter, r *http.Request) {
 	includeExpired := strings.EqualFold(r.URL.Query().Get("include_expired"), "true")
 	compact := strings.EqualFold(r.URL.Query().Get("compact"), "true")
 	includeComments := !compact && !strings.EqualFold(r.URL.Query().Get("include_comments"), "false")
 	includeCashflow := !strings.EqualFold(r.URL.Query().Get("include_cashflow"), "false")
+	mwstRate := defaultMwstRate
 
 	query := `
 
@@ -404,6 +410,10 @@ ORDER BY c.id;`
 			return
 		}
 
+		x.RevenueTotal = netFromGross(x.RevenueTotal, mwstRate)
+		x.BaseMonthlyAmount = netFromGross(x.BaseMonthlyAmount, mwstRate)
+		x.MonetaryMode = monetaryModeNetto
+
 		if includeComments {
 			x.Comments = []CommentResponse{}
 		}
@@ -498,6 +508,8 @@ ORDER BY c.id;`
 }
 
 // GET /api/contracts/{id}
+// revenue_total and base_monthly_amount are returned as Netto (MwSt 19% deducted).
+// Values are stored Brutto in the DB; the conversion is applied here before encoding.
 func (h *Handler) GetContract(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -586,6 +598,11 @@ WHERE c.id = $1
 	out.EndDate = nullTimeToString(endDate, time.RFC3339)
 	out.NextDueDate = nullTimeToString(nextDueDate, time.RFC3339)
 
+	mwstRate := defaultMwstRate
+	out.RevenueTotal = netFromGross(out.RevenueTotal, mwstRate)
+	out.BaseMonthlyAmount = netFromGross(out.BaseMonthlyAmount, mwstRate)
+	out.MonetaryMode = monetaryModeNetto
+
 	out.Comments = []CommentResponse{}
 	out.Cashflow = []ContractCashflowEntryResponse{}
 
@@ -643,6 +660,8 @@ ORDER BY c.start_date ASC, c.id ASC
 				&cx.StartDate, &cxEnd, &cxCreated, &cx.DurationMonths,
 				&cx.RevenueTotal, &cx.PaymentFreq, &cx.BaseMonthlyAmount, &cxNext, &cx.Source,
 			); err == nil {
+				cx.RevenueTotal = netFromGross(cx.RevenueTotal, mwstRate)
+				cx.BaseMonthlyAmount = netFromGross(cx.BaseMonthlyAmount, mwstRate)
 				cx.EndDate = nullTimeToString(cxEnd, time.RFC3339)
 				cx.CreatedAt = nullTimeToString(cxCreated, time.RFC3339)
 				cx.NextDueDate = nullTimeToString(cxNext, time.RFC3339)
@@ -923,7 +942,7 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Optional comments (same behavior as before)
-	if req.Comments != nil && len(req.Comments) > 0 {
+	if len(req.Comments) > 0 {
 		var contractClientID int
 		_ = h.DB.QueryRow(`SELECT client_id FROM contracts WHERE id = $1`, id).Scan(&contractClientID)
 		_ = h.insertCommentsForEntity("contract", id, contractClientID, req.Comments)
