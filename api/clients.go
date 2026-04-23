@@ -428,16 +428,19 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Detect whether source_stage_id was explicitly provided (including explicit null = unlink).
+	_, sourceStageIDProvided := raw["source_stage_id"]
+
 	query := `
 		UPDATE clients
 		SET name = COALESCE($1, name),
 			email = COALESCE($2, email),
 			phone = COALESCE($3, phone),
 			source = COALESCE($4, source),
-			source_stage_id = COALESCE($5, source_stage_id),
-			status = COALESCE($6, status),
-			completed_at = $7
-		WHERE id = $8
+			source_stage_id = CASE WHEN $5 THEN $6::int ELSE source_stage_id END,
+			status = COALESCE($7, status),
+			completed_at = $8
+		WHERE id = $9
 	`
 
 	_, err = h.DB.Exec(
@@ -446,6 +449,7 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		nullStr(updated.Email),
 		nullStr(updated.Phone),
 		nullStr(updated.Source),
+		sourceStageIDProvided,
 		nullInt(updated.SourceStageID),
 		nullStr(updated.Status),
 		nullTime(completedAt),
@@ -461,6 +465,16 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If source_stage_id was explicitly cleared, cascade: unlink all sales processes for this client.
+	if sourceStageIDProvided && updated.SourceStageID == nil {
+		if _, err := h.DB.Exec(`
+			UPDATE sales_process SET stage_id = NULL WHERE client_id = $1
+		`, id); err != nil {
+			log.Printf("❌ cascade stage_id clear failed for client %d: %v", id, err)
+			// non-fatal
+		}
+	}
+
 	// Sync the same contact fields to the linked converted lead (if any).
 	// Uses COALESCE so only non-empty values overwrite; blank fields are ignored.
 	if _, err := h.DB.Exec(`
@@ -470,13 +484,14 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 			email           = COALESCE(NULLIF($2,''), email),
 			phone           = COALESCE(NULLIF($3,''), phone),
 			source          = COALESCE(NULLIF($4,''), source),
-			source_stage_id = COALESCE($5, source_stage_id)
-		WHERE converted_client_id = $6
+			source_stage_id = CASE WHEN $5 THEN $6::int ELSE source_stage_id END
+		WHERE converted_client_id = $7
 	`,
 		updated.Name,
 		updated.Email,
 		updated.Phone,
 		updated.Source,
+		sourceStageIDProvided,
 		nullInt(updated.SourceStageID),
 		id,
 	); err != nil {
