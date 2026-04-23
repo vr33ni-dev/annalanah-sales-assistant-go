@@ -288,7 +288,7 @@ func TestUpdateSalesProcess_NoShowForcesClosedFalseAndClearsCompletedAt(t *testi
 
 	// 1) UPDATE sales_process
 	mock.ExpectExec("UPDATE sales_process").
-		WithArgs(nil, nil, false, false, nil, 1).
+		WithArgs(nil, nil, false, false, nil, 1, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// 2) Load client_id for completed_at updates
@@ -369,6 +369,99 @@ func TestUpdateSalesProcess_NoShowForcesClosedFalseAndClearsCompletedAt(t *testi
 	}
 }
 
+func TestUpdateSalesProcess_WithStageID_UpdatesStageLink(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	stageID := 7
+	reqBody := SalesProcessUpdateRequest{StageID: &stageID}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) UPDATE sales_process includes $7 stage_id parameter.
+	mock.ExpectExec("UPDATE sales_process").
+		WithArgs(nil, nil, nil, nil, nil, 1, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 2) Resolve client_id for downstream sync.
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id = ").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	// 3) Sync client status.
+	mock.ExpectExec("UPDATE clients c").
+		WithArgs(1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 4) Return updated row with stage_id=7.
+	respCols := []string{
+		"id",
+		"client_id",
+		"client_name",
+		"client_email",
+		"client_phone",
+		"client_source",
+		"completed_at",
+		"stage",
+		"initial_contact_date",
+		"follow_up_date",
+		"follow_up_result",
+		"closed",
+		"revenue",
+		"stage_id",
+	}
+	respRows := sqlmock.NewRows(respCols).
+		AddRow(
+			1,
+			10,
+			"Client X",
+			sql.NullString{Valid: false},
+			sql.NullString{Valid: false},
+			sql.NullString{String: "paid", Valid: true},
+			sql.NullTime{Valid: false},
+			"follow_up",
+			"2026-03-01",
+			"2026-03-03",
+			sql.NullBool{Valid: false},
+			sql.NullBool{Valid: false},
+			sql.NullFloat64{Valid: false},
+			sql.NullInt64{Int64: 7, Valid: true},
+		)
+	mock.ExpectQuery("FROM sales_process sp").WithArgs(1).WillReturnRows(respRows)
+
+	// 5) Comments query (empty) for client_id=10.
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"})
+	mock.ExpectQuery("FROM comments").WithArgs(10).WillReturnRows(commentRows)
+
+	w := httptest.NewRecorder()
+	h.UpdateSalesProcess(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp SalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StageID == nil || *resp.StageID != 7 {
+		t.Fatalf("expected stage_id=7, got %#v", resp.StageID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -389,7 +482,7 @@ func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *te
 
 	// 1) UPDATE sales_process
 	mock.ExpectExec("UPDATE sales_process").
-		WithArgs(nil, nil, false, false, nil, 1).
+		WithArgs(nil, nil, false, false, nil, 1, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// 2) client_id lookup for completed_at updates
@@ -713,6 +806,176 @@ func TestStartSalesProcess_PreExistingLead_NewClient_LinksLeadViaClientID(t *tes
 	}
 	if *resp.SalesProcess.LeadID != 5 {
 		t.Fatalf("expected lead_id=5 (pre-existing lead), got %d", *resp.SalesProcess.LeadID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStartSalesProcess_ExistingProcessBackfillsNullStageID(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	initial := "2026-04-01"
+	sourceStageID := 9
+	clientID := 8
+	reqBody := StartSalesProcessRequest{
+		Name:               "Laura Beispiel",
+		Email:              "laura@example.com",
+		InitialContactDate: &initial,
+		ClientID:           &clientID,
+		SourceStageID:      &sourceStageID,
+	}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sales/start", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	// 1) Existing client details lookup.
+	mock.ExpectQuery("SELECT name, phone, source").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "phone", "source"}).
+			AddRow("Laura Beispiel", sql.NullString{Valid: false}, sql.NullString{String: "organic", Valid: true}))
+
+	// 2) No active contract.
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	// 3) Begin tx.
+	mock.ExpectBegin()
+
+	// 4) Backfill client status.
+	mock.ExpectExec("UPDATE clients").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// 5) sales_process insert conflicts (no row returned).
+	mock.ExpectQuery("INSERT INTO sales_process").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 6) Reuse existing sales_process id=15.
+	mock.ExpectQuery("SELECT id FROM sales_process WHERE client_id = ").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(15))
+
+	// 7) Backfill stage_id only when currently NULL.
+	mock.ExpectExec("UPDATE sales_process SET stage_id = ").
+		WithArgs(&sourceStageID, 15).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 8) Commit.
+	mock.ExpectCommit()
+
+	// 9) Comments (empty).
+	mock.ExpectQuery("FROM comments").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
+
+	// 10) Client detail.
+	mock.ExpectQuery("FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "email", "phone", "source", "source_stage_id"}).
+			AddRow(8, "Laura Beispiel", "laura@example.com",
+				sql.NullString{Valid: false},
+				sql.NullString{String: "organic", Valid: true},
+				sql.NullInt64{Int64: 9, Valid: true}))
+
+	h.StartSalesProcess(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp StartSalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.SalesProcess.StageID == nil || *resp.SalesProcess.StageID != 9 {
+		t.Fatalf("expected stage_id=9, got %#v", resp.SalesProcess.StageID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStartSalesProcess_ExistingProcessWithoutSourceStageID_DoesNotBackfill(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	initial := "2026-04-01"
+	clientID := 8
+	reqBody := StartSalesProcessRequest{
+		Name:               "Laura Beispiel",
+		InitialContactDate: &initial,
+		ClientID:           &clientID,
+	}
+	b, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/sales/start", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	// 1) Existing client details lookup.
+	mock.ExpectQuery("SELECT name, phone, source").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "phone", "source"}).
+			AddRow("Laura Beispiel", sql.NullString{Valid: false}, sql.NullString{String: "organic", Valid: true}))
+
+	// 2) No active contract.
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	// 3) Begin tx.
+	mock.ExpectBegin()
+
+	// 4) Backfill client status.
+	mock.ExpectExec("UPDATE clients").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// 5) sales_process insert conflicts (no row returned).
+	mock.ExpectQuery("INSERT INTO sales_process").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 6) Reuse existing sales_process id=15.
+	mock.ExpectQuery("SELECT id FROM sales_process WHERE client_id = ").
+		WithArgs(clientID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(15))
+
+	// 7) Commit (no stage backfill update expected because SourceStageID is nil).
+	mock.ExpectCommit()
+
+	// 8) Comments (empty).
+	mock.ExpectQuery("FROM comments").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"}))
+
+	// 9) Client detail.
+	mock.ExpectQuery("FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "email", "phone", "source", "source_stage_id"}).
+			AddRow(8, "Laura Beispiel", "laura@example.com",
+				sql.NullString{Valid: false},
+				sql.NullString{String: "organic", Valid: true},
+				sql.NullInt64{Valid: false}))
+
+	h.StartSalesProcess(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp StartSalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.SalesProcess.StageID != nil {
+		t.Fatalf("expected nil stage_id, got %#v", resp.SalesProcess.StageID)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
