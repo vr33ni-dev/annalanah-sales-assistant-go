@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -553,3 +554,73 @@ func TestListStageParticipants_RealTimestampRows(t *testing.T) {
 
 // --- helpers for pointer types ---
 func ptrF(f float64) *float64 { return &f }
+
+// ── DeleteStageParticipant ────────────────────────────────────────────────────
+
+func stageParticipantRequest(method, stageID, participantID string) *http.Request {
+	req := httptest.NewRequest(method, "/api/stages/"+stageID+"/participants/"+participantID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", stageID)
+	rctx.URLParams.Add("participant_id", participantID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+func TestDeleteStageParticipant_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("DELETE FROM stage_participants").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	h := &api.Handler{DB: db}
+	w := httptest.NewRecorder()
+	h.DeleteStageParticipant(w, stageParticipantRequest(http.MethodDelete, "1", "42"))
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestDeleteStageParticipant_NotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("DELETE FROM stage_participants").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	h := &api.Handler{DB: db}
+	w := httptest.NewRecorder()
+	h.DeleteStageParticipant(w, stageParticipantRequest(http.MethodDelete, "1", "99"))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteStageParticipant_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("DELETE FROM stage_participants").
+		WillReturnError(fmt.Errorf("db down"))
+
+	h := &api.Handler{DB: db}
+	w := httptest.NewRecorder()
+	h.DeleteStageParticipant(w, stageParticipantRequest(http.MethodDelete, "1", "1"))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+}
