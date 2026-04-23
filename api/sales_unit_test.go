@@ -288,7 +288,7 @@ func TestUpdateSalesProcess_NoShowForcesClosedFalseAndClearsCompletedAt(t *testi
 
 	// 1) UPDATE sales_process
 	mock.ExpectExec("UPDATE sales_process").
-		WithArgs(nil, nil, false, false, nil, 1, nil).
+		WithArgs(nil, nil, false, false, nil, 1, false, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// 2) Load client_id for completed_at updates
@@ -389,7 +389,7 @@ func TestUpdateSalesProcess_WithStageID_UpdatesStageLink(t *testing.T) {
 
 	// 1) UPDATE sales_process includes $7 stage_id parameter.
 	mock.ExpectExec("UPDATE sales_process").
-		WithArgs(nil, nil, nil, nil, nil, 1, sqlmock.AnyArg()).
+		WithArgs(nil, nil, nil, nil, nil, 1, true, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// 2) Resolve client_id for downstream sync.
@@ -462,6 +462,95 @@ func TestUpdateSalesProcess_WithStageID_UpdatesStageLink(t *testing.T) {
 	}
 }
 
+func TestUpdateSalesProcess_WithStageIDNull_ClearsStageLink(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1", bytes.NewReader([]byte(`{"stage_id":null}`)))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) UPDATE sales_process explicitly clears stage_id via $8=NULL.
+	mock.ExpectExec("UPDATE sales_process").
+		WithArgs(nil, nil, nil, nil, nil, 1, true, nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 2) Resolve client_id for downstream sync.
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id = ").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	// 3) Sync client status.
+	mock.ExpectExec("UPDATE clients c").
+		WithArgs(1).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 4) Return updated row with stage_id=NULL.
+	respCols := []string{
+		"id",
+		"client_id",
+		"client_name",
+		"client_email",
+		"client_phone",
+		"client_source",
+		"completed_at",
+		"stage",
+		"initial_contact_date",
+		"follow_up_date",
+		"follow_up_result",
+		"closed",
+		"revenue",
+		"stage_id",
+	}
+	respRows := sqlmock.NewRows(respCols).
+		AddRow(
+			1,
+			10,
+			"Client X",
+			sql.NullString{Valid: false},
+			sql.NullString{Valid: false},
+			sql.NullString{String: "paid", Valid: true},
+			sql.NullTime{Valid: false},
+			"follow_up",
+			"2026-03-01",
+			"2026-03-03",
+			sql.NullBool{Valid: false},
+			sql.NullBool{Valid: false},
+			sql.NullFloat64{Valid: false},
+			sql.NullInt64{Valid: false},
+		)
+	mock.ExpectQuery("FROM sales_process sp").WithArgs(1).WillReturnRows(respRows)
+
+	// 5) Comments query (empty) for client_id=10.
+	commentRows := sqlmock.NewRows([]string{"id", "client_id", "entity_type", "entity_id", "author", "body", "metadata", "created_at", "updated_at"})
+	mock.ExpectQuery("FROM comments").WithArgs(10).WillReturnRows(commentRows)
+
+	w := httptest.NewRecorder()
+	h.UpdateSalesProcess(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp SalesProcessResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.StageID != nil {
+		t.Fatalf("expected stage_id=nil after unlink, got %#v", resp.StageID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -482,7 +571,7 @@ func TestUpdateSalesProcess_LostFromUnconvertedLead_DeletesTemporaryClient(t *te
 
 	// 1) UPDATE sales_process
 	mock.ExpectExec("UPDATE sales_process").
-		WithArgs(nil, nil, false, false, nil, 1, nil).
+		WithArgs(nil, nil, false, false, nil, 1, false, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// 2) client_id lookup for completed_at updates

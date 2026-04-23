@@ -619,3 +619,88 @@ func TestCreateClient_CommentInsertFailsNonFatal(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ── UpdateClient: explicit null source_stage_id cascades to sales_process ────
+
+func TestUpdateClient_ClearsSourceStageID_CascadesToSalesProcess(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT completed_at FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"completed_at"}).AddRow(nil))
+	mock.ExpectExec("UPDATE clients").WillReturnResult(sqlmock.NewResult(1, 1))
+	// Cascade: clear stage_id on sales_process
+	mock.ExpectExec("UPDATE sales_process").WillReturnResult(sqlmock.NewResult(1, 1))
+	// Lead sync
+	mock.ExpectExec("UPDATE leads").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"source_stage_id":null}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestUpdateClient_SetSourceStageID_DoesNotCascade(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT completed_at FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"completed_at"}).AddRow(nil))
+	mock.ExpectExec("UPDATE clients").WillReturnResult(sqlmock.NewResult(1, 1))
+	// No cascade UPDATE sales_process expected
+	mock.ExpectExec("UPDATE leads").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"source_stage_id":5}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations (unexpected cascade): %v", err)
+	}
+}
+
+func TestUpdateClient_OmittedSourceStageID_DoesNotCascade(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT completed_at FROM clients").
+		WillReturnRows(sqlmock.NewRows([]string{"completed_at"}).AddRow(nil))
+	mock.ExpectExec("UPDATE clients").WillReturnResult(sqlmock.NewResult(1, 1))
+	// No cascade UPDATE sales_process expected
+	mock.ExpectExec("UPDATE leads").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	h := &Handler{DB: db}
+	body := bytes.NewReader([]byte(`{"name":"Alice"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/api/clients/1", body)
+	w := httptest.NewRecorder()
+	h.UpdateClient(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations (unexpected cascade): %v", err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -83,7 +84,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		sp.follow_up_result,
 		sp.closed,
 		CASE WHEN COALESCE(sp.closed, false) THEN sp.revenue ELSE NULL END AS revenue,
-		COALESCE(sp.stage_id, cl.source_stage_id) AS stage_id,
+		sp.stage_id AS stage_id,
 		sp.lead_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
@@ -214,12 +215,29 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read raw body once so we can distinguish:
+	// - missing stage_id (leave unchanged)
+	// - stage_id: null (clear)
+	// - stage_id: <int> (set)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
+
 	// Use the update request type that can carry contract details
 	var sp SalesProcessUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&sp); err != nil {
+	if err := json.Unmarshal(body, &sp); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_, stageIDProvided := raw["stage_id"]
 
 	// ---------- NORMALIZATION ----------
 	// If the follow-up did not happen (no-show), the process cannot be closed/won.
@@ -266,7 +284,10 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			WHEN $4 IS FALSE THEN NULL
 			ELSE revenue
 		END,
-		stage_id             = COALESCE($7, stage_id),
+		stage_id             = CASE
+			WHEN $7 THEN $8::int
+			ELSE stage_id
+		END,
 		stage = CASE
 			-- A no-show ends the process (UI can’t reschedule), mark as lost.
 			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
@@ -286,6 +307,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		sp.Closed,
 		sp.Revenue,
 		id,
+		stageIDProvided,
 		sp.StageID,
 	)
 
