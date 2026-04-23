@@ -166,24 +166,8 @@ sp_max AS (
   FROM maxc m, s, seed_dates sd
   RETURNING id, client_id
 ),
--- Moritz: placeholder for the old/previous contract (imported-style)
-sp_moritz_old AS (
-  INSERT INTO sales_process (
-    client_id, stage, follow_up_date, follow_up_result, closed, revenue,
-    stage_id, created_at, updated_at, is_imported_placeholder
-  )
-  SELECT mo.id, NULL, NULL, NULL, NULL, NULL, NULL,
-         ((CURRENT_DATE - INTERVAL '11 months')::date - INTERVAL '1 day')::timestamp,
-         ((CURRENT_DATE - INTERVAL '11 months')::date - INTERVAL '1 day')::timestamp,
-         TRUE
-  FROM moritz mo
-  RETURNING id, client_id
-),
--- Moritz: follow-up done, not closed (FollowUp)
 sp_moritz AS (
   INSERT INTO sales_process (client_id, stage, follow_up_date, follow_up_result, closed, revenue, stage_id, created_at)
-  -- For a contract to exist, the sales process must be completed (closed).
-  -- Keep completion before contract created_at/start_date.
   SELECT mo.id,
          'closed',
          sd.moritz_completed_at,
@@ -236,7 +220,6 @@ sp_imported_fixture AS (
   RETURNING id, client_id
 ),
 
--- Contract with explicit end_date (not matching start + duration)
 contract_explicit_enddate AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, end_date, duration_months, revenue_total, payment_frequency, created_at)
   SELECT se.client_id,
@@ -275,30 +258,29 @@ contract_max AS (
   RETURNING id
 ),
 contract_moritz AS (
-  -- Previous contract: linked to a placeholder sales process (imported-style, so chain history is visible)
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
-  SELECT mo.id,
-         smo.id,
-         (CURRENT_DATE - INTERVAL '11 months')::date,
-         12,
-         12000,
-         'bi-yearly',
-         ((CURRENT_DATE - INTERVAL '11 months')::date - INTERVAL '1 day')::timestamptz
-  FROM moritz mo, sp_moritz_old smo
+  SELECT sm.client_id,
+    sm.id,
+    (CURRENT_DATE - INTERVAL '11 months')::date,
+    12,
+    12000,
+    'bi-yearly',
+    ((CURRENT_DATE - INTERVAL '11 months')::date - INTERVAL '1 day')::timestamptz
+  FROM sp_moritz sm
   RETURNING id
 ),
 contract_moritz_ext AS (
   INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
   SELECT sm.client_id,
-         sm.id,
-         sd.moritz_ext_contract_start,
-         12,
-         12000,
-         'bi-yearly',
-         (CURRENT_DATE::timestamp)
+    sm.id,
+    sd.moritz_ext_contract_start,
+    12,
+    12000,
+    'bi-yearly',
+    (CURRENT_DATE::timestamp)
   FROM sp_moritz sm, seed_dates sd
   RETURNING id
-      ),
+),
       contract_imported_fixture AS (
         INSERT INTO contracts (client_id, sales_process_id, start_date, duration_months, revenue_total, payment_frequency, created_at)
         SELECT spif.client_id,

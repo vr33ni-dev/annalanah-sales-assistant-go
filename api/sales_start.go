@@ -213,11 +213,20 @@ func (h *Handler) runStartSalesProcessTx(ctx context.Context, req StartSalesProc
 	).Scan(&salesID)
 
 	if err == sql.ErrNoRows {
+		// Conflict: reuse the existing sales_process but update stage_id if the new request provides one.
 		if err := tx.QueryRowContext(ctx,
 			`SELECT id FROM sales_process WHERE client_id = $1`,
 			clientID,
 		).Scan(&salesID); err != nil {
 			return 0, 0, "", nil, fmt.Errorf("sales_process reuse failed: %w", err)
+		}
+		if req.SourceStageID != nil {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE sales_process SET stage_id = $1 WHERE id = $2 AND stage_id IS NULL`,
+				req.SourceStageID, salesID,
+			); err != nil {
+				return 0, 0, "", nil, fmt.Errorf("sales_process stage_id backfill failed: %w", err)
+			}
 		}
 	} else if err != nil {
 		return 0, 0, "", nil, fmt.Errorf("sales_process insert failed: %w", err)
