@@ -57,6 +57,7 @@ type SalesProcessUpdateRequest struct {
 	FollowUpResult         *bool                  `json:"follow_up_result"`
 	Closed                 *bool                  `json:"closed"`
 	Revenue                *float64               `json:"revenue"`
+	StageID                *int                   `json:"stage_id,omitempty"`
 	ContractDurationMonths *int                   `json:"contract_duration_months,omitempty"`
 	ContractStartDate      *string                `json:"contract_start_date,omitempty"`
 	ContractFrequency      *string                `json:"contract_frequency,omitempty"`
@@ -82,7 +83,7 @@ func (h *Handler) ListSalesProcesses(w http.ResponseWriter, r *http.Request) {
 		sp.follow_up_result,
 		sp.closed,
 		CASE WHEN COALESCE(sp.closed, false) THEN sp.revenue ELSE NULL END AS revenue,
-		sp.stage_id,
+		COALESCE(sp.stage_id, cl.source_stage_id) AS stage_id,
 		sp.lead_id
 	FROM sales_process sp
 	JOIN clients cl ON cl.id = sp.client_id
@@ -265,6 +266,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 			WHEN $4 IS FALSE THEN NULL
 			ELSE revenue
 		END,
+		stage_id             = COALESCE($7, stage_id),
 		stage = CASE
 			-- A no-show ends the process (UI can’t reschedule), mark as lost.
 			WHEN COALESCE($3, follow_up_result) IS FALSE THEN 'lost'
@@ -284,6 +286,7 @@ func (h *Handler) UpdateSalesProcess(w http.ResponseWriter, r *http.Request) {
 		sp.Closed,
 		sp.Revenue,
 		id,
+		sp.StageID,
 	)
 
 	if err != nil {
