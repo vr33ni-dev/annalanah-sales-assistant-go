@@ -1108,7 +1108,7 @@ func TestCreateOrUpdateUpsell_StartBeforePrevEnd_Returns422(t *testing.T) {
 
 	mock.ExpectBegin()
 
-	// 2) Look up existing open upsell (none)
+	// 2) Look up existing upsell (any result) — none found
 	mock.ExpectQuery("SELECT id FROM contract_upsells").
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -1119,7 +1119,12 @@ func TestCreateOrUpdateUpsell_StartBeforePrevEnd_Returns422(t *testing.T) {
 		WithArgs(10).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(prevContractID))
 
-	// 4) Previous contract end_date > proposed new start
+	// 4) Block check — not blocked (count=0)
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// 5) Previous contract end_date > proposed new start → 422
 	prevEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("SELECT end_date FROM contracts WHERE id").
 		WithArgs(prevContractID).
@@ -1132,6 +1137,226 @@ func TestCreateOrUpdateUpsell_StartBeforePrevEnd_Returns422(t *testing.T) {
 
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ----------------------------------------------------
+// Block: keine_verlaengerung exists → 409
+// ----------------------------------------------------
+func TestCreateOrUpdateUpsell_BlockedWhenKeineVerlaengerungExists(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	result := "keine_verlaengerung"
+	reqBody := CreateUpsellRequest{UpsellResult: &result}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1/upsell", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) Resolve client_id
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	mock.ExpectBegin()
+
+	// 2) No existing upsell found → existingUpsellID = nil → triggers block check
+	mock.ExpectQuery("SELECT id FROM contract_upsells").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 3) Previous contract
+	mock.ExpectQuery("SELECT id FROM contracts").
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(99))
+
+	// 4) Block check returns 1 — a keine_verlaengerung upsell already exists
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectRollback()
+
+	w := httptest.NewRecorder()
+	h.CreateOrUpdateUpsell(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ----------------------------------------------------
+// Block: future verlängerung contract not yet active → 409
+// ----------------------------------------------------
+func TestCreateOrUpdateUpsell_BlockedWhenFutureVerlängerungExists(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	result := "verlaengerung"
+	revenue := 900.0
+	duration := 6
+	freq := "monthly"
+	start := "2027-01-01"
+	reqBody := CreateUpsellRequest{
+		UpsellResult:           &result,
+		UpsellRevenue:          &revenue,
+		ContractStartDate:      &start,
+		ContractDurationMonths: &duration,
+		ContractFrequency:      &freq,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1/upsell", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) Resolve client_id
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	mock.ExpectBegin()
+
+	// 2) No existing upsell → existingUpsellID = nil → triggers block check
+	mock.ExpectQuery("SELECT id FROM contract_upsells").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 3) Previous contract
+	mock.ExpectQuery("SELECT id FROM contracts").
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(99))
+
+	// 4) Block check returns 1 — a future verlängerung contract exists
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectRollback()
+
+	w := httptest.NewRecorder()
+	h.CreateOrUpdateUpsell(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ----------------------------------------------------
+// Edit: existing keine_verlaengerung → routes to UPDATE, no block check
+// ----------------------------------------------------
+func TestCreateOrUpdateUpsell_EditExistingKeineVerlaengerung_RoutesToUpdate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	result := "verlaengerung"
+	revenue := 1200.0
+	duration := 6
+	freq := "monthly"
+	start := "2027-01-01"
+	reqBody := CreateUpsellRequest{
+		UpsellResult:           &result,
+		UpsellRevenue:          &revenue,
+		ContractStartDate:      &start,
+		ContractDurationMonths: &duration,
+		ContractFrequency:      &freq,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1/upsell", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) Resolve client_id
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	mock.ExpectBegin()
+
+	// 2) Existing upsell found → existingUpsellID = 55, block check skipped
+	existingID := 55
+	mock.ExpectQuery("SELECT id FROM contract_upsells").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(existingID))
+
+	// 3) Previous contract
+	mock.ExpectQuery("SELECT id FROM contracts").
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(99))
+
+	// 4) end_date check: new start (2027-01-01) is after prev end → OK
+	prevEnd := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT end_date FROM contracts WHERE id").
+		WithArgs(99).
+		WillReturnRows(sqlmock.NewRows([]string{"end_date"}).AddRow(prevEnd))
+
+	// 5) INSERT INTO contracts RETURNING id, created_at (two columns!)
+	mock.ExpectQuery("INSERT INTO contracts").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+			AddRow(200, time.Now()))
+
+	// 6) insertCashflowEntriesTx: 6 monthly inserts (no DELETE here)
+	for i := 0; i < 6; i++ {
+		mock.ExpectExec("INSERT INTO cashflow_entries").
+			WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+
+	// 7) Flip client status to active
+	mock.ExpectExec("UPDATE clients SET status").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// 8) UPDATE upsell (not INSERT)
+	mock.ExpectQuery("UPDATE contract_upsells").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(existingID))
+
+	mock.ExpectCommit()
+
+	w := httptest.NewRecorder()
+	h.CreateOrUpdateUpsell(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["updated"] != true {
+		t.Fatalf("expected updated=true, got %#v", resp["updated"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
