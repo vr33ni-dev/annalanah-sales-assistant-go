@@ -1039,12 +1039,11 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 
 	var existingUpsellID *int
 	err = tx.QueryRow(`
-			SELECT id FROM contract_upsells
-			WHERE sales_process_id = $1
-				AND upsell_result IS NULL
-			ORDER BY upsell_date DESC NULLS LAST, id DESC
-			LIMIT 1
-	`, salesID).Scan(&existingUpsellID)
+    SELECT id FROM contract_upsells
+    WHERE sales_process_id = $1
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 1
+`, salesID).Scan(&existingUpsellID)
 
 	if err == sql.ErrNoRows {
 		existingUpsellID = nil
@@ -1063,6 +1062,38 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
         WHERE client_id = $1
         ORDER BY start_date DESC, id DESC LIMIT 1
     `, clientID).Scan(&prevContractID)
+
+	// -----------------------
+	// Block new upsell creation if a blocking upsell already exists
+	// -----------------------
+
+	if existingUpsellID == nil {
+		var blockedCount int
+		blockErr := tx.QueryRow(`
+			SELECT COUNT(*) FROM contract_upsells u
+			LEFT JOIN contracts c ON c.id = u.new_contract_id
+			WHERE u.sales_process_id = $1
+			AND (
+				-- keine_verlaengerung or offen: edit instead of creating new
+				u.upsell_result IN ('keine_verlaengerung', 'offen')
+				OR u.upsell_result IS NULL
+				OR
+				-- verlaengerung: block until resulting contract becomes active
+				(
+					u.upsell_result = 'verlaengerung'
+					AND (u.new_contract_id IS NULL OR c.start_date > NOW())
+				)
+			)
+		`, salesID).Scan(&blockedCount)
+		if blockErr != nil {
+			http.Error(w, blockErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if blockedCount > 0 {
+			http.Error(w, "cannot create upsell: edit the existing upsell instead", http.StatusConflict)
+			return
+		}
+	}
 
 	// -----------------------
 	// If verlängerung → create new contract + cashflow
@@ -1143,10 +1174,6 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	var upsellID int
 
 	if existingUpsellID == nil {
-		// CREATE — use ON CONFLICT to handle the race where two concurrent requests
-		// both see no open upsell and both try to INSERT simultaneously.
-		// The partial unique index (upsell_result IS NULL) ensures only one row wins;
-		// the loser merges its payload into the winner via DO UPDATE.
 		err = tx.QueryRow(`
             INSERT INTO contract_upsells
                 (sales_process_id, client_id, upsell_date, upsell_result,
@@ -1169,7 +1196,6 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 			newContractID,
 		).Scan(&upsellID)
 	} else {
-		// UPDATE
 		err = tx.QueryRow(`
             UPDATE contract_upsells
             SET
@@ -1181,8 +1207,8 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
             RETURNING id
         `,
 			*existingUpsellID,
-			upsellDateProvided, // true = apply $3; false = keep existing
-			resolvedUpsellDate, // nil clears the date, string sets it
+			upsellDateProvided,
+			resolvedUpsellDate,
 			req.UpsellResult,
 			req.UpsellRevenue,
 			newContractID,
