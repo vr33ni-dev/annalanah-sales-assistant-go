@@ -1269,6 +1269,75 @@ func TestCreateOrUpdateUpsell_BlockedWhenFutureVerlängerungExists(t *testing.T)
 }
 
 // ----------------------------------------------------
+// Regression: only open/pending upsells are editable; finalized future
+// verlangerung must block new creation with 409 (not silently update latest)
+// ----------------------------------------------------
+func TestCreateOrUpdateUpsell_UsesOpenUpsellLookupAndBlocksFutureRenewal(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := &Handler{DB: db}
+
+	result := "verlaengerung"
+	revenue := 900.0
+	duration := 6
+	freq := "monthly"
+	start := "2027-01-01"
+	reqBody := CreateUpsellRequest{
+		UpsellResult:           &result,
+		UpsellRevenue:          &revenue,
+		ContractStartDate:      &start,
+		ContractDurationMonths: &duration,
+		ContractFrequency:      &freq,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/sales/1/upsell", bytes.NewReader(b))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	// 1) Resolve client_id
+	mock.ExpectQuery("SELECT client_id FROM sales_process WHERE id").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"client_id"}).AddRow(10))
+
+	mock.ExpectBegin()
+
+	// 2) Open-upsell lookup must be filtered to pending/open entries.
+	// No open entry found, so creation path is evaluated and then blocked.
+	mock.ExpectQuery(`SELECT id FROM contract_upsells[\s\S]*upsell_result IS NULL`).
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// 3) Previous contract lookup
+	mock.ExpectQuery("SELECT id FROM contracts").
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(99))
+
+	// 4) Blocking check sees future verlangerung and rejects
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectRollback()
+
+	w := httptest.NewRecorder()
+	h.CreateOrUpdateUpsell(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ----------------------------------------------------
 // Edit: existing keine_verlaengerung → routes to UPDATE, no block check
 // ----------------------------------------------------
 func TestCreateOrUpdateUpsell_EditExistingKeineVerlaengerung_RoutesToUpdate(t *testing.T) {

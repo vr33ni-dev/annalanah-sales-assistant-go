@@ -1041,6 +1041,7 @@ func (h *Handler) CreateOrUpdateUpsell(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(`
     SELECT id FROM contract_upsells
     WHERE sales_process_id = $1
+	  AND (upsell_result IS NULL OR upsell_result = 'offen')
     ORDER BY updated_at DESC NULLS LAST, id DESC
     LIMIT 1
 `, salesID).Scan(&existingUpsellID)
