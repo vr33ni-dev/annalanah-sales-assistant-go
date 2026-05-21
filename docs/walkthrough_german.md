@@ -148,7 +148,7 @@ sequenceDiagram
 
 ## Funktionen im Überblick
 
-### 📊 Dashboard
+### Dashboard
 
 Eine einzige Ansicht mit allen wichtigen Geschäftskennzahlen für einen beliebigen Zeitraum abzüglich MwSt:
 
@@ -165,7 +165,7 @@ Eine einzige Ansicht mit allen wichtigen Geschäftskennzahlen für einen beliebi
 
 ---
 
-### 🔮 Cashflow-Vorschau
+### Cashflow-Vorschau
 
 Die Vorschau liefert eine **monatsweise Übersicht der erwarteten Einnahmen**, aufgeteilt in zwei Kategorien:
 
@@ -182,7 +182,7 @@ Das hilft dem Unternehmen, vorausschauend zu planen und Liquiditätslücken frü
 
 ---
 
-### 🤖 Fragen in natürlicher Sprache stellen (NLQ)
+### Fragen in natürlicher Sprache stellen (NLQ)
 
 Das System enthält eine **KI-gestützte Abfragefunktion** (Claude). Anstatt technische Berichte anzufordern, kann jede Person eine einfache Frage eintippen, zum Beispiel:
 
@@ -194,7 +194,7 @@ Das System übersetzt die Frage in eine Datenbankabfrage und liefert die Ergebni
 
 ---
 
-### 📤 Exporte
+### Exporte
 
 Das Team kann jederzeit CSV-Tabellenexporte herunterladen:
 
@@ -207,19 +207,19 @@ Diese können in Excel oder Google Sheets für individuelle Auswertungen geöffn
 
 ---
 
-### 📥 Import historischer Daten
+### Import historischer Daten
 
 Das System enthält eine einmalige Import-Pipeline, um historische Daten aus Tabellen in das System zu übertragen — einschließlich alter Verträge, Zahlungshistorien und Verlängerungen — damit das Team mit einem vollständigen Bild startet, nicht mit einer leeren Datenbank.
 
 ---
 
-### 💬 Kommentare
+### Kommentare
 
 Notizen und Kommentare können zu jedem Datensatz hinzugefügt werden — einem Kunden, einem Salesprozess, einem Vertrag oder einem Lead — damit Kontext und Kommunikationsverlauf an einem Ort bleiben.
 
 ---
 
-### 🔒 Zugang & Sicherheit
+### Zugang & Sicherheit
 
 - Teammitglieder melden sich mit ihrem **Google-Konto** an — kein separates Passwort nötig
 - Nur freigegebene E-Mail-Adressen haben Zugang zum System

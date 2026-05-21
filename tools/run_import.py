@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../csv-tidyimport/src"))
 from csv_importer.engine import ImportEngine
 from csv_importer.spec import load_spec
 from adapter import GoImportAdapter
