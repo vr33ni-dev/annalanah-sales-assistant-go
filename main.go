@@ -8,8 +8,10 @@ import (
 	_ "net/http/pprof"
 	"os"
 
-	"github.com/vr33ni-dev/annalanah-sales-assistant-go/api"
-	"github.com/vr33ni-dev/annalanah-sales-assistant-go/db"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/internal/api"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/internal/auth"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/internal/db"
+	"github.com/vr33ni-dev/annalanah-sales-assistant-go/internal/store"
 )
 
 func runExpiryUpdate(database *sql.DB) {
@@ -61,8 +63,14 @@ func main() {
 	// mark clients inactive if all their contracts have expired (runs on every startup)
 	runExpiryUpdate(database)
 
-	// router
-	r := api.NewRouterWithConfig(database, cfg)
+	a, err := auth.NewAuth()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	h := api.NewHandler(store.New(database), cfg, a)
+
+	r := api.NewRouter(h)
 
 	// Print friendly startup message
 	log.Printf("version=%s", cfg.AppEnv)
