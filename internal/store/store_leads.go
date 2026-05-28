@@ -109,7 +109,7 @@ func (s *PostgresStore) CreateLead(ctx context.Context, name string, email, phon
 				v := lCreatedAt.Time.Format(time.RFC3339)
 				lr.CreatedAt = &v
 			}
-			return lr, false, nil
+			return lr, true, nil
 		}
 		return domain.Lead{}, false, err
 	}
@@ -127,7 +127,7 @@ func (s *PostgresStore) CreateLead(ctx context.Context, name string, email, phon
 		v := createdAt.Time.Format(time.RFC3339)
 		lr.CreatedAt = &v
 	}
-	return lr, true, nil
+	return lr, false, nil
 }
 
 func (s *PostgresStore) UpdateLead(ctx context.Context, id int, name, email, phone, source *string, stageID *int) (domain.Lead, error) {
