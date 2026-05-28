@@ -1,3 +1,5 @@
+// sales.go — HTTP handlers and request/response types for the sales process domain:
+// ListSalesProcesses, UpdateSalesProcess, StartSalesProcess, upsell CRUD and analytics.
 package api
 
 import (

@@ -1,3 +1,4 @@
+// leads.go — HTTP handlers for leads: list, create, update, delete, convert to client.
 package api
 
 import (

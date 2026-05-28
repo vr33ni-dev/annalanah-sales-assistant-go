@@ -1,3 +1,4 @@
+// auth_handlers.go — HTTP handlers for authentication: login, logout, OAuth callback, session (/me).
 package api
 
 import (

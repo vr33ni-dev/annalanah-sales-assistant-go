@@ -1,3 +1,4 @@
+// importer.go — HTTP handler for bulk data import: truncates all tables and re-imports from JSON payload.
 package api
 
 import (

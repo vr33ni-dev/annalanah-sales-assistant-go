@@ -1,4 +1,4 @@
-// api/helper.go
+// helper.go — shared utilities: netto/brutto conversion, null SQL helpers, settings handlers, unique-violation check.
 package api
 
 import (

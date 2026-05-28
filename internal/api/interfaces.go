@@ -1,3 +1,4 @@
+// interfaces.go — appStore interface: the single dependency boundary between handlers and the database layer.
 package api
 
 import (

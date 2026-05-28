@@ -1,3 +1,4 @@
+// nlq_schema.go — system prompt / schema description fed to the Claude API for SQL generation.
 package api
 
 // schemaDoc defines the instructions for the Anthropic SQL generator.

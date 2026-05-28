@@ -1,3 +1,4 @@
+// clients.go — HTTP handlers for clients: list, create, update, delete.
 package api
 
 import (

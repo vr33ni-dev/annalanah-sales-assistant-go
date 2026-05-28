@@ -1,3 +1,5 @@
+// sales_sync.go — thin wrappers that keep the client record in sync after a sales update
+// (completed_at and status derived from the sales process outcome).
 package api
 
 import "context"

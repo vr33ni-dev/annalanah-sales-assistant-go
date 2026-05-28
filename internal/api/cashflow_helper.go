@@ -1,3 +1,4 @@
+// cashflow_helper.go — helpers for inserting cashflow entries in transactions and date arithmetic (addMonthClamped).
 package api
 
 import (

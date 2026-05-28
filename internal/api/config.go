@@ -1,3 +1,4 @@
+// config.go — Config struct and LoadConfig: reads environment variables for the API server.
 package api
 
 import (

@@ -1,3 +1,4 @@
+// sales_contracts.go — helper that creates or reuses a contract when a sales process is closed.
 package api
 
 import (

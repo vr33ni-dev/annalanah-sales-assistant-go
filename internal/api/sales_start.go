@@ -1,3 +1,4 @@
+// sales_start.go — helpers for StartSalesProcess: conflict detection and response building.
 package api
 
 import (

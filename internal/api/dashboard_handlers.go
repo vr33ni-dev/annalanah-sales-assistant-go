@@ -1,3 +1,4 @@
+// dashboard.go — HTTP handlers for dashboard KPIs: contracts in range, summary KPIs, monthly breakdown.
 package api
 
 import (

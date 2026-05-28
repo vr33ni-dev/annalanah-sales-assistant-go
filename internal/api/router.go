@@ -1,3 +1,4 @@
+// router.go — registers all HTTP routes and middleware on the chi router.
 package api
 
 import (

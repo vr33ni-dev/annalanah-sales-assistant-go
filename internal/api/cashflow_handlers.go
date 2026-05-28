@@ -1,3 +1,4 @@
+// cashflow.go — HTTP handlers for cashflow: list entries, forecast, metrics, and status updates.
 package api
 
 import (

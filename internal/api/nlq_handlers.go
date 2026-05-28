@@ -1,3 +1,4 @@
+// nlq.go — Natural Language Query handler: translates a plain-text question into SQL via Claude and executes it.
 package api
 
 import (

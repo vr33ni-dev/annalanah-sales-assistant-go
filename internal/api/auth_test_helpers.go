@@ -1,3 +1,4 @@
+// auth_test_helpers.go — exported wrappers around unexported auth methods, used only in tests.
 package api
 
 import (

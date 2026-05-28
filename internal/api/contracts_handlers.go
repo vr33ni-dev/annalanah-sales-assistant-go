@@ -1,3 +1,4 @@
+// contracts.go — HTTP handlers for contracts: list, get, create, update, cashflow entries per contract.
 package api
 
 import (

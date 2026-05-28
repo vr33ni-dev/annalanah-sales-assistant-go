@@ -1,3 +1,4 @@
+// exports.go — HTTP handlers for CSV exports: raw clients, contracts, cashflow entries, legacy and aggregated cashflow.
 package api
 
 import (

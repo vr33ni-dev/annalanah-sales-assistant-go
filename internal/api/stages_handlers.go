@@ -1,3 +1,4 @@
+// stages.go — HTTP handlers for stages: list, create, delete, participants, and stage stats.
 package api
 
 import (

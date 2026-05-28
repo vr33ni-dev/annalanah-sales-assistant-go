@@ -1,3 +1,4 @@
+// comments.go — HTTP handlers for comments: list by entity or client, create, update, delete.
 package api
 
 import (

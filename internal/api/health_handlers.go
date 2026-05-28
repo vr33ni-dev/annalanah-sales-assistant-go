@@ -1,3 +1,4 @@
+// health.go — GET /health handler: returns server status.
 package api
 
 import (
