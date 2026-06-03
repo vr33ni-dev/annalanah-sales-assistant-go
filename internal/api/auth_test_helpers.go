@@ -27,3 +27,11 @@ func (h *Handler) HandleAuthCallbackForTest(w http.ResponseWriter, r *http.Reque
 func (h *Handler) MeHandlerForTest(w http.ResponseWriter, r *http.Request) {
 	h.meHandler(w, r)
 }
+
+func (h *Handler) DebugSessionForTest(w http.ResponseWriter, r *http.Request) {
+	h.debugSession(w, r)
+}
+
+func (h *Handler) UserMeHandlerForTest(w http.ResponseWriter, r *http.Request) {
+	h.userMeHandler(w, r)
+}

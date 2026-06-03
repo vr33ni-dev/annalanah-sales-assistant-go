@@ -177,6 +177,77 @@ func TestPauseContract_Success(t *testing.T) {
 	}
 }
 
+func TestPauseContract_BadJSON(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", []byte(`{bad`))
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_MissingEndDate(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", []byte(`{"reason":"pause requested"}`))
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_MissingReason(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", []byte(`{"new_end_date":"2026-12-31"}`))
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_InvalidDateFormat(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	b := []byte(`{"new_end_date":"31-12-2026","reason":"pause requested"}`)
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", b)
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_NotFound(t *testing.T) {
+	h := &Handler{store: &mockStore{
+		pauseContract: func(_ context.Context, _ int, _, _ string) error {
+			return errors.New("contract not found")
+		},
+	}}
+	b := []byte(`{"new_end_date":"2026-12-31","reason":"pause requested"}`)
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", b)
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_DateBeforeStart(t *testing.T) {
+	h := &Handler{store: &mockStore{
+		pauseContract: func(_ context.Context, _ int, _, _ string) error {
+			return errors.New("new_end_date cannot be before start_date")
+		},
+	}}
+	b := []byte(`{"new_end_date":"2026-12-31","reason":"pause requested"}`)
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", b)
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", w.Code)
+	}
+}
+
 // ── ListContractCashflowEntries ───────────────────────────────────────────────
 
 func TestListContractCashflowEntries_InvalidID(t *testing.T) {

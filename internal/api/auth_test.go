@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -247,5 +248,164 @@ func TestHandleAuthStart(t *testing.T) {
 	}
 	if !foundState {
 		t.Fatal("expected oauth_state cookie")
+	}
+}
+
+func TestHandleAuthCallback_MissingStateCookie(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/auth/google/callback?state=somestate", nil)
+	// no oauth_state cookie
+	w := httptest.NewRecorder()
+	h.HandleAuthCallbackForTest(w, req)
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestHandleAuthCallback_EmptyState(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/auth/google/callback", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "goodstate"})
+	w := httptest.NewRecorder()
+	h.HandleAuthCallbackForTest(w, req)
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Result().StatusCode)
+	}
+}
+
+func TestRequireAuth_OptionsPassthrough(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	called := false
+	protected := h.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/protected", nil)
+	w := httptest.NewRecorder()
+	protected.ServeHTTP(w, req)
+	if w.Result().StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Result().StatusCode)
+	}
+	if called {
+		t.Fatal("expected inner handler NOT to be called for OPTIONS")
+	}
+}
+
+func TestRequireAuth_ValidSession(t *testing.T) {
+	a := newTestAuth()
+	h := &api.Handler{Auth: a}
+	sess := authpkg.Session{Email: "user@example.com", Name: "Alice", Exp: time.Now().Add(time.Hour)}
+	c := a.MakeCookieForTest(sess, false)
+
+	called := false
+	protected := h.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.AddCookie(c)
+	w := httptest.NewRecorder()
+	protected.ServeHTTP(w, req)
+	if !called {
+		t.Fatal("expected inner handler to be called with valid session")
+	}
+}
+
+func TestHandleLogoutRefererFallback(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	os.Unsetenv("POST_LOGOUT_REDIRECT")
+	os.Unsetenv("POST_LOGIN_REDIRECT")
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+	req.Header.Set("Referer", "https://example.com/some/page?q=1")
+	w := httptest.NewRecorder()
+	h.HandleLogoutForTest(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.Contains(loc, "example.com") {
+		t.Fatalf("expected redirect to example.com origin, got %q", loc)
+	}
+}
+
+func TestDebugSession_NoSession(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/debug/session", nil)
+	w := httptest.NewRecorder()
+	h.DebugSessionForTest(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ok, _ := body["ok"].(bool); ok {
+		t.Fatal("expected ok=false for missing session")
+	}
+	if _, hasCookies := body["cookies"]; !hasCookies {
+		t.Fatal("expected cookies field in response")
+	}
+}
+
+func TestDebugSession_WithSession(t *testing.T) {
+	a := newTestAuth()
+	h := &api.Handler{Auth: a}
+	sess := authpkg.Session{Email: "user@example.com", Name: "Alice", Exp: time.Now().Add(time.Hour)}
+	c := a.MakeCookieForTest(sess, false)
+
+	req := httptest.NewRequest("GET", "/debug/session", nil)
+	req.AddCookie(c)
+	w := httptest.NewRecorder()
+	h.DebugSessionForTest(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Fatal("expected ok=true for valid session")
+	}
+}
+
+func TestUserMeHandler_WithSession(t *testing.T) {
+	a := newTestAuth()
+	h := &api.Handler{Auth: a}
+	sess := authpkg.Session{Email: "user@example.com", Name: "Alice", Exp: time.Now().Add(time.Hour)}
+	c := a.MakeCookieForTest(sess, false)
+
+	req := httptest.NewRequest("GET", "/api/user/me", nil)
+	req.AddCookie(c)
+	w := httptest.NewRecorder()
+	h.UserMeHandlerForTest(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if auth, _ := body["authenticated"].(bool); !auth {
+		t.Fatal("expected authenticated=true")
+	}
+	if body["email"] != "user@example.com" {
+		t.Fatalf("expected email=user@example.com, got %v", body["email"])
+	}
+}
+
+func TestUserMeHandler_NoSession(t *testing.T) {
+	h := &api.Handler{Auth: newTestAuth()}
+	req := httptest.NewRequest("GET", "/api/user/me", nil)
+	w := httptest.NewRecorder()
+	h.UserMeHandlerForTest(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if auth, _ := body["authenticated"].(bool); auth {
+		t.Fatal("expected authenticated=false")
+	}
+	if body["email"] != "" {
+		t.Fatalf("expected empty email, got %v", body["email"])
 	}
 }
