@@ -3,7 +3,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -44,6 +46,7 @@ type ContractResponse struct {
 	Cashflow          []ContractCashflowEntryResponse `json:"cashflow,omitempty"`
 	Comments          []CommentResponse               `json:"comments,omitempty"`
 	Chain             []ContractResponse              `json:"chain,omitempty"`
+	EndDateOverride   *string                         `json:"end_date_override,omitempty"`
 }
 
 type ContractCashflowEntryResponse struct {
@@ -54,6 +57,11 @@ type ContractCashflowEntryResponse struct {
 	Status       string  `json:"status"`
 	UpdatedAt    *string `json:"updated_at,omitempty"`
 	MonetaryMode string  `json:"monetary_mode"`
+}
+
+type PauseContractRequest struct {
+	NewEndDate string `json:"new_end_date"` // YYYY-MM-DD, required
+	Reason     string `json:"reason"`       // required, stored as comment
 }
 
 func rowToContractResponse(cr domain.ContractRow, mwstRate float64) ContractResponse {
@@ -73,6 +81,7 @@ func rowToContractResponse(cr domain.ContractRow, mwstRate float64) ContractResp
 		NextDueDate:       cr.NextDueDate,
 		Source:            cr.Source,
 		MonetaryMode:      monetaryModeNetto,
+		EndDateOverride:   cr.EndDateOverride,
 	}
 
 	if len(cr.Comments) > 0 {
@@ -231,7 +240,11 @@ func (h *Handler) GetContract(w http.ResponseWriter, r *http.Request) {
 
 	cr, err := h.store.GetContractByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -376,6 +389,48 @@ func (h *Handler) UpdateContract(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			_ = h.insertCommentsForEntity("contract", id, contractClientID, req.Comments)
 		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PATCH /api/contracts/{id}/pause
+func (h *Handler) PauseContract(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid contract id", http.StatusBadRequest)
+		return
+	}
+
+	var req PauseContractRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.NewEndDate) == "" {
+		http.Error(w, "new_end_date is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		http.Error(w, "reason is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := time.Parse("2006-01-02", req.NewEndDate); err != nil {
+		http.Error(w, "invalid new_end_date (expected YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.store.PauseContract(r.Context(), id, req.NewEndDate, req.Reason); err != nil {
+		switch {
+		case strings.Contains(err.Error(), "not found"):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		case strings.Contains(err.Error(), "cannot be before"):
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)

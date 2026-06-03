@@ -360,8 +360,7 @@ WHERE cl.status = 'inactive' OR c.end_date < CURRENT_DATE`
 
 func (s *PostgresStore) GetContractByID(ctx context.Context, id int) (domain.ContractRow, error) {
 	var cr domain.ContractRow
-	var endDate, createdAt, updatedAt, nextDueDate sql.NullString
-
+	var endDate, endDateOverride, createdAt, updatedAt, nextDueDate sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 WITH overdue AS (
 	SELECT contract_id, MIN(due_date)::date AS overdue_due_date
@@ -372,8 +371,7 @@ upcoming AS (
 	FROM cashflow_entries WHERE due_date >= CURRENT_DATE GROUP BY contract_id
 )
 SELECT c.id, c.client_id, cl.name, c.sales_process_id,
-	c.start_date::text, c.end_date::text, c.created_at::text, c.updated_at::text,
-	c.duration_months, ROUND(c.revenue_total::numeric, 2), c.payment_frequency,
+c.start_date::text, c.end_date::text, c.end_date_override::text, c.created_at::text, c.updated_at::text, c.duration_months, ROUND(c.revenue_total::numeric, 2), c.payment_frequency,
 	CASE WHEN c.duration_months > 0 THEN ROUND((c.revenue_total / c.duration_months)::numeric, 2) ELSE 0 END,
 	COALESCE(o.overdue_due_date, u.upcoming_due_date)::text, c.source
 FROM contracts c
@@ -382,7 +380,7 @@ LEFT JOIN overdue o ON o.contract_id = c.id
 LEFT JOIN upcoming u ON u.contract_id = c.id
 WHERE c.id = $1`, id).Scan(
 		&cr.ID, &cr.ClientID, &cr.ClientName, &cr.SalesProcessID,
-		&cr.StartDate, &endDate, &createdAt, &updatedAt, &cr.DurationMonths, &cr.RevenueBrutto,
+		&cr.StartDate, &endDate, &endDateOverride, &createdAt, &updatedAt, &cr.DurationMonths, &cr.RevenueBrutto,
 		&cr.PaymentFreq, &cr.BaseMonthlyBrutto, &nextDueDate, &cr.Source,
 	)
 	if err != nil {
@@ -390,6 +388,9 @@ WHERE c.id = $1`, id).Scan(
 	}
 	if endDate.Valid {
 		cr.EndDate = &endDate.String
+	}
+	if endDateOverride.Valid {
+		cr.EndDateOverride = &endDateOverride.String
 	}
 	if createdAt.Valid {
 		cr.CreatedAt = &createdAt.String
@@ -421,7 +422,7 @@ chain_forward(contract_id) AS (
 		AND cu.upsell_result = 'verlaengerung' AND cu.new_contract_id IS NOT NULL
 )
 SELECT c.id, c.client_id, cl.name, c.sales_process_id,
-	c.start_date::text, c.end_date::text, c.created_at::text, c.duration_months,
+	c.start_date::text, c.end_date::text, c.end_date_override::text, c.created_at::text, c.duration_months,
 	ROUND(c.revenue_total::numeric, 2), c.payment_frequency,
 	CASE WHEN c.duration_months > 0 THEN ROUND((c.revenue_total / c.duration_months)::numeric, 2) ELSE 0 END,
 	COALESCE(o.overdue_due_date, u.upcoming_due_date)::text, c.source
@@ -435,14 +436,17 @@ ORDER BY c.start_date ASC, c.id ASC`, id)
 		defer chainRows.Close()
 		for chainRows.Next() {
 			var cx domain.ContractRow
-			var cxEnd, cxCreated, cxNext sql.NullString
+			var cxEnd, cxEndDateOverride, cxCreated, cxNext sql.NullString
 			if err := chainRows.Scan(
 				&cx.ID, &cx.ClientID, &cx.ClientName, &cx.SalesProcessID,
-				&cx.StartDate, &cxEnd, &cxCreated, &cx.DurationMonths,
+				&cx.StartDate, &cxEnd, &cxEndDateOverride, &cxCreated, &cx.DurationMonths,
 				&cx.RevenueBrutto, &cx.PaymentFreq, &cx.BaseMonthlyBrutto, &cxNext, &cx.Source,
 			); err == nil {
 				if cxEnd.Valid {
 					cx.EndDate = &cxEnd.String
+				}
+				if cxEndDateOverride.Valid {
+					cx.EndDateOverride = &cxEndDateOverride.String
 				}
 				if cxCreated.Valid {
 					cx.CreatedAt = &cxCreated.String
@@ -627,4 +631,68 @@ func (s *PostgresStore) GetContractNotifyData(ctx context.Context, contractID in
 		data.NextDueDate = nextDueDate.String
 	}
 	return data, nil
+}
+
+func (s *PostgresStore) PauseContract(ctx context.Context, contractID int, newEndDate string, reason string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Fetch start_date and current end_date
+	var startDate time.Time
+	var oldEndDate sql.NullTime
+	if err := tx.QueryRowContext(ctx,
+		`SELECT start_date, end_date FROM contracts WHERE id = $1`, contractID,
+	).Scan(&startDate, &oldEndDate); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("contract not found")
+		}
+		return err
+	}
+
+	newEnd, _ := time.Parse("2006-01-02", newEndDate) // already validated in handler
+	if newEnd.Before(startDate) {
+		return fmt.Errorf("new_end_date cannot be before start_date")
+	}
+
+	var deltaDays int
+	if oldEndDate.Valid {
+		deltaDays = int(newEnd.Sub(oldEndDate.Time).Hours() / 24)
+	}
+
+	// Update end_date and end_date_override
+	if _, err := tx.ExecContext(ctx, `
+        UPDATE contracts
+        SET end_date          = $1::date,
+            end_date_override = $1::date,
+            updated_at        = NOW()
+        WHERE id = $2`, newEndDate, contractID); err != nil {
+		return err
+	}
+
+	// Shift all non-paid cashflow entries by delta
+	if deltaDays != 0 {
+		if _, err := tx.ExecContext(ctx, `
+            UPDATE cashflow_entries
+            SET due_date   = due_date + ($1::int * INTERVAL '1 day'),
+                updated_at = NOW()
+            WHERE contract_id = $2
+              AND status IN ('confirmed', 'overdue')`,
+			deltaDays, contractID); err != nil {
+			return err
+		}
+	}
+
+	// Store reason as a comment linked to this contract
+	if _, err := tx.ExecContext(ctx, `
+        INSERT INTO comments (entity_type, entity_id, client_id, author, body)
+        SELECT 'contract', $1, client_id, 'system', $2
+        FROM contracts WHERE id = $1`,
+		contractID, reason); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }

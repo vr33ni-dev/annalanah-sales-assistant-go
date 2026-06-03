@@ -77,7 +77,7 @@ type appStore interface {
 	UpdateContract(ctx context.Context, id int, sd, ed time.Time, durationMonths int, revenueTotal float64, paymentFreq string) error
 	GetContractClientID(ctx context.Context, contractID int) (int, error)
 	GetContractNotifyData(ctx context.Context, contractID int) (domain.ContractNotifyData, error)
-
+	PauseContract(ctx context.Context, contractID int, newEndDate string, reason string) error
 	// Sales
 	UpdateSalesProcess(ctx context.Context, id int, in store.SalesUpdateInput) (rowsAffected int64, err error)
 	GetSalesProcessClientID(ctx context.Context, salesProcessID int) (int, error)

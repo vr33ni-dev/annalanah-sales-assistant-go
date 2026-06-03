@@ -126,6 +126,7 @@ func NewRouter(h *Handler) *chi.Mux {
 		pr.Get("/contracts/{id}", h.GetContract)      // response: revenue_total+base_monthly_amount are Netto
 		pr.Patch("/contracts/{id}", h.UpdateContract) // request payload monetary fields are Brutto
 		pr.Get("/contracts/{id}/cashflow", h.ListContractCashflowEntries)
+		pr.Patch("/contracts/{id}/pause", h.PauseContract)
 
 		// Stages
 		pr.Get("/stages", h.ListStages)
