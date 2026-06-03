@@ -2,16 +2,16 @@ include .env
 export
 
 migrate-up:
-	migrate -path db/migrations -database "$(DATABASE_URL)" up
+	migrate -path internal/db/migrations -database "$(DATABASE_URL)" up
 
 migrate-down:
-	migrate -path db/migrations -database "$(DATABASE_URL)" down -all
+	migrate -path internal/db/migrations -database "$(DATABASE_URL)" down -all
 
 migrate-drop:
-	migrate -path db/migrations -database "$(DATABASE_URL)" drop -f
+	migrate -path internal/db/migrations -database "$(DATABASE_URL)" drop -f
 
 migrate-version:
-	migrate -path db/migrations -database "$(DATABASE_URL)" version
+	migrate -path internal/db/migrations -database "$(DATABASE_URL)" version
 
 seed:
 	psql "$(DATABASE_URL)" -f db/seeds/dev_seed.sql
@@ -30,7 +30,7 @@ migrate-new:
 	fi; \
 	migrate create \
 		-ext sql \
-		-dir db/migrations \
+		-dir internal/db/migrations \
 		-format "20060102150405" \
 		$(name)
 

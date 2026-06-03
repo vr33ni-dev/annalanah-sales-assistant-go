@@ -50,6 +50,10 @@ func main() {
 	database := db.ConnectDSN(cfg.DatabaseURL)
 	log.Printf("DB: %q", cfg.DatabaseURL)
 
+	if err := db.RunMigrations(database); err != nil {
+		log.Fatalf("migrations: %v", err)
+	}
+
 	// Optionally start pprof listener if PPROF_ADDR is set
 	if pprofAddr := os.Getenv("PPROF_ADDR"); pprofAddr != "" {
 		go func() {

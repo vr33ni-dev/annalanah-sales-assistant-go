@@ -28,13 +28,13 @@ func findProjectRoot() (string, error) {
 	}
 
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "db", "migrations")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "internal", "db", "migrations")); err == nil {
 			return dir, nil
 		}
 
 		next := filepath.Dir(dir)
 		if next == dir {
-			return "", fmt.Errorf("could not find project root containing db/migrations")
+			return "", fmt.Errorf("could not find project root containing internal/db/migrations")
 		}
 		dir = next
 	}
@@ -46,7 +46,7 @@ func loadMigrations(db *sql.DB, t testing.TB) {
 		t.Fatalf("%v", err)
 	}
 
-	mDir := filepath.Join(root, "db", "migrations")
+	mDir := filepath.Join(root, "internal", "db", "migrations")
 
 	files, err := os.ReadDir(mDir)
 	if err != nil {

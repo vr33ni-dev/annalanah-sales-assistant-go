@@ -6,7 +6,7 @@ if [ -z "$name" ]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-MIGRATIONS_DIR="${ROOT_DIR}/db/migrations"
+MIGRATIONS_DIR="${ROOT_DIR}/internal/db/migrations"
 mkdir -p "$MIGRATIONS_DIR"
 
 ts=$(date +%Y%m%d%H%M%S)

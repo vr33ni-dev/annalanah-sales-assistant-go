@@ -66,7 +66,7 @@ make reset
 ### 5. Add new migration
 
 ```bash
-migrate create -ext sql -dir db/migrations alter_example_table
+migrate create -ext sql -dir internal/db/migrations alter_example_table
 ```
 
 ### 6. Run the server
