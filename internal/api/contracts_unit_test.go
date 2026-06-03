@@ -138,6 +138,44 @@ func TestGetContract_Success(t *testing.T) {
 	}
 }
 
+// -- PauseContract ───────────────────────────────────────────────────────────────
+
+func TestPauseContract_InvalidID(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/abc/pause", "abc", []byte(`{}`))
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_StoreError(t *testing.T) {
+	h := &Handler{store: &mockStore{
+		pauseContract: func(_ context.Context, _ int, _, _ string) error {
+			return errors.New("db down")
+		},
+	}}
+	b := []byte(`{"new_end_date":"2026-12-31","reason":"Client requested pause"}`)
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", b)
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestPauseContract_Success(t *testing.T) {
+	h := &Handler{store: &mockStore{}}
+	b := []byte(`{"new_end_date":"2026-12-31","reason":"Client requested pause"}`)
+	req := chiReqWithID(http.MethodPatch, "/api/contracts/1/pause", "1", b)
+	w := httptest.NewRecorder()
+	h.PauseContract(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+}
+
 // ── ListContractCashflowEntries ───────────────────────────────────────────────
 
 func TestListContractCashflowEntries_InvalidID(t *testing.T) {

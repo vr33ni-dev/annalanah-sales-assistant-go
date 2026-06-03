@@ -29,11 +29,11 @@ type mockStore struct {
 	syncClientCompletedAt     func(ctx context.Context, clientID int, closed *bool, completedAt *string) error
 	syncClientStatusFromSales func(ctx context.Context, salesProcessID int) error
 
-	validateClientCompletedAt    func(ctx context.Context, clientID int, completedAt *time.Time) error
-	insertClient                 func(ctx context.Context, name, email, phone, source string, sourceStageID *int, status string) (int, error)
-	deleteClientWithLeadReset    func(ctx context.Context, clientID int) (bool, error)
-	getClientCompletedAt         func(ctx context.Context, clientID int) (*time.Time, error)
-	updateClientFields           func(ctx context.Context, id int, name, email, phone, source, status string, sourceStageID *int, sourceStageIDSet bool, completedAt *time.Time) error
+	validateClientCompletedAt      func(ctx context.Context, clientID int, completedAt *time.Time) error
+	insertClient                   func(ctx context.Context, name, email, phone, source string, sourceStageID *int, status string) (int, error)
+	deleteClientWithLeadReset      func(ctx context.Context, clientID int) (bool, error)
+	getClientCompletedAt           func(ctx context.Context, clientID int) (*time.Time, error)
+	updateClientFields             func(ctx context.Context, id int, name, email, phone, source, status string, sourceStageID *int, sourceStageIDSet bool, completedAt *time.Time) error
 	clearClientSalesProcessStageID func(ctx context.Context, clientID int) error
 	syncLeadFromClient             func(ctx context.Context, clientID int, name, email, phone, source string, sourceStageID *int, sourceStageIDSet bool) error
 	listClients                    func(ctx context.Context, includeInactive bool) ([]domain.ClientRow, error)
@@ -71,24 +71,25 @@ type mockStore struct {
 	updateContract        func(ctx context.Context, id int, sd, ed time.Time, durationMonths int, revenueTotal float64, paymentFreq string) error
 	getContractClientID   func(ctx context.Context, contractID int) (int, error)
 	getContractNotifyData func(ctx context.Context, contractID int) (domain.ContractNotifyData, error)
+	pauseContract         func(ctx context.Context, contractID int, newEndDate string, reason string) error
 
-	exportClientsRaw        func(ctx context.Context) ([][]string, error)
-	exportContractsRaw      func(ctx context.Context) ([][]string, error)
+	exportClientsRaw         func(ctx context.Context) ([][]string, error)
+	exportContractsRaw       func(ctx context.Context) ([][]string, error)
 	exportCashflowEntriesRaw func(ctx context.Context) ([][]string, error)
-	exportLegacyCashflow    func(ctx context.Context) (store.LegacyCashflowData, error)
+	exportLegacyCashflow     func(ctx context.Context) (store.LegacyCashflowData, error)
 	exportAggregatedCashflow func(ctx context.Context) (store.AggregatedCashflowData, error)
 
-	listStages              func() ([]domain.Stage, error)
-	listStageParticipants   func(stageID, limit, offset int) ([]domain.StageParticipant, error)
-	createStage             func(stage domain.Stage) (domain.Stage, error)
-	deleteStage             func(id int) error
-	addStageParticipant     func(stageID int, participant domain.StageParticipant) (domain.StageParticipant, error)
-	insertLeadForStage      func(name, email, phone string, stageID int) (int, error)
-	updateStageParticipant  func(stageID int, participant domain.StageParticipant) error
-	deleteStageParticipant  func(stageID, participantID int) error
-	updateStageStats        func(stageID int, registrations *int, participants *int) error
-	assignClientToStage     func(stageID, clientID int) error
-	updateStageInfo         func(stageID int, name, date *string, adBudget *float64) error
+	listStages             func() ([]domain.Stage, error)
+	listStageParticipants  func(stageID, limit, offset int) ([]domain.StageParticipant, error)
+	createStage            func(stage domain.Stage) (domain.Stage, error)
+	deleteStage            func(id int) error
+	addStageParticipant    func(stageID int, participant domain.StageParticipant) (domain.StageParticipant, error)
+	insertLeadForStage     func(name, email, phone string, stageID int) (int, error)
+	updateStageParticipant func(stageID int, participant domain.StageParticipant) error
+	deleteStageParticipant func(stageID, participantID int) error
+	updateStageStats       func(stageID int, registrations *int, participants *int) error
+	assignClientToStage    func(stageID, clientID int) error
+	updateStageInfo        func(stageID int, name, date *string, adBudget *float64) error
 
 	listSettings      func() ([]domain.AppSetting, error)
 	getSetting        func(key string) (domain.AppSetting, error)
@@ -412,6 +413,14 @@ func (m *mockStore) UpdateContract(ctx context.Context, id int, sd, ed time.Time
 	}
 	return nil
 }
+
+func (m *mockStore) PauseContract(ctx context.Context, contractID int, newEndDate string, reason string) error {
+	if m.pauseContract != nil {
+		return m.pauseContract(ctx, contractID, newEndDate, reason)
+	}
+	return nil
+}
+
 func (m *mockStore) GetContractClientID(ctx context.Context, contractID int) (int, error) {
 	if m.getContractClientID != nil {
 		return m.getContractClientID(ctx, contractID)
