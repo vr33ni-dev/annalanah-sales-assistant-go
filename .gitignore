@@ -75,3 +75,7 @@ Makefile
 docs/migration-runbook.md
 backup_prod_20260521.sql
 docs/flow_start-sales-process.md
+
+# ai related files
+memory/MEMORY.md
+memory/project_startup_migrations.md
