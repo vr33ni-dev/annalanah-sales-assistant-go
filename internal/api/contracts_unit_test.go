@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -106,7 +107,7 @@ func TestGetContract_InvalidID(t *testing.T) {
 func TestGetContract_NotFound(t *testing.T) {
 	h := &Handler{store: &mockStore{
 		getContractByID: func(_ context.Context, _ int) (domain.ContractRow, error) {
-			return domain.ContractRow{}, errors.New("not found")
+			return domain.ContractRow{}, sql.ErrNoRows
 		},
 	}}
 	req := chiReqWithID(http.MethodGet, "/api/contracts/99", "99", nil)
