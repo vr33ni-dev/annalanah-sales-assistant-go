@@ -28,14 +28,22 @@ python3 -m venv .venv-tools
 source .venv-tools/bin/activate
 ```
 
-**2. Install the `csv-tidyimport` library from its local source:**
+**2. Clone and install the `csv-tidyimport` library:**
+
+`csv-tidyimport` is not on PyPI — clone it as a sibling directory and install it as an editable package:
 
 ```bash
-pip install -e /Users/vreeni/Dev/Projects/csv-tidyimport
+git clone git@github.com:vr33ni-dev/csv-tidyimport.git ../csv-tidyimport
+pip install -e ../csv-tidyimport
 pip install requests
 ```
 
-> The `csv-tidyimport` package is not on PyPI. It must be installed from its local source directory.
+If you already have the repo cloned elsewhere, adjust the path accordingly:
+
+```bash
+pip install -e /path/to/csv-tidyimport
+pip install requests
+```
 
 **On subsequent runs**, just re-activate the venv — no reinstall needed:
 
