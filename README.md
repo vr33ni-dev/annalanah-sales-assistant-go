@@ -66,7 +66,7 @@ make reset
 ### 5. Add new migration
 
 ```bash
-migrate create -ext sql -dir db/migrations alter_example_table
+migrate create -ext sql -dir internal/db/migrations alter_example_table
 ```
 
 ### 6. Run the server
@@ -94,7 +94,7 @@ Note: integration tests may be skipped on machines without Docker/Colima (the te
 You can also run a single test directly:
 
 ```bash
-go test ./api -run TestUpdateComment -v
+go test ./internal/api -run TestUpdateComment -v
 ```
 
 ---
