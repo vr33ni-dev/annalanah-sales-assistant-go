@@ -672,11 +672,23 @@ func (s *PostgresStore) PauseContract(ctx context.Context, contractID int, newEn
 		return err
 	}
 
-	// Shift all non-paid cashflow entries by delta
+	// Shift all non-paid cashflow entries by delta.
+	// Two-step approach: first park entries 100 years in the future, then move
+	// to the final position. A single UPDATE with a forward delta fails because
+	// PostgreSQL checks the unique index per-row — entry A's new date temporarily
+	// collides with entry B's current date before B gets its turn to move.
 	if deltaDays != 0 {
 		if _, err := tx.ExecContext(ctx, `
             UPDATE cashflow_entries
-            SET due_date   = due_date + ($1::int * INTERVAL '1 day'),
+            SET due_date = due_date + INTERVAL '36525 days'
+            WHERE contract_id = $1
+              AND status IN ('confirmed', 'overdue')`,
+			contractID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+            UPDATE cashflow_entries
+            SET due_date   = (due_date - INTERVAL '36525 days' + ($1::int * INTERVAL '1 day'))::date,
                 updated_at = NOW()
             WHERE contract_id = $2
               AND status IN ('confirmed', 'overdue')`,
