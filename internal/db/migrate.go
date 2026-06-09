@@ -24,7 +24,7 @@ func RunMigrations(database *sql.DB) error {
 	}
 
 	var currentVersion int64
-	err := database.QueryRow(`SELECT version FROM schema_migrations WHERE dirty = false`).Scan(&currentVersion)
+	err := database.QueryRow(`SELECT version FROM schema_migrations WHERE dirty = false ORDER BY version DESC LIMIT 1`).Scan(&currentVersion)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("read schema_migrations: %w", err)
 	}

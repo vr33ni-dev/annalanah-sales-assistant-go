@@ -428,6 +428,7 @@ func (h *Handler) PauseContract(w http.ResponseWriter, r *http.Request) {
 		case strings.Contains(err.Error(), "cannot be before"):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		default:
+			fmt.Printf("PauseContract contractID=%d: %v\n", id, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
