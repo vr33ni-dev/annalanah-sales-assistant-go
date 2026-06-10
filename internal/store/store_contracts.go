@@ -238,7 +238,7 @@ upcoming AS (
 	FROM cashflow_entries WHERE due_date >= CURRENT_DATE GROUP BY contract_id
 )
 SELECT c.id, c.client_id, cl.name, c.sales_process_id,
-	cs.chain_start_date::text, c.end_date::text, c.created_at::text,
+	cs.chain_start_date::text, c.end_date::text, c.end_date_override::text, c.created_at::text,
 	cs.total_duration_months::int,
 	ROUND(cs.total_revenue::numeric, 2),
 	c.payment_frequency,
@@ -272,16 +272,19 @@ WHERE cl.status = 'inactive' OR c.end_date < CURRENT_DATE`
 
 	for rows.Next() {
 		var cr domain.ContractRow
-		var endDate, createdAt, nextDueDate sql.NullString
+		var endDate, endDateOverride, createdAt, nextDueDate sql.NullString
 		if err := rows.Scan(
 			&cr.ID, &cr.ClientID, &cr.ClientName, &cr.SalesProcessID,
-			&cr.StartDate, &endDate, &createdAt, &cr.DurationMonths, &cr.RevenueBrutto,
+			&cr.StartDate, &endDate, &endDateOverride, &createdAt, &cr.DurationMonths, &cr.RevenueBrutto,
 			&cr.PaymentFreq, &cr.BaseMonthlyBrutto, &nextDueDate, &cr.Source,
 		); err != nil {
 			return nil, err
 		}
 		if endDate.Valid {
 			cr.EndDate = &endDate.String
+		}
+		if endDateOverride.Valid {
+			cr.EndDateOverride = &endDateOverride.String
 		}
 		if createdAt.Valid {
 			cr.CreatedAt = &createdAt.String
