@@ -81,3 +81,12 @@ Current behavior summary
 - Direct tag pushes matching `v*.*.*` also trigger the release workflow.
 
 If you want I can also export the diagram as an SVG or add it to the repo README.
+
+**Testing with production data**
+
+Dev database setup
+
+- Go to Neon dashboard → prod project
+- Click Branches → New Branch
+- Select the prod branch as the parent and pick "now" (or a specific point in time)
+- point the dev instance's DATABASE_URL at the new branch's connection string.
