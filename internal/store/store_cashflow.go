@@ -133,72 +133,10 @@ entries AS (
   SELECT cf.due_date::date AS due_date, cf.amount::numeric AS amount
   FROM cashflow_entries cf
   WHERE cf.amount > 0 AND cf.due_date >= $1::date AND cf.due_date < $2::date
-),
-contracts_base AS (
-  SELECT c.id,
-         c.start_date,
-         COALESCE(c.end_date, (c.start_date + (c.duration_months || ' months')::interval)::date) AS effective_end,
-         c.revenue_total,
-         c.payment_frequency
-  FROM contracts c
-),
-schedule_raw AS (
-  SELECT c.id AS contract_id, gs::date AS due_date, c.revenue_total, c.payment_frequency, c.effective_end,
-         COUNT(*) FILTER (
-           WHERE c.payment_frequency = 'one-time'
-              OR (CASE c.payment_frequency
-                    WHEN 'monthly'    THEN (gs + interval '1 month')
-                    WHEN 'bi-monthly' THEN (gs + interval '2 months')
-                    WHEN 'quarterly'  THEN (gs + interval '3 months')
-                    WHEN 'bi-yearly'  THEN (gs + interval '6 months')
-                    ELSE (gs + interval '1 month')
-                  END) <= c.effective_end::timestamp
-         ) OVER (PARTITION BY c.id) AS periods
-  FROM contracts_base c
-  JOIN LATERAL generate_series(
-    c.start_date::timestamp, c.effective_end::timestamp,
-    CASE c.payment_frequency
-      WHEN 'monthly'    THEN interval '1 month'
-      WHEN 'bi-monthly' THEN interval '2 months'
-      WHEN 'quarterly'  THEN interval '3 months'
-      WHEN 'bi-yearly'  THEN interval '6 months'
-      WHEN 'one-time'   THEN interval '100 years'
-      ELSE interval '1 month'
-    END
-  ) gs ON TRUE
-),
-schedule AS (
-  SELECT sr.contract_id, sr.due_date,
-         CASE WHEN sr.payment_frequency = 'one-time' THEN sr.revenue_total::numeric
-              ELSE (sr.revenue_total::numeric / NULLIF(sr.periods, 0))
-         END AS amount
-  FROM schedule_raw sr
-  WHERE sr.payment_frequency = 'one-time'
-     OR (CASE sr.payment_frequency
-           WHEN 'monthly'    THEN (sr.due_date::timestamp + interval '1 month')
-           WHEN 'bi-monthly' THEN (sr.due_date::timestamp + interval '2 months')
-           WHEN 'quarterly'  THEN (sr.due_date::timestamp + interval '3 months')
-           WHEN 'bi-yearly'  THEN (sr.due_date::timestamp + interval '6 months')
-           ELSE (sr.due_date::timestamp + interval '1 month')
-         END) <= sr.effective_end::timestamp
-),
-schedule_no_entry AS (
-  SELECT s.due_date, s.amount
-  FROM schedule s
-  LEFT JOIN cashflow_entries cfe ON cfe.contract_id = s.contract_id AND cfe.due_date::date = s.due_date
-  WHERE s.due_date >= $1::date AND s.due_date < $2::date AND cfe.id IS NULL
-),
-confirmed AS (
-  SELECT m.ym, COALESCE(SUM(e.amount), 0)::numeric AS amt
-  FROM months m LEFT JOIN entries e ON e.due_date >= m.month_start AND e.due_date < m.month_end
-  GROUP BY m.ym
-  UNION ALL
-  SELECT m.ym, COALESCE(SUM(s.amount), 0)::numeric AS amt
-  FROM months m LEFT JOIN schedule_no_entry s ON s.due_date >= m.month_start AND s.due_date < m.month_end
-  GROUP BY m.ym
 )
-SELECT ym AS month, SUM(amt)::numeric AS confirmed
-FROM confirmed GROUP BY ym ORDER BY month
+SELECT m.ym AS month, COALESCE(SUM(e.amount), 0)::numeric AS confirmed
+FROM months m LEFT JOIN entries e ON e.due_date >= m.month_start AND e.due_date < m.month_end
+GROUP BY m.ym ORDER BY m.ym
 `, start, end)
 	if err != nil {
 		return nil, err
@@ -235,66 +173,9 @@ entries AS (
     AND cf.due_date >= $1::date AND cf.due_date < $2::date
     AND ($4::int IS NULL OR cf.contract_id = $4)
 ),
-contracts_base AS (
-  SELECT c.id, c.start_date,
-         COALESCE(c.end_date, (c.start_date + (c.duration_months || ' months')::interval)::date) AS effective_end,
-         c.revenue_total, c.payment_frequency
-  FROM contracts c WHERE ($4::int IS NULL OR c.id = $4)
-),
-schedule_raw AS (
-  SELECT c.id AS contract_id, gs::date AS due_date, c.start_date, c.effective_end,
-         c.revenue_total, c.payment_frequency,
-         COUNT(*) FILTER (
-           WHERE c.payment_frequency = 'one-time'
-              OR (CASE c.payment_frequency
-                    WHEN 'monthly'    THEN (gs + interval '1 month')
-                    WHEN 'bi-monthly' THEN (gs + interval '2 months')
-                    WHEN 'quarterly'  THEN (gs + interval '3 months')
-                    WHEN 'bi-yearly'  THEN (gs + interval '6 months')
-                    ELSE (gs + interval '1 month')
-                  END) <= c.effective_end::timestamp
-         ) OVER (PARTITION BY c.id) AS periods
-  FROM contracts_base c
-  JOIN LATERAL generate_series(
-    c.start_date::timestamp, c.effective_end::timestamp,
-    CASE c.payment_frequency
-      WHEN 'monthly'    THEN interval '1 month'
-      WHEN 'bi-monthly' THEN interval '2 months'
-      WHEN 'quarterly'  THEN interval '3 months'
-      WHEN 'bi-yearly'  THEN interval '6 months'
-      WHEN 'one-time'   THEN interval '100 years'
-      ELSE interval '1 month'
-    END
-  ) gs ON TRUE
-),
-schedule AS (
-  SELECT sr.contract_id, sr.due_date,
-         CASE WHEN sr.payment_frequency = 'one-time' THEN sr.revenue_total::numeric
-              ELSE (sr.revenue_total::numeric / NULLIF(sr.periods, 0))
-         END AS amount
-  FROM schedule_raw sr
-  WHERE sr.payment_frequency = 'one-time'
-     OR (CASE sr.payment_frequency
-           WHEN 'monthly'    THEN (sr.due_date::timestamp + interval '1 month')
-           WHEN 'bi-monthly' THEN (sr.due_date::timestamp + interval '2 months')
-           WHEN 'quarterly'  THEN (sr.due_date::timestamp + interval '3 months')
-           WHEN 'bi-yearly'  THEN (sr.due_date::timestamp + interval '6 months')
-           ELSE (sr.due_date::timestamp + interval '1 month')
-         END) <= sr.effective_end::timestamp
-),
-schedule_no_entry AS (
-  SELECT s.contract_id, s.due_date, s.amount
-  FROM schedule s
-  LEFT JOIN cashflow_entries cfe ON cfe.contract_id = s.contract_id AND cfe.due_date::date = s.due_date
-  WHERE s.due_date >= $1::date AND s.due_date < $2::date AND cfe.id IS NULL
-),
 confirmed AS (
   SELECT m.ym, COALESCE(SUM(e.amount), 0)::numeric AS amt
   FROM months m LEFT JOIN entries e ON e.due_date >= m.month_start AND e.due_date < m.month_end
-  GROUP BY m.ym
-  UNION ALL
-  SELECT m.ym, COALESCE(SUM(s.amount), 0)::numeric AS amt
-  FROM months m LEFT JOIN schedule_no_entry s ON s.due_date >= m.month_start AND s.due_date < m.month_end
   GROUP BY m.ym
 ),
 potential AS (
