@@ -14,7 +14,7 @@ func (s *PostgresStore) ListLeads(ctx context.Context) ([]domain.Lead, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT l.id, l.name, l.email, l.phone, l.source,
 		       l.source_stage_id, st.name AS source_stage_name,
-		       l.converted, l.created_at
+		       l.converted, l.converted_client_id, l.created_at
 		FROM leads l
 		LEFT JOIN stages st ON st.id = l.source_stage_id
 		ORDER BY l.id`)
@@ -28,10 +28,10 @@ func (s *PostgresStore) ListLeads(ctx context.Context) ([]domain.Lead, error) {
 		var l domain.Lead
 		var email, phone sql.NullString
 		var stageName sql.NullString
-		var stageID sql.NullInt64
+		var stageID, convertedClientID sql.NullInt64
 		var createdAt sql.NullTime
 		if err := rows.Scan(&l.ID, &l.Name, &email, &phone, &l.Source,
-			&stageID, &stageName, &l.Converted, &createdAt); err != nil {
+			&stageID, &stageName, &l.Converted, &convertedClientID, &createdAt); err != nil {
 			return nil, err
 		}
 		if email.Valid {
@@ -46,6 +46,10 @@ func (s *PostgresStore) ListLeads(ctx context.Context) ([]domain.Lead, error) {
 		}
 		if stageName.Valid {
 			l.SourceStageName = &stageName.String
+		}
+		if convertedClientID.Valid {
+			v := int(convertedClientID.Int64)
+			l.ConvertedClientID = &v
 		}
 		if createdAt.Valid {
 			v := createdAt.Time.Format(time.RFC3339)
@@ -179,15 +183,27 @@ func (s *PostgresStore) UpdateLead(ctx context.Context, id int, name, email, pho
 }
 
 func (s *PostgresStore) DeleteLead(ctx context.Context, id int) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM leads WHERE id = $1`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM leads WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM comments WHERE entity_type = 'lead' AND entity_id = $1`, id,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *PostgresStore) ConvertLead(ctx context.Context, leadID int) (clientID, salesProcessID int, err error) {
@@ -290,6 +306,16 @@ func (s *PostgresStore) ConvertLead(ctx context.Context, leadID int) (clientID, 
 				return clientID, salesProcessID, nil
 			}
 		}
+		return 0, 0, err
+	}
+
+	// Re-parent any lead comments to the new client
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE comments
+		SET entity_type = 'client', entity_id = $1, client_id = $1
+		WHERE entity_type = 'lead' AND entity_id = $2`,
+		clientID, leadID,
+	); err != nil {
 		return 0, 0, err
 	}
 
