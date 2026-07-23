@@ -22,13 +22,14 @@ const (
 )
 
 type CashflowEntryResponse struct {
-	ID           int     `json:"id"`
-	ContractID   int     `json:"contract_id"`
-	DueDate      *string `json:"due_date"`
-	Amount       float64 `json:"amount"`
-	Status       string  `json:"status"`
-	UpdatedAt    *string `json:"updated_at,omitempty"`
-	MonetaryMode string  `json:"monetary_mode"`
+	ID            int     `json:"id"`
+	ContractID    int     `json:"contract_id"`
+	ContractLabel string  `json:"contract_label,omitempty"`
+	DueDate       *string `json:"due_date"`
+	Amount        float64 `json:"amount"`
+	Status        string  `json:"status"`
+	UpdatedAt     *string `json:"updated_at,omitempty"`
+	MonetaryMode  string  `json:"monetary_mode"`
 }
 
 type CashflowRow struct {
@@ -78,6 +79,9 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if v := q.Get("sort_order"); v == "desc" || v == "asc" {
+		f.SortOrder = v
+	}
 
 	entries, total, err := h.store.ListCashflowEntries(f)
 	if err != nil {
@@ -88,13 +92,14 @@ func (h *Handler) ListCashflowEntries(w http.ResponseWriter, r *http.Request) {
 	out := make([]CashflowEntryResponse, len(entries))
 	for i, e := range entries {
 		out[i] = CashflowEntryResponse{
-			ID:           e.ID,
-			ContractID:   e.ContractID,
-			DueDate:      e.DueDate,
-			Amount:       e.Amount,
-			Status:       e.Status,
-			UpdatedAt:    e.UpdatedAt,
-			MonetaryMode: monetaryModeBrutto,
+			ID:            e.ID,
+			ContractID:    e.ContractID,
+			ContractLabel: e.ContractLabel,
+			DueDate:       e.DueDate,
+			Amount:        e.Amount,
+			Status:        e.Status,
+			UpdatedAt:     e.UpdatedAt,
+			MonetaryMode:  monetaryModeBrutto,
 		}
 	}
 

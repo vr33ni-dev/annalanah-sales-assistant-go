@@ -45,22 +45,25 @@ func (s *PostgresStore) ListCashflowEntries(f CashflowEntryFilter) ([]domain.Cas
 		whereSQL = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	// client_id lives on contracts, not cashflow_entries, so only join when needed
-	joinSQL := ""
-	if f.ClientID != "" {
-		joinSQL = "INNER JOIN contracts c ON c.id = ce.contract_id "
-	}
+	// Always join contracts+clients so we can return client_name.
+	// When filtering by client_id, the WHERE already references c.client_id so the join is required anyway.
+	joinSQL := `INNER JOIN contracts c ON c.id = ce.contract_id
+	INNER JOIN clients cl ON cl.id = c.client_id `
 
 	var total int
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM cashflow_entries ce "+joinSQL+whereSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
+	sortDir := "ASC"
+	if strings.ToLower(f.SortOrder) == "desc" {
+		sortDir = "DESC"
+	}
 	offset := (f.Page - 1) * f.PerPage
-	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at
+	dataQuery := `SELECT ce.id, ce.contract_id, ce.due_date::timestamp, ce.amount::float8, ce.status, ce.updated_at, cl.name
 	FROM cashflow_entries ce
 	` + joinSQL + whereSQL + `
-	ORDER BY ce.due_date ASC, ce.id ASC
+	ORDER BY ce.due_date ` + sortDir + `, ce.id ` + sortDir + `
 	LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
 	args = append(args, f.PerPage, offset)
 
@@ -74,11 +77,15 @@ func (s *PostgresStore) ListCashflowEntries(f CashflowEntryFilter) ([]domain.Cas
 	for rows.Next() {
 		var e domain.CashflowEntry
 		var due, updated sql.NullTime
-		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated); err != nil {
+		var clientName sql.NullString
+		if err := rows.Scan(&e.ID, &e.ContractID, &due, &e.Amount, &e.Status, &updated, &clientName); err != nil {
 			return nil, 0, err
 		}
 		e.DueDate = nullTimeToString(due, time.RFC3339)
 		e.UpdatedAt = nullTimeToString(updated, time.RFC3339)
+		if clientName.Valid {
+			e.ContractLabel = clientName.String
+		}
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {

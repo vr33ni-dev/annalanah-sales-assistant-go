@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,5 +270,53 @@ func TestExportAggregatedCashflowCSV_StoreError(t *testing.T) {
 	h.ExportAggregatedCashflowCSV(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestExportAggregatedCashflowCSV_TotalsRow(t *testing.T) {
+	h := &Handler{store: &mockStore{
+		exportAggregatedCashflow: func(_ context.Context) (store.AggregatedCashflowData, error) {
+			return store.AggregatedCashflowData{
+				Clients: []store.AggregatedCashflowClientRow{
+					{ID: 1, Name: "Alice", StartDate: "2026-01-01", EndDate: "2026-02-01", TotalRevenue: 1000.00},
+					{ID: 2, Name: "Bob", StartDate: "2026-01-01", EndDate: "2026-02-01", TotalRevenue: 500.00},
+				},
+				AmountByClientMonth: map[int]map[string]float64{
+					1: {"2026-01": 300.00, "2026-02": 700.00},
+					2: {"2026-01": 200.00, "2026-02": 300.00},
+				},
+			}, nil
+		},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/exports/aggregated/cashflow.csv", nil)
+	w := httptest.NewRecorder()
+	h.ExportAggregatedCashflowCSV(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	records, err := csv.NewReader(strings.NewReader(w.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("failed to parse csv: %v", err)
+	}
+
+	// header + 2 client rows + 1 totals row
+	if len(records) != 4 {
+		t.Fatalf("expected 4 rows (header+2 clients+totals), got %d", len(records))
+	}
+
+	totals := records[3]
+	if totals[1] != "TOTAL" {
+		t.Fatalf("expected totals row label 'TOTAL', got %q", totals[1])
+	}
+	if totals[9] != "1500.00" {
+		t.Fatalf("expected total_revenue=1500.00, got %q", totals[9])
+	}
+	// col 10 = m_2026_01, col 11 = m_2026_02
+	if totals[10] != "500.00" {
+		t.Fatalf("expected m_2026_01=500.00, got %q", totals[10])
+	}
+	if totals[11] != "1000.00" {
+		t.Fatalf("expected m_2026_02=1000.00, got %q", totals[11])
 	}
 }
