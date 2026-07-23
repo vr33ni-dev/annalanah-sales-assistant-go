@@ -15,7 +15,7 @@ Man kann es sich als schlankes CRM (Customer Relationship Management) vorstellen
 ## Das große Bild
 
 ```mermaid
-flowchart LR
+flowchart TB
     A[📣 Marketing-Event\nz. B. Webinar] --> B[🙋 Lead\nzeigt Interesse]
     B --> C[📞 Erstgespräch\nerster Kontakt]
     C --> D[📅 Zweitgespräch\ngeplant]
@@ -180,6 +180,15 @@ pie title Cashflow-Vorschau
 
 Das hilft dem Unternehmen, vorausschauend zu planen und Liquiditätslücken frühzeitig zu erkennen.
 
+> **Warum unterscheidet sich die Cashflow-Vorschau vom Gesamtumsatz im Dashboard?**
+>
+> Die beiden Zahlen messen dasselbe Geld — aber zu unterschiedlichen Zeitpunkten:
+>
+> - Der **Gesamtumsatz** (Dashboard) bucht den vollen Vertragswert in dem Monat, in dem der Vertrag **beginnt**. Ein Vertrag über 12.000 € erscheint also vollständig im Monat des Vertragsabschlusses.
+> - Die **Cashflow-Vorschau** zeigt die tatsächlichen **monatlichen Zahlungsraten** — dieselben 12.000 € verteilt über z. B. 12 Monate à 1.000 €.
+>
+> Ein Monat mit vielen Neuabschlüssen zeigt daher einen hohen Gesamtumsatz-Peak, während der Cashflow gleichmäßig über die gesamte Vertragslaufzeit verteilt bleibt. Das Dashboard beantwortet „Was haben wir neu verkauft?", die Cashflow-Vorschau beantwortet „Wann fließt das Geld tatsächlich ein?"
+
 ---
 
 ### Fragen in natürlicher Sprache stellen (NLQ)
@@ -238,6 +247,7 @@ erDiagram
     SALESPROZESS ||--o| VERTRAG : "fuehrt zu"
     VERTRAG ||--o{ CASHFLOW_EINTRAG : "generiert"
     VERTRAG ||--o| VERTRAG : "verlaengert als"
+    LEAD ||--o{ KOMMENTAR : "hat"
     KUNDE ||--o{ KOMMENTAR : "hat"
     SALESPROZESS ||--o{ KOMMENTAR : "hat"
     VERTRAG ||--o{ KOMMENTAR : "hat"
@@ -258,3 +268,9 @@ Jede Information lässt sich zurückverfolgen — welches Event, welches Gesprä
 | Zu verstehen, was funktioniert | Abschluss- und Verlängerungsquoten sowie ROI pro Event misst |
 | Fragen ohne IT-Unterstützung zu stellen | KI-gestützte Abfragen in natürlicher Sprache ermöglicht |
 | Daten einfach zu teilen | CSV-Exporte mit einem Klick bereitstellt |
+
+## Pause
+
+Wenn ein Kunde eine Pause einlegt (z. B. wegen Urlaub oder Krankheit), verschiebt sich das Enddatum des Vertrags um genau denselben Zeitraum. Alle noch offenen Zahlungstermine — also alle Cashflow-Einträge, die noch nicht als bezahlt oder überfällig markiert sind — rücken ebenfalls um diesen Zeitraum nach hinten.
+
+Bereits geleistete Zahlungen bleiben unverändert. Es entstehen keine neuen Einträge; bestehende werden nur zeitlich verschoben. So bleibt der gesamte Zahlungsplan konsistent, ohne dass manuell jeder Termin einzeln angepasst werden muss.
