@@ -86,6 +86,12 @@ func (s *PostgresStore) CreateComment(entityType string, entityID int, author *s
 		if err := s.db.QueryRow(`SELECT client_id FROM contracts WHERE id = $1`, entityID).Scan(&cid); err == nil {
 			clientID = &cid
 		}
+	case "lead":
+		var convertedClientID sql.NullInt64
+		if err := s.db.QueryRow(`SELECT converted_client_id FROM leads WHERE id = $1`, entityID).Scan(&convertedClientID); err == nil && convertedClientID.Valid {
+			cid := int(convertedClientID.Int64)
+			clientID = &cid
+		}
 	}
 
 	metaBytes, _ := json.Marshal(metadata)

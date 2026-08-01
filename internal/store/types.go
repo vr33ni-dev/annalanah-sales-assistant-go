@@ -21,6 +21,7 @@ type CashflowEntryFilter struct {
 	EndDate    *time.Time
 	Page       int
 	PerPage    int
+	SortOrder  string // "asc" (default) or "desc"
 }
 
 // ContractCreateInput is the set of parameters used to create a contract (inside a transaction).

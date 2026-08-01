@@ -95,6 +95,67 @@ func TestListCashflowEntries_PerPageCappedAt500(t *testing.T) {
 	}
 }
 
+func TestListCashflowEntries_SortOrderPassedToFilter(t *testing.T) {
+	cases := []struct {
+		param string
+		want  string
+	}{
+		{"desc", "desc"},
+		{"asc", "asc"},
+		{"random", ""},  // invalid value ignored
+		{"", ""},        // absent ignored
+	}
+	for _, tc := range cases {
+		t.Run("sort_order="+tc.param, func(t *testing.T) {
+			var captured store.CashflowEntryFilter
+			h := &Handler{store: &mockStore{
+				listCashflowEntries: func(f store.CashflowEntryFilter) ([]domain.CashflowEntry, int, error) {
+					captured = f
+					return nil, 0, nil
+				},
+			}}
+			url := "/api/cashflow/entries"
+			if tc.param != "" {
+				url += "?sort_order=" + tc.param
+			}
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			w := httptest.NewRecorder()
+			h.ListCashflowEntries(w, req)
+			if captured.SortOrder != tc.want {
+				t.Fatalf("sort_order=%q: expected filter.SortOrder=%q, got %q", tc.param, tc.want, captured.SortOrder)
+			}
+		})
+	}
+}
+
+func TestListCashflowEntries_ContractLabelInResponse(t *testing.T) {
+	due := "2026-06-01"
+	h := &Handler{store: &mockStore{
+		listCashflowEntries: func(_ store.CashflowEntryFilter) ([]domain.CashflowEntry, int, error) {
+			return []domain.CashflowEntry{
+				{ID: 1, ContractID: 10, ContractLabel: "Alice Example", DueDate: &due, Amount: 100.0, Status: "confirmed"},
+			}, 1, nil
+		},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/cashflow/entries", nil)
+	w := httptest.NewRecorder()
+	h.ListCashflowEntries(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Data []struct {
+			ContractLabel string `json:"contract_label"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ContractLabel != "Alice Example" {
+		t.Fatalf("expected contract_label='Alice Example', got %+v", resp.Data)
+	}
+}
+
 // ── CashflowForecast ──────────────────────────────────────────────────────────
 
 func TestCashflowForecast_StoreError(t *testing.T) {

@@ -11,15 +11,16 @@ import (
 )
 
 type LeadResponse struct {
-	ID              int     `json:"id"`
-	Name            string  `json:"name"`
-	Email           string  `json:"email"`
-	Phone           string  `json:"phone"`
-	Source          string  `json:"source"`
-	SourceStageID   *int    `json:"source_stage_id,omitempty"`
-	SourceStageName *string `json:"source_stage_name,omitempty"`
-	Converted       bool    `json:"converted"`
-	CreatedAt       *string `json:"created_at,omitempty"`
+	ID                int     `json:"id"`
+	Name              string  `json:"name"`
+	Email             string  `json:"email"`
+	Phone             string  `json:"phone"`
+	Source            string  `json:"source"`
+	SourceStageID     *int    `json:"source_stage_id,omitempty"`
+	SourceStageName   *string `json:"source_stage_name,omitempty"`
+	Converted         bool    `json:"converted"`
+	ConvertedClientID *int    `json:"converted_client_id,omitempty"`
+	CreatedAt         *string `json:"created_at,omitempty"`
 }
 
 // GET /api/leads
@@ -33,15 +34,16 @@ func (h *Handler) ListLeads(w http.ResponseWriter, r *http.Request) {
 	out := make([]LeadResponse, len(leads))
 	for i, l := range leads {
 		out[i] = LeadResponse{
-			ID:              l.ID,
-			Name:            l.Name,
-			Email:           l.Email,
-			Phone:           l.Phone,
-			Source:          l.Source,
-			SourceStageID:   l.SourceStageID,
-			SourceStageName: l.SourceStageName,
-			Converted:       l.Converted,
-			CreatedAt:       l.CreatedAt,
+			ID:                l.ID,
+			Name:              l.Name,
+			Email:             l.Email,
+			Phone:             l.Phone,
+			Source:            l.Source,
+			SourceStageID:     l.SourceStageID,
+			SourceStageName:   l.SourceStageName,
+			Converted:         l.Converted,
+			ConvertedClientID: l.ConvertedClientID,
+			CreatedAt:         l.CreatedAt,
 		}
 	}
 
@@ -76,15 +78,16 @@ func (h *Handler) CreateLead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := LeadResponse{
-		ID:              lead.ID,
-		Name:            lead.Name,
-		Email:           lead.Email,
-		Phone:           lead.Phone,
-		Source:          lead.Source,
-		SourceStageID:   lead.SourceStageID,
-		SourceStageName: lead.SourceStageName,
-		Converted:       lead.Converted,
-		CreatedAt:       lead.CreatedAt,
+		ID:                lead.ID,
+		Name:              lead.Name,
+		Email:             lead.Email,
+		Phone:             lead.Phone,
+		Source:            lead.Source,
+		SourceStageID:     lead.SourceStageID,
+		SourceStageName:   lead.SourceStageName,
+		Converted:         lead.Converted,
+		ConvertedClientID: lead.ConvertedClientID,
+		CreatedAt:         lead.CreatedAt,
 	}
 
 	if isExisting {
@@ -135,15 +138,16 @@ func (h *Handler) UpdateLead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := LeadResponse{
-		ID:              lead.ID,
-		Name:            lead.Name,
-		Email:           lead.Email,
-		Phone:           lead.Phone,
-		Source:          lead.Source,
-		SourceStageID:   lead.SourceStageID,
-		SourceStageName: lead.SourceStageName,
-		Converted:       lead.Converted,
-		CreatedAt:       lead.CreatedAt,
+		ID:                lead.ID,
+		Name:              lead.Name,
+		Email:             lead.Email,
+		Phone:             lead.Phone,
+		Source:            lead.Source,
+		SourceStageID:     lead.SourceStageID,
+		SourceStageName:   lead.SourceStageName,
+		Converted:         lead.Converted,
+		ConvertedClientID: lead.ConvertedClientID,
+		CreatedAt:         lead.CreatedAt,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -318,6 +318,9 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 	}
 	_ = cw.Write(header)
 
+	monthTotals := make(map[string]float64, len(months))
+	var totalRevenue float64
+
 	for _, c := range data.Clients {
 		startFmt, endFmt := c.StartDate, c.EndDate
 		if t, ok := parseDateString(c.StartDate); ok {
@@ -326,6 +329,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 		if t, ok := parseDateString(c.EndDate); ok {
 			endFmt = t.Format("2006-01-02")
 		}
+		totalRevenue += c.TotalRevenue
 		row := []string{
 			strconv.Itoa(c.ID),
 			c.Name,
@@ -342,6 +346,7 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 		for _, m := range months {
 			ym := monthKey(m)
 			if v, ok := clientMap[ym]; ok {
+				monthTotals[ym] += v
 				row = append(row, strconv.FormatFloat(v, 'f', 2, 64))
 			} else {
 				row = append(row, "0.00")
@@ -349,4 +354,11 @@ func (h *Handler) ExportAggregatedCashflowCSV(w http.ResponseWriter, r *http.Req
 		}
 		_ = cw.Write(row)
 	}
+
+	// totals row
+	totalsRow := []string{"", "TOTAL", "", "", "", "", "", "", "", strconv.FormatFloat(totalRevenue, 'f', 2, 64)}
+	for _, m := range months {
+		totalsRow = append(totalsRow, strconv.FormatFloat(monthTotals[monthKey(m)], 'f', 2, 64))
+	}
+	_ = cw.Write(totalsRow)
 }

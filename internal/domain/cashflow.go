@@ -1,12 +1,13 @@
 package domain
 
 type CashflowEntry struct {
-	ID         int     `json:"id"`
-	ContractID int     `json:"contract_id"`
-	DueDate    *string `json:"due_date"`
-	Amount     float64 `json:"amount"`
-	Status     string  `json:"status"`
-	UpdatedAt  *string `json:"updated_at,omitempty"`
+	ID            int     `json:"id"`
+	ContractID    int     `json:"contract_id"`
+	ContractLabel string  `json:"contract_label,omitempty"`
+	DueDate       *string `json:"due_date"`
+	Amount        float64 `json:"amount"`
+	Status        string  `json:"status"`
+	UpdatedAt     *string `json:"updated_at,omitempty"`
 }
 
 type CashflowForecastRow struct {
