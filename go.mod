@@ -84,7 +84,7 @@ require (
 	github.com/go-chi/chi v1.5.5
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/joho/godotenv v1.5.1
-	github.com/lib/pq v1.12.3
+	github.com/lib/pq v1.12.4-0.20260816161508-2835785690d5
 	golang.org/x/sync v0.19.0
 	google.golang.org/api v0.252.0
 )
